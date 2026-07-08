@@ -4,6 +4,6 @@ import { CopcDataSource } from '../src/index';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
-const viewer = new Cesium.Viewer('cesiumContainer');
+const _viewer = new Cesium.Viewer('cesiumContainer');
 
 console.log('CopcDataSource:', CopcDataSource);
