@@ -14,9 +14,9 @@ export interface CopcDataSourceOptions {
 
 export class CopcDataSource {
   static async load(
-    url: string,
-    viewer: Viewer,
-    options?: CopcDataSourceOptions,
+    _url: string,
+    _viewer: Viewer,
+    _options?: CopcDataSourceOptions,
   ): Promise<CopcDataSource> {
     throw new Error('Not implemented yet');
   }
