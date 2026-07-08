@@ -2,27 +2,54 @@
   "name": "copcesium",
   "version": "1.0.0",
   "description": "CesiumJS provider for real-time COPC point cloud streaming and rendering",
-  "main": "index.js",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/copc-cesium.cjs",
+  "module": "./dist/copc-cesium.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/copc-cesium.mjs",
+      "require": "./dist/copc-cesium.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite",
+    "build": "vite build && tsc --emitDeclarationOnly",
+    "preview": "vite preview",
+    "test": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Jangmyun/copcesium.git"
   },
-  "keywords": [],
+  "keywords": [
+    "cesium",
+    "copc",
+    "point-cloud",
+    "las",
+    "laz",
+    "webgl"
+  ],
   "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "bugs": {
     "url": "https://github.com/Jangmyun/copcesium/issues"
   },
   "homepage": "https://github.com/Jangmyun/copcesium#readme",
+  "peerDependencies": {
+    "cesium": ">=1.100.0"
+  },
   "dependencies": {
     "copc": "^0.0.8",
     "proj4": "^2.20.9"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "@types/proj4": "^2.5.6",
     "@vitest/ui": "^4.1.10",
     "cesium": "^1.143.0",
