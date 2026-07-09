@@ -1,0 +1,37 @@
+name: Question / Help
+description: Ask a question about usage, COPC data compatibility, or CesiumJS integration
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, please check the [README](../../README.md) and existing issues.
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Setting up copcesium with CesiumJS
+        - Loading a COPC file
+        - CRS / coordinate projection
+        - Styling / attribute-based coloring
+        - Performance tuning
+        - TypeScript types
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-tried
+    attributes:
+      label: What have you tried?
+      description: Code snippets, docs you've read, approaches you've attempted.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: COPC Specification
+    url: https://copc.io
+    about: Reference for the Cloud Optimized Point Cloud format
+  - name: CesiumJS Documentation
+    url: https://cesium.com/learn/cesiumjs-learn/
+    about: CesiumJS API reference and guides

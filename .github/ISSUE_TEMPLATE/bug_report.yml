@@ -1,0 +1,78 @@
+name: Bug Report
+description: Report a bug in copcesium
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill in as much detail as possible to help us reproduce and fix it.
+
+  - type: input
+    id: version
+    attributes:
+      label: copcesium version
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: cesium-version
+    attributes:
+      label: CesiumJS version
+      placeholder: e.g. 1.143.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: copc-source
+    attributes:
+      label: COPC data source type
+      options:
+        - Local file (File API)
+        - Remote URL (HTTP/HTTPS)
+        - S3 / Object storage
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What did you expect to happen? What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Initialize viewer with ...
+        2. Load COPC file from ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: code-snippet
+    attributes:
+      label: Minimal code snippet
+      description: A minimal example that reproduces the issue.
+      render: typescript
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error output / console logs
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        - Browser: Chrome 130 / Firefox 132 / Safari 18
+        - OS: macOS 14 / Windows 11 / Ubuntu 24.04
+        - Bundler: Vite 5 / Webpack 5 / none

@@ -1,0 +1,54 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for copcesium
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe your use case clearly.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the library does this relate to?
+      options:
+        - Point cloud loading / streaming
+        - LOD (Level of Detail) strategy
+        - Coordinate system / CRS support
+        - Rendering / visual quality
+        - CesiumJS integration / API
+        - Performance / memory
+        - TypeScript types / DX
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What limitation or pain point does this address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe the feature and how you'd expect the API to look.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you've tried or other approaches you've considered.
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Links, references to COPC spec sections, related Cesium issues, etc.
