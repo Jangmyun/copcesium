@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:src": "vite --mode src",
     "build": "vite build",
     "preview": "vite preview"
   },
