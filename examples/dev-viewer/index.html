@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>copcesium dev-viewer (src)</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #cesiumContainer { width: 100%; height: 100%; overflow: hidden; }
+      #panel {
+        position: absolute; top: 10px; left: 10px; z-index: 1;
+        background: white; padding: 10px; font: 13px sans-serif;
+        display: flex; flex-direction: column; gap: 6px; width: 320px;
+      }
+      #panel label { display: flex; justify-content: space-between; gap: 8px; }
+      #urlInput { width: 100%; }
+      #error { color: red; white-space: pre-wrap; }
+      #status { color: #555; }
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+
+    <div id="panel">
+      <input id="urlInput" type="text" placeholder="COPC URL" />
+      <div>
+        <button id="loadBtn">Load</button>
+        <button id="reloadBtn" disabled>Remove &amp; reload</button>
+      </div>
+      <label>pixelSize: <span id="pixelSizeValue"></span>
+        <input id="pixelSize" type="range" min="1" max="10" step="1" value="2" />
+      </label>
+      <label>sseThreshold: <span id="sseThresholdValue"></span>
+        <input id="sseThreshold" type="range" min="50" max="1000" step="10" value="250" />
+      </label>
+      <div id="status"></div>
+      <div id="error"></div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
