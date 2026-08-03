@@ -23,6 +23,7 @@
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\"",
     "test": "vitest",
+    "test:run": "vitest run",
     "prepublishOnly": "npm run build"
   },
   "repository": {

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Same order as the publish workflow, and for the same reason:
+      # src/build.test.ts inspects dist/copc-cesium.mjs, so the tests have to
+      # run against a build that already exists or those assertions skip
+      # instead of failing. Keeping both workflows in this order means a PR
+      # exercises exactly what a release will.
+      - run: npm run build
+
+      - run: npm run test:run
+
+      - run: npm run lint
+
+      # Guards against a repeat of #69: installing a locally packed tarball
+      # into the example rewrites its lockfile to `file:../../copcesium-*.tgz`,
+      # a path that exists on nobody else's machine, and committing that breaks
+      # `npm ci` for every fresh clone. `npm install <tarball> --no-save` avoids
+      # it, but that depends on remembering a flag.
+      - name: examples/basic-viewer lockfile resolves from the registry
+        run: |
+          if grep -q '"file:' examples/basic-viewer/package-lock.json; then
+            echo "::error file=examples/basic-viewer/package-lock.json::Lockfile contains a file: reference. It was probably produced by installing a locally packed tarball; reinstall with --no-save, or restore it with 'npm ci' in examples/basic-viewer."
+            grep -n '"file:' examples/basic-viewer/package-lock.json
+            exit 1
+          fi

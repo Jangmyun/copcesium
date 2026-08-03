@@ -27,13 +27,20 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      # Must come before the tests. src/build.test.ts guards the #54 worker-404
+      # regression by reading dist/copc-cesium.mjs, and those assertions are
+      # `it.runIf(existsSync(...))` — with dist/ gitignored, a fresh checkout has
+      # no build output, so running the tests first silently skips them
+      # ("2 passed | 2 skipped") and the job still goes green. A broken build
+      # output would publish unnoticed, which is exactly how 1.0.0 shipped.
+      #
+      # `npm run build` also runs via this package's own `prepublishOnly`, but
+      # running it explicitly here lets the job fail before publishing if the
+      # build itself is broken.
+      - run: npm run build
+
+      - run: npm run test:run
 
       - run: npm run lint
-
-      # npm run build also runs via this package's own `prepublishOnly`
-      # script, but running it here too lets the job fail before the
-      # publish step if the build itself is broken.
-      - run: npm run build
 
       - run: npm publish --provenance --access public
