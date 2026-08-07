@@ -219,6 +219,12 @@ npm run dev
 
 Then open the printed local URL in a browser.
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for how to build, test, and
+submit a pull request. This project follows a [Code of Conduct](./CODE_OF_CONDUCT.md). To report
+a security vulnerability, see [SECURITY.md](./SECURITY.md).
+
 ## Credits
 
 - [`copc`](https://github.com/connormanning/copc.js) — COPC parsing (header/hierarchy/point data, over HTTP Range Requests)

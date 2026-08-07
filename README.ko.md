@@ -214,6 +214,10 @@ npm run dev
 
 터미널에 출력되는 로컬 URL을 브라우저로 열면 됩니다.
 
+## 기여하기
+
+기여를 환영합니다 — 빌드·테스트·PR 제출 방법은 [CONTRIBUTING.md](./CONTRIBUTING.md)를 참고하세요. 이 프로젝트는 [행동 강령](./CODE_OF_CONDUCT.md)을 따릅니다. 보안 취약점 신고는 [SECURITY.md](./SECURITY.md)를 참고하세요.
+
 ## Credits
 
 - [`copc`](https://github.com/connormanning/copc.js) — COPC 파싱(헤더/계층 구조/포인트 데이터, HTTP Range Request 기반)
