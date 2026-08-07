@@ -20,6 +20,8 @@ jobs:
 
       - run: npm run build
 
-      - run: npx vitest run
+      - run: npm run test:coverage
 
       - run: npm run lint
+
+      - run: npm run coverage:badges -- --ci

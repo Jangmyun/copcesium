@@ -24,6 +24,8 @@
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.ts\" \"examples/**/*.ts\"",
     "test": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "coverage:badges": "istanbul-badges-readme",
     "prepublishOnly": "npm run build"
   },
   "repository": {
@@ -55,10 +57,12 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.1",
     "@types/proj4": "^2.5.6",
+    "@vitest/coverage-v8": "^4.1.10",
     "@vitest/ui": "^4.1.10",
     "cesium": "^1.143.0",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
+    "istanbul-badges-readme": "^1.9.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.4",
     "typescript": "^6.0.3",
