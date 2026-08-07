@@ -1,9 +1,18 @@
+/** Shared by every member of one merged fetch, so the last cancellation in a
+ *  group can abort the fetch itself instead of just discarding its result. */
+interface GroupState {
+  liveCount: number;
+  controller: AbortController | null;
+}
+
 interface RangeRequest {
   begin: number;
   end: number;
   resolve: (bytes: Uint8Array) => void;
   reject: (err: Error) => void;
   cancelled: boolean;
+  /** Set once `_flush()` groups this request; null while still queued. */
+  group: GroupState | null;
 }
 
 /** A `fetch()` result whose underlying request can be abandoned early. */
@@ -58,15 +67,20 @@ export class RangeFetcher {
     }
     let req!: RangeRequest;
     const promise = new Promise<Uint8Array>((resolve, reject) => {
-      req = { begin, end, resolve, reject, cancelled: false };
+      req = { begin, end, resolve, reject, cancelled: false, group: null };
       this.pending.push(req);
       this._scheduleFlush();
     }) as CancellableBytesPromise;
-    // A request already merged into an in-flight group fetch can't be pulled
-    // back out — the network request keeps going for whichever siblings are
-    // still wanted — so cancelling only suppresses this one's own result.
     promise.cancel = () => {
+      if (req.cancelled) return;
       req.cancelled = true;
+      // A request already merged into a group can't be pulled back out on its
+      // own — the fetch is shared — but once every sibling in that group has
+      // also been cancelled, the whole group's result is wanted by nobody, so
+      // its in-flight fetch (if it's gotten that far) can be aborted instead
+      // of downloading a response nothing will use.
+      const group = req.group;
+      if (group && --group.liveCount === 0) group.controller?.abort();
     };
     return promise;
   }
@@ -94,7 +108,11 @@ export class RangeFetcher {
       if (req.cancelled) req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
       else live.push(req);
     }
-    for (const group of this._group(live)) void this._fetchGroup(group);
+    for (const group of this._group(live)) {
+      const state: GroupState = { liveCount: group.length, controller: null };
+      for (const req of group) req.group = state;
+      void this._fetchGroup(group, state);
+    }
   }
 
   /**
@@ -119,10 +137,11 @@ export class RangeFetcher {
     return groups;
   }
 
-  private async _fetchGroup(group: RangeRequest[]): Promise<void> {
+  private async _fetchGroup(group: RangeRequest[], state: GroupState): Promise<void> {
     const groupBegin = group[0]!.begin;
     const groupEnd = group[group.length - 1]!.end;
     const controller = new AbortController();
+    state.controller = controller;
     this.inFlight.add(controller);
     try {
       const response = await fetch(this.url, {

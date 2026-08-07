@@ -134,7 +134,7 @@ describe('RangeFetcher', () => {
     });
   });
 
-  it('rejects a request cancelled after its group fetch already started, without affecting its siblings', async () => {
+  it('rejects a request cancelled after its group fetch already started, without affecting or aborting for its still-wanted siblings', async () => {
     let resolveFetch!: (value: ReturnType<typeof fakeResponse>) => void;
     const fetchMock = vi.fn().mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
     vi.stubGlobal('fetch', fetchMock);
@@ -143,12 +143,34 @@ describe('RangeFetcher', () => {
     const cancelled = fetcher.fetch(0, 10);
     const kept = fetcher.fetch(10, 20);
     await Promise.resolve(); // let the microtask-scheduled flush dispatch the merged fetch
-    cancelled.cancel(); // too late to stop the network request, but should still suppress its own result
+    cancelled.cancel(); // one sibling still wants this group's result, so the fetch itself must keep going
     resolveFetch(fakeResponse(makeSourceBytes(20)));
 
     await expect(cancelled).rejects.toThrow(/cancelled/);
     await expect(kept).resolves.toBeInstanceOf(Uint8Array);
-    expect(fetchMock).toHaveBeenCalledTimes(1); // one shared request for both
+    expect(fetchMock).toHaveBeenCalledTimes(1); // one shared request for both, never aborted
+  });
+
+  it('aborts an in-flight group fetch once every one of its members has been cancelled', async () => {
+    const fetchMock = vi.fn((_url: string, opts: { signal: AbortSignal }) => {
+      return new Promise((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+    const a = fetcher.fetch(0, 10);
+    const b = fetcher.fetch(10, 20);
+    await Promise.resolve(); // let the microtask-scheduled flush dispatch the merged fetch
+
+    a.cancel(); // one sibling still wanted -> must not abort yet
+    expect(fetchMock.mock.calls[0]![1].signal.aborted).toBe(false);
+    b.cancel(); // the last live member drops out -> nobody wants this group's bytes anymore
+
+    await expect(a).rejects.toThrow(/AbortError|aborted/i);
+    await expect(b).rejects.toThrow(/AbortError|aborted/i);
+    expect(fetchMock.mock.calls[0]![1].signal.aborted).toBe(true);
   });
 
   it('rejects every request in a group when its fetch fails', async () => {
