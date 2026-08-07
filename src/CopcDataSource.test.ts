@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Viewer } from 'cesium';
+import type { Hierarchy } from 'copc';
 import type { NodeRenderData } from './types';
 
 const create = vi.fn();
@@ -31,6 +32,21 @@ vi.mock('./worker/WorkerPool', () => ({
   }),
 }));
 
+// Mocked the same way as WorkerPool above, and for the same reason (a real
+// RangeFetcher's .fetch() would need a real global `fetch`). Defaults to an
+// already-resolved dummy byte range in the shared beforeEach below, so tests
+// that don't care about the fetch stage can ignore it entirely.
+const rangeFetcherFetch = vi.fn();
+const rangeFetcherDestroy = vi.fn();
+vi.mock('./copc/RangeFetcher', () => ({
+  RangeFetcher: vi.fn().mockImplementation(function () {
+    return {
+      fetch: (...args: unknown[]) => rangeFetcherFetch(...args),
+      destroy: (...args: unknown[]) => rangeFetcherDestroy(...args),
+    };
+  }),
+}));
+
 // The update-loop tests below only care whether CopcDataSource correctly wires
 // selectNodes()'s output through WorkerPool -> NodeCache -> scene.primitives —
 // selectNodes()'s own frustum/SSE geometry is already covered by
@@ -58,14 +74,37 @@ vi.mock('./lod/boundingVolume', async (importOriginal) => {
 
 const { CopcDataSource } = await import('./CopcDataSource');
 
-// workerPoolRun/workerPoolDestroy/selectNodesMock/isInFrustumMock are shared
-// across every test in this file, so their state must be reset per test —
-// otherwise toHaveBeenCalledTimes() assertions accumulate across unrelated
-// tests and mockReturnValue() leaks between them.
+/** A pending-forever cancellable promise, for tests that need to observe a
+ *  load stuck mid-flight rather than resolving it. */
+function makePendingCancellable<T>(): Promise<T> & { cancel: () => void } {
+  const promise = new Promise<T>(() => {}) as Promise<T> & { cancel: () => void };
+  promise.cancel = vi.fn();
+  return promise;
+}
+
+function makeResolvedCancellable<T>(value: T): Promise<T> & { cancel: () => void } {
+  const promise = Promise.resolve(value) as Promise<T> & { cancel: () => void };
+  promise.cancel = vi.fn();
+  return promise;
+}
+
+// loadCopcHierarchy() probes for Range support via a real `fetch()` before
+// ever touching the mocked `copc` module above; default it to a well-behaved
+// 206 response so tests unrelated to that probe don't have to know it exists.
+const fetchMock = vi.fn();
+
+// workerPoolRun/workerPoolDestroy/selectNodesMock/isInFrustumMock/
+// rangeFetcherFetch are shared across every test in this file, so their state
+// must be reset per test — otherwise toHaveBeenCalledTimes() assertions
+// accumulate across unrelated tests and mockReturnValue() leaks between them.
 beforeEach(() => {
   vi.clearAllMocks();
   isInFrustumMock.mockReturnValue(true);
+  fetchMock.mockResolvedValue({ status: 206 });
+  vi.stubGlobal('fetch', fetchMock);
+  rangeFetcherFetch.mockImplementation(() => makeResolvedCancellable(new Uint8Array([0])));
 });
+afterEach(() => vi.unstubAllGlobals());
 
 function makeFakeViewer() {
   let updateCallback: (() => void) | undefined;
@@ -113,7 +152,15 @@ function makeFakeViewer() {
 
 const fakeViewer = makeFakeViewer().viewer;
 
-function mockCopc(wkt: string | undefined) {
+/**
+ * @param extraNodes Additional non-root keys some update-loop tests stub
+ *   selectNodes() to return (e.g. simulating a zoom to a child or
+ *   grandchild) — without an entry here, _loadNode() fails looking up
+ *   pointDataOffset/pointDataLength for a key the mocked selectNodes()
+ *   invented but the hierarchy never actually had. Left empty by default so
+ *   nodeCount/maxDepth assertions against the single real root node hold.
+ */
+function mockCopc(wkt: string | undefined, extraNodes: Record<string, Hierarchy.Node> = {}) {
   create.mockResolvedValueOnce({
     info: {
       cube: [0, 0, 0, 10, 10, 10],
@@ -125,10 +172,17 @@ function mockCopc(wkt: string | undefined) {
     wkt,
   });
   loadHierarchyPage.mockResolvedValueOnce({
-    nodes: { '0-0-0-0': { pointCount: 1, pointDataOffset: 0, pointDataLength: 1 } },
+    nodes: { '0-0-0-0': { pointCount: 1, pointDataOffset: 0, pointDataLength: 1 }, ...extraNodes },
     pages: {},
   });
 }
+
+/** Covers every non-root key the update-loop tests below stub selectNodes() to return. */
+const EXTRA_NODES: Record<string, Hierarchy.Node> = {
+  '1-0-0-0': { pointCount: 1, pointDataOffset: 1, pointDataLength: 1 },
+  '1-1-1-1': { pointCount: 1, pointDataOffset: 2, pointDataLength: 1 },
+  '2-0-0-0': { pointCount: 1, pointDataOffset: 3, pointDataLength: 1 },
+};
 
 describe('CopcDataSource.load', () => {
   it('auto-detects CRS from WKT when the user does not provide one', async () => {
@@ -288,7 +342,8 @@ describe('CopcDataSource update loop', () => {
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
 
     expect(workerPoolRun).toHaveBeenCalledWith(
-      expect.objectContaining({ url: 'https://example.com/sample.copc.laz', proj: 'EPSG:4326' }),
+      expect.objectContaining({ compressedBytes: expect.any(Uint8Array), proj: 'EPSG:4326' }),
+      expect.anything(),
     );
     // Required under `requestRenderMode: true` for the new primitive to actually
     // appear; harmless (no-op) under continuous rendering otherwise.
@@ -334,21 +389,36 @@ describe('CopcDataSource update loop', () => {
     expect(workerPoolRun).toHaveBeenCalledTimes(1); // never re-dispatched to the worker
   });
 
-  it('cancels a still-pending load when its key drops out of the LoD selection', async () => {
+  it('cancels a still-pending byte-range fetch when its key drops out of the LoD selection', async () => {
     mockCopc(undefined);
-    const cancelSpy = vi.fn();
-    const pending = new Promise<NodeRenderData>(() => {}) as Promise<NodeRenderData> & { cancel: () => void };
-    pending.cancel = cancelSpy;
-    workerPoolRun.mockReturnValueOnce(pending);
+    const pending = makePendingCancellable<Uint8Array>();
+    rangeFetcherFetch.mockReturnValueOnce(pending);
     const { viewer, triggerUpdate } = makeFakeViewer();
 
     await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
-    triggerUpdate(); // dispatches the load for '0-0-0-0'; it never resolves
+    triggerUpdate(); // dispatches the load for '0-0-0-0'; its byte fetch never resolves
 
     selectNodesMock.mockReturnValue([]); // camera moved on before it finished
     triggerUpdate();
 
-    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(pending.cancel).toHaveBeenCalledTimes(1);
+    expect(workerPoolRun).not.toHaveBeenCalled(); // never even reached the worker stage
+  });
+
+  it('cancels a still-pending decode when its key drops out of the LoD selection after its bytes arrived', async () => {
+    mockCopc(undefined);
+    const pending = makePendingCancellable<NodeRenderData>();
+    workerPoolRun.mockReturnValueOnce(pending);
+    const { viewer, triggerUpdate } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+    await vi.waitFor(() => expect(workerPoolRun).toHaveBeenCalledTimes(1)); // bytes fetched, now decoding
+
+    selectNodesMock.mockReturnValue([]); // camera moved on before it finished
+    triggerUpdate();
+
+    expect(pending.cancel).toHaveBeenCalledTimes(1);
   });
 
   it('does not log an error for a load cancelled by the selection moving on', async () => {
@@ -368,6 +438,7 @@ describe('CopcDataSource update loop', () => {
 
     await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
     triggerUpdate();
+    await vi.waitFor(() => expect(workerPoolRun).toHaveBeenCalledTimes(1));
 
     selectNodesMock.mockReturnValue([]);
     triggerUpdate(); // triggers pending.cancel(), rejecting with AbortError
@@ -400,7 +471,7 @@ describe('CopcDataSource update loop', () => {
   });
 
   it('keeps a node visible until its replacement children are ready, instead of leaving a gap (zoom in)', async () => {
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     workerPoolRun.mockResolvedValueOnce(renderData).mockResolvedValueOnce(renderData);
     const { viewer, addPrimitive, removePrimitive, triggerUpdate } = makeFakeViewer();
 
@@ -431,7 +502,7 @@ describe('CopcDataSource update loop', () => {
   });
 
   it('keeps children visible until the merged parent replacement is ready, instead of leaving a gap (zoom out)', async () => {
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     workerPoolRun.mockResolvedValueOnce(renderData).mockResolvedValueOnce(renderData);
     const { viewer, addPrimitive, removePrimitive, triggerUpdate } = makeFakeViewer();
 
@@ -465,7 +536,7 @@ describe('CopcDataSource update loop', () => {
     // case, not an edge case. A grandchild covers the outgoing node's area
     // just as a direct child does, so the same "wait for the replacement"
     // rule has to apply.
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     workerPoolRun.mockResolvedValue(renderData);
     const { viewer, addPrimitive, removePrimitive, triggerUpdate } = makeFakeViewer();
 
@@ -489,7 +560,7 @@ describe('CopcDataSource update loop', () => {
   });
 
   it('keeps a node visible when the selection jumps straight to its grandparent (fast zoom out)', async () => {
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     workerPoolRun.mockResolvedValue(renderData);
     const { viewer, addPrimitive, removePrimitive, triggerUpdate } = makeFakeViewer();
 
@@ -513,7 +584,7 @@ describe('CopcDataSource update loop', () => {
   });
 
   it('hides a deselected node immediately when nothing in the new selection replaces it (e.g. it left the frustum)', async () => {
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     workerPoolRun.mockResolvedValueOnce(renderData).mockResolvedValueOnce(renderData);
     const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
 
@@ -560,6 +631,7 @@ describe('CopcDataSource update loop', () => {
     expect(removeUpdateListener).toHaveBeenCalledTimes(1);
     expect(removeMoveEndListener).toHaveBeenCalledTimes(1);
     expect(workerPoolDestroy).toHaveBeenCalledTimes(1);
+    expect(rangeFetcherDestroy).toHaveBeenCalledTimes(1);
     expect(removePrimitive).toHaveBeenCalledTimes(1);
   });
 });
@@ -636,7 +708,7 @@ describe('CopcDataSource runtime API', () => {
   });
 
   it('grows the intensity range as nodes load, and stops once the caller pins it', async () => {
-    mockCopc(undefined);
+    mockCopc(undefined, EXTRA_NODES);
     selectNodesMock.mockReturnValue(['0-0-0-0']);
     workerPoolRun.mockResolvedValueOnce({ ...renderData, maxIntensity: 4095 });
     const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();

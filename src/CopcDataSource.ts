@@ -4,6 +4,7 @@ import type { Copc, Hierarchy } from 'copc';
 import type { ColorMode, CopcDataSourceOptions, LoadedNode, NodeRenderData } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { isAncestorOf } from './copc/node';
+import { RangeFetcher } from './copc/RangeFetcher';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
@@ -63,6 +64,7 @@ export class CopcDataSource {
   /** True while `intensityRange` is unpinned and grows with each node loaded. */
   private _autoIntensityRange: boolean;
   private readonly _nodeCache: NodeCache;
+  private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
   private readonly _ownsPool: boolean;
   private readonly _pendingKeys = new Set<string>();
@@ -102,6 +104,7 @@ export class CopcDataSource {
     };
     this._autoIntensityRange = options.intensityRange === undefined;
     this._nodeCache = new NodeCache(options.maxCacheNodes, (_key, node) => this._destroyLoadedNode(node));
+    this._rangeFetcher = new RangeFetcher(url);
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
   }
@@ -339,11 +342,21 @@ export class CopcDataSource {
   private async _loadNode(key: string): Promise<void> {
     this._pendingKeys.add(key);
     try {
+      // selectNodes() only ever returns keys it found present in this._nodes.
+      const node = this._nodes[key]!;
+
+      // Queued alongside every other node this same _updateLoD() pass just
+      // selected — RangeFetcher merges same-tick requests for adjacent byte
+      // ranges (exactly what sibling nodes are) into one HTTP request (#86).
+      const rangeTask = this._rangeFetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
+      this._cancels.set(key, rangeTask.cancel);
+      const compressedBytes = await rangeTask;
+      if (this._destroyed) return;
+
       const payload: NodeConversionPayload = {
-        url: this._url,
+        compressedBytes,
         copc: this._copc,
-        // selectNodes() only ever returns keys it found present in this._nodes.
-        node: this._nodes[key]!,
+        node,
         proj: this._options.proj,
         projDef: this._options.projDef,
         geoidOffset: this._options.geoidOffset,
@@ -351,7 +364,7 @@ export class CopcDataSource {
         zMin: this._copc.header.min[2],
         zMax: this._copc.header.max[2],
       };
-      const task = this._workerPool.run<NodeRenderData>(payload);
+      const task = this._workerPool.run<NodeRenderData>(payload, [compressedBytes.buffer]);
       this._cancels.set(key, task.cancel);
       const renderData = await task;
       if (this._destroyed) return;
@@ -480,6 +493,7 @@ export class CopcDataSource {
     this._destroyed = true;
     this._removeUpdateListener();
     this._removeMoveEndListener();
+    this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
   }

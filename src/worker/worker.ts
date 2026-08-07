@@ -72,16 +72,14 @@ function getLazPerf(): ReturnType<typeof LazPerf.create> {
 }
 
 /**
- * Passed to `Copc.loadPointDataView()` in place of a bare URL string, so the
- * fetch it makes for this node's point data carries `signal` — without this,
- * copc's own built-in getter has no way to abort a Range Request whose node
- * has fallen out of the camera's selection (#86).
+ * `Copc.loadPointDataView()` needs a `Getter`, but this node's compressed
+ * bytes have already been fetched — merged with any adjacent sibling ranges
+ * by `RangeFetcher` — on the main thread before the task ever reached a
+ * worker (#86), so no network access happens here; this just hands the bytes
+ * back.
  */
-export function createRangeGetter(url: string, signal?: AbortSignal): Getter {
-  return async (begin, end) => {
-    const response = await fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` }, signal });
-    return new Uint8Array(await response.arrayBuffer());
-  };
+function createBufferGetter(bytes: Uint8Array): Getter {
+  return async () => bytes;
 }
 
 const registeredProjs = new Set<string>();
@@ -103,11 +101,11 @@ function tryGetter(view: View, name: string): View.Getter | undefined {
  * the bounding sphere is computed from the node key alone in
  * lod/boundingVolume.ts (#13), so neither is duplicated here.
  */
-export async function convertNode(payload: NodeConversionPayload, signal?: AbortSignal): Promise<NodeRenderData> {
-  const { url, copc, node, proj, projDef, geoidOffset, zFactor, zMin, zMax } = payload;
+export async function convertNode(payload: NodeConversionPayload): Promise<NodeRenderData> {
+  const { compressedBytes, copc, node, proj, projDef, geoidOffset, zFactor, zMin, zMax } = payload;
 
   const lazPerf = await getLazPerf();
-  const view = await Copc.loadPointDataView(createRangeGetter(url, signal), copc, node, { lazPerf });
+  const view = await Copc.loadPointDataView(createBufferGetter(compressedBytes), copc, node, { lazPerf });
   const n = view.pointCount;
 
   if (!Number.isInteger(n) || n < 0 || n > 10_000_000) {
@@ -233,24 +231,19 @@ export async function convertNode(payload: NodeConversionPayload, signal?: Abort
   return { positions, origin: [ox, oy, oz], colors, intensities, classifications, elevations, pointCount: n, maxIntensity };
 }
 
-// At most one task is ever in flight per worker (WorkerPool never dispatches
-// a second task before the first resolves), but keying by id rather than
-// keeping a single module-level controller guards against a stray/late
-// cancel message aborting the wrong task.
-const abortControllers = new Map<number, AbortController>();
-
 self.onmessage = async (e: MessageEvent<WorkerRequest | WorkerCancelRequest>) => {
   const data = e.data;
-  if ('cancel' in data) {
-    abortControllers.get(data.id)?.abort();
-    return;
-  }
+  // Nothing left to abort in here: the node's bytes are already fetched by
+  // the time a task reaches a worker, so a decode in progress just runs to
+  // completion. WorkerPool still frees the caller immediately for a task
+  // that hasn't been dispatched yet (see WorkerPool._cancel's queue branch);
+  // for one already running, CopcDataSource simply leaves the (now unwanted)
+  // result hidden rather than adding it to the scene.
+  if ('cancel' in data) return;
 
   const { id, payload } = data;
-  const controller = new AbortController();
-  abortControllers.set(id, controller);
   try {
-    const result = await convertNode(payload as NodeConversionPayload, controller.signal);
+    const result = await convertNode(payload as NodeConversionPayload);
     postMessage({ id, result } satisfies WorkerResponse, [
       result.positions.buffer,
       result.colors.buffer,
@@ -261,7 +254,5 @@ self.onmessage = async (e: MessageEvent<WorkerRequest | WorkerCancelRequest>) =>
   } catch (err) {
     const error = err as Error;
     postMessage({ id, error: { name: error.name, message: error.message } } satisfies WorkerResponse);
-  } finally {
-    abortControllers.delete(id);
   }
 };

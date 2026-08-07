@@ -11,10 +11,30 @@ export interface CopcHierarchy {
 }
 
 /**
+ * A server that ignores `Range` and returns the whole file as `200 OK`
+ * doesn't fail — it just hands back far more bytes than the offset math
+ * downstream expects, which turns into a confusing parse failure deep inside
+ * `Copc.create()`. Probing for `206 Partial Content` up front turns that into
+ * a clear, actionable error instead (#86).
+ */
+async function assertRangeRequestsSupported(url: string): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) return; // local/fs getter has no such failure mode
+  const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+  if (response.status !== 206) {
+    throw new Error(
+      `Server did not honor an HTTP Range Request (expected 206 Partial Content, got ${response.status}). ` +
+        'COPC streaming requires Range Request support — check that the server or CDN advertises "Accept-Ranges: bytes".',
+    );
+  }
+}
+
+/**
  * Reads a COPC file's header/VLR metadata and its root hierarchy page, and
  * returns the full node map, the max depth, and the root cube (center/half size).
  */
 export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
+  await assertRangeRequestsSupported(url);
+
   let copc: Copc;
   try {
     copc = await Copc.create(url);

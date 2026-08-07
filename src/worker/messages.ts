@@ -7,7 +7,9 @@ import type { Copc, Hierarchy } from 'copc';
  * that up from the hierarchy's node map before dispatching.
  */
 export interface NodeConversionPayload {
-  url: string;
+  /** This node's compressed point data, already fetched (and possibly merged
+   *  with adjacent sibling ranges) by `RangeFetcher` on the main thread. */
+  compressedBytes: Uint8Array;
   copc: Copc;
   node: Hierarchy.Node;
   /** proj4-registered CRS name; 'EPSG:4326' skips the proj4 transform entirely. */
