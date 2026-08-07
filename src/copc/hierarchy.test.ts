@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const create = vi.fn();
 const loadHierarchyPage = vi.fn();
@@ -11,6 +11,18 @@ vi.mock('copc', () => ({
 }));
 
 const { loadCopcHierarchy } = await import('./hierarchy');
+
+// Every test exercises the Range-support probe first; default it to a
+// well-behaved 206 response so tests unrelated to that probe don't have to
+// know it exists, and override it in the ones that do.
+const fetchMock = vi.fn();
+beforeEach(() => {
+  create.mockClear();
+  loadHierarchyPage.mockClear();
+  fetchMock.mockReset().mockResolvedValue({ status: 206 });
+  vi.stubGlobal('fetch', fetchMock);
+});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('loadCopcHierarchy', () => {
   it('extracts root center/half size from the cube and computes max depth', async () => {
@@ -50,5 +62,40 @@ describe('loadCopcHierarchy', () => {
     create.mockRejectedValueOnce(new Error('network error'));
 
     await expect(loadCopcHierarchy('https://example.com/sample.copc.laz')).rejects.toThrow('network error');
+  });
+
+  it('rejects with a clear error when the server ignores the Range header', async () => {
+    fetchMock.mockResolvedValueOnce({ status: 200 }); // whole file, not a 206 partial response
+
+    await expect(loadCopcHierarchy('https://example.com/sample.copc.laz')).rejects.toThrow(
+      /Range Request|206/,
+    );
+    expect(create).not.toHaveBeenCalled(); // fails fast, before ever trying to parse a header
+  });
+
+  it('probes with a 1-byte Range request before reading the header', async () => {
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: { '0-0-0-0': { pointCount: 1 } }, pages: {} });
+
+    await loadCopcHierarchy('https://example.com/sample.copc.laz');
+
+    expect(fetchMock).toHaveBeenCalledWith('https://example.com/sample.copc.laz', {
+      headers: { Range: 'bytes=0-0' },
+    });
+  });
+
+  it('skips the Range probe for a non-HTTP getter (e.g. a local file path)', async () => {
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: { '0-0-0-0': { pointCount: 1 } }, pages: {} });
+
+    await loadCopcHierarchy('/local/sample.copc.laz');
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
