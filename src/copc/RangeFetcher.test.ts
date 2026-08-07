@@ -70,6 +70,39 @@ describe('RangeFetcher', () => {
     });
   });
 
+  it('splits a group once merging would exceed the configured max group size', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResponse(makeSourceBytes(10)))
+      .mockResolvedValueOnce(fakeResponse(makeSourceBytes(10)));
+    vi.stubGlobal('fetch', fetchMock);
+    const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, 10); // 10-byte cap
+
+    // adjacent (gap 0, would normally merge) but their combined span (15) exceeds the 10-byte cap
+    await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(10, 15)]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith('https://example.com/file.copc.laz', {
+      headers: { Range: 'bytes=0-9' },
+      signal: expect.any(AbortSignal),
+    });
+    expect(fetchMock).toHaveBeenCalledWith('https://example.com/file.copc.laz', {
+      headers: { Range: 'bytes=10-14' },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('still fetches a single request that alone exceeds the max group size', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(20)));
+    vi.stubGlobal('fetch', fetchMock);
+    const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, 10); // 10-byte cap
+
+    const bytes = await fetcher.fetch(0, 20); // a lone 20-byte request, already over the cap
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(bytes).toBeInstanceOf(Uint8Array);
+  });
+
   it('merges requests queued out of offset order', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(20)));
     vi.stubGlobal('fetch', fetchMock);

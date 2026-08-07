@@ -15,6 +15,14 @@ function abortError(message: string): Error {
   return err;
 }
 
+// A group's members all stay unresolved until its one shared fetch finishes,
+// so an unbounded group trades away progressive rendering (many small nodes
+// popping in as they each finish) for fewer, larger requests that all land at
+// once — worse the bigger the group gets. 512 KiB caps how long the slowest
+// case can block a batch of sibling nodes, while still merging the common
+// case of a handful of contiguous nodes into one request (#86).
+const DEFAULT_MAX_GROUP_BYTES = 512 * 1024;
+
 /**
  * Batches concurrent byte-range requests for one COPC file into fewer HTTP
  * Range Requests, merging ones within `gapBytes` of each other into a single
@@ -36,6 +44,7 @@ export class RangeFetcher {
   constructor(
     private readonly url: string,
     private readonly gapBytes = 0,
+    private readonly maxGroupBytes = DEFAULT_MAX_GROUP_BYTES,
   ) {}
 
   /** Resolves with the raw bytes for `[begin, end)`. */
@@ -88,14 +97,20 @@ export class RangeFetcher {
     for (const group of this._group(live)) void this._fetchGroup(group);
   }
 
-  /** Sorts by offset and merges requests within `gapBytes` of their neighbor. */
+  /**
+   * Sorts by offset and merges requests within `gapBytes` of their neighbor,
+   * unless doing so would grow the group's span past `maxGroupBytes` — a
+   * request that alone exceeds the cap still gets its own group, since
+   * there's no smaller fetch that would satisfy it.
+   */
   private _group(requests: RangeRequest[]): RangeRequest[][] {
     const sorted = [...requests].sort((a, b) => a.begin - b.begin);
     const groups: RangeRequest[][] = [];
     for (const req of sorted) {
       const group = groups[groups.length - 1];
       const last = group?.[group.length - 1];
-      if (last && req.begin - last.end <= this.gapBytes) {
+      const spanIfAdded = group ? req.end - group[0]!.begin : 0;
+      if (last && req.begin - last.end <= this.gapBytes && spanIfAdded <= this.maxGroupBytes) {
         group.push(req);
       } else {
         groups.push([req]);
