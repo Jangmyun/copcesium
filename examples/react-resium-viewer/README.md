@@ -1,6 +1,6 @@
 # copcesium example: react-resium-viewer
 
-A styled sidebar COPC viewer built on [resium](https://resium.reearth.io/)
+A tabbed, icon-rail COPC viewer built on [resium](https://resium.reearth.io/)
 (the React bindings for CesiumJS) and `copcesium`. This is a standalone
 project — it installs `copcesium` from the npm registry, not from this
 repo's `src/`.
@@ -15,11 +15,16 @@ hatch shown in [`examples/react-viewer`](../react-viewer) (which has no
 resium `<Viewer>` context to read from). See `src/ViewerContent.tsx` and
 `src/useCopcDataSource.ts` for the full pattern.
 
-The sidebar's "sample data" dropdown switches between a few freely
-streamable public COPC files (see `src/datasets.ts`), or paste any COPC URL
-into the text field and click Load. The Info section polls
-`CopcDataSource`'s read-only stats (`maxDepth`, `nodeCount`, `cacheSize`)
-into React state to demonstrate driving a live panel off the data source.
+The panel's Data tab switches between a few freely streamable public COPC
+files (see `src/datasets.ts`), or paste any COPC URL into the text field and
+click Load. Appearance/Filter/Points drive `colorMode`, `classificationFilter`,
+and `pixelSize` live; Info polls `CopcDataSource`'s read-only stats
+(`maxDepth`, `nodeCount`, `cacheSize`) into React state. The Global tab's
+terrain/imagery pickers and the footer's camera/FPS readout are plain Cesium
+viewer chrome with no `copcesium` dependency — see `src/useViewerChrome.ts`.
+The rail/panel/footer shell itself is ported from an earlier prototype UI of
+this project; only the design moved, wired here to what this library's
+current API actually exposes.
 
 ## Run
 

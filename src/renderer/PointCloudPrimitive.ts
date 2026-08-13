@@ -16,6 +16,14 @@ export interface PointStyle {
   intensityRange: Cesium.Cartesian2;
   /** The 256-bit classification allow-list, as the 2 ivec4s `buildClassMask` packs. */
   classMask: Cesium.Cartesian4[];
+  /**
+   * Meters to shift every point along its node's local "up" (the ECEF
+   * direction from Earth's center through the node origin), for correcting a
+   * vertical-datum/geoid mismatch between the point cloud and the globe.
+   * Applied to the model matrix, not the shader — points move, the geometry
+   * doesn't need touching.
+   */
+  heightOffset: number;
 }
 
 // Cesium's low-level GPU API (Buffer/VertexArray/ShaderProgram/DrawCommand) has no
@@ -48,6 +56,8 @@ const CesiumAny = Cesium as unknown as CesiumInternal;
 export class PointCloudPrimitive {
   private _positions: Float32Array | null;
   private _origin: [number, number, number];
+  private _up: Cesium.Cartesian3;
+  private _appliedHeightOffset: number;
   private _colors: Uint8Array | null;
   private _intensities: Uint16Array | null;
   private _classifications: Uint8Array | null;
@@ -64,6 +74,11 @@ export class PointCloudPrimitive {
   constructor(renderData: NodeRenderData, boundingSphere: Cesium.BoundingSphere, style: PointStyle) {
     this._positions = renderData.positions;
     this._origin = renderData.origin;
+    this._up = Cesium.Cartesian3.normalize(
+      new Cesium.Cartesian3(renderData.origin[0], renderData.origin[1], renderData.origin[2]),
+      new Cesium.Cartesian3(),
+    );
+    this._appliedHeightOffset = 0;
     this._colors = renderData.colors;
     this._intensities = renderData.intensities;
     this._classifications = renderData.classifications;
@@ -91,8 +106,20 @@ export class PointCloudPrimitive {
         this._destroyed = true;
         return;
       }
+    } else if (this._style.heightOffset !== this._appliedHeightOffset) {
+      // Cheap enough to compare every frame; a Matrix4 rebuild only happens
+      // on the frames where heightOffset actually changed.
+      (this._cmd as { modelMatrix: Cesium.Matrix4 }).modelMatrix = this._modelMatrix(this._style.heightOffset);
+      this._appliedHeightOffset = this._style.heightOffset;
     }
     frameState.commandList.push(this._cmd);
+  }
+
+  /** Node origin shifted `heightOffset` meters along the node's local "up". */
+  private _modelMatrix(heightOffset: number): Cesium.Matrix4 {
+    const origin = new Cesium.Cartesian3(this._origin[0], this._origin[1], this._origin[2]);
+    const shift = Cesium.Cartesian3.multiplyByScalar(this._up, heightOffset, new Cesium.Cartesian3());
+    return Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.add(origin, shift, origin));
   }
 
   private _initGpu(context: unknown): void {
@@ -184,11 +211,10 @@ export class PointCloudPrimitive {
         boundingVolume: this._boundingSphere,
         count: this._pointCount,
         pass: CesiumAny.Pass.OPAQUE,
-        // Carries the node origin the worker subtracted off; the vertex shader
-        // reconstructs absolute ECEF from this plus the node-relative offsets.
-        modelMatrix: Cesium.Matrix4.fromTranslation(
-          new Cesium.Cartesian3(this._origin[0], this._origin[1], this._origin[2]),
-        ),
+        // Carries the node origin (shifted by the live heightOffset) the
+        // worker subtracted off; the vertex shader reconstructs absolute
+        // ECEF from this plus the node-relative offsets.
+        modelMatrix: this._modelMatrix(this._style.heightOffset),
         uniformMap: {
           u_pixelSize: () => style.pixelSize,
           u_colorMode: () => style.colorMode,
@@ -196,6 +222,7 @@ export class PointCloudPrimitive {
           u_classMask: () => style.classMask,
         },
       });
+      this._appliedHeightOffset = this._style.heightOffset;
     } catch (err) {
       try {
         if (va) va.destroy();

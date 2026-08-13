@@ -101,6 +101,7 @@ export class CopcDataSource {
       colorMode: COLOR_MODE[options.colorMode],
       intensityRange: new Cesium.Cartesian2(options.intensityRange?.[0] ?? 0, options.intensityRange?.[1] ?? 1),
       classMask: buildClassMask(options.classificationFilter),
+      heightOffset: 0,
     };
     this._autoIntensityRange = options.intensityRange === undefined;
     this._nodeCache = new NodeCache(options.maxCacheNodes, (_key, node) => this._destroyLoadedNode(node));
@@ -463,6 +464,20 @@ export class CopcDataSource {
     this._options.intensityRange = value;
     this._style.intensityRange.x = value?.[0] ?? 0;
     this._style.intensityRange.y = value?.[1] ?? 1;
+    this._viewer.scene.requestRender();
+  }
+
+  /**
+   * Vertical offset in meters applied to every loaded point, for manually
+   * correcting a geoid/vertical-datum mismatch between the point cloud and
+   * the globe surface. Shared live by every loaded primitive (no reload
+   * needed) — moves the model matrix, not the geometry.
+   */
+  get heightOffset(): number {
+    return this._style.heightOffset;
+  }
+  set heightOffset(value: number) {
+    this._style.heightOffset = value;
     this._viewer.scene.requestRender();
   }
 

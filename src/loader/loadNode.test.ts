@@ -23,6 +23,7 @@ function makeStyle(pixelSize = 2): PointStyle {
     colorMode: COLOR_MODE.rgb,
     intensityRange: new Cesium.Cartesian2(0, 1),
     classMask: buildClassMask(undefined),
+    heightOffset: 0,
   };
 }
 
@@ -47,9 +48,11 @@ describe('createNodePrimitive', () => {
     // through to whatever CopcDataSource's setters last wrote.
     style.pixelSize = 5;
     style.colorMode = COLOR_MODE.classification;
+    style.heightOffset = -3.2;
     expect(a.style).toBe(style);
     expect(b.style).toBe(style);
     expect(a.style.pixelSize).toBe(5);
     expect(b.style.colorMode).toBe(COLOR_MODE.classification);
+    expect(b.style.heightOffset).toBe(-3.2);
   });
 });

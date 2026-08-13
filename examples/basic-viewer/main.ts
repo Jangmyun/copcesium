@@ -34,26 +34,12 @@ const SAMPLE_DATASETS: SampleDataset[] = [
     url: 'https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz',
     options: {
       proj: 'EPSG:2992', // EPSG code of the point cloud's source CRS
-      projDef: // proj4 definition string for that CRS (only needed if proj4 doesn't already know it)
+      // proj4 definition string for that CRS (only needed if proj4 doesn't already know it)
+      projDef:
         '+proj=lcc +lat_1=43 +lat_2=45.5 +lat_0=41.75 +lon_0=-120.5' +
         ' +x_0=399999.9999999999 +y_0=0 +datum=NAD83 +units=ft +no_defs',
       geoidOffset: -20, // meters, geoid (this file's vertical datum) minus WGS84 ellipsoid, at this site
     },
-  },
-  {
-    label: 'USGS Breakline Eval — Adams/Juneau County, Wisconsin, USA (~521 KB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/usgs-breakline-eval.copc.laz',
-    options: {},
-  },
-  {
-    label: 'CN Tower (Height Above Ground) — Toronto, Canada (~7.3 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz',
-    options: {},
-  },
-  {
-    label: 'ICESat Test — spaceborne lidar sample (~7.5 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/icesat-test.copc.laz',
-    options: {},
   },
   {
     label: 'Red Rocks (Large) — Colorado, USA (~13.2 MB)',
@@ -61,43 +47,8 @@ const SAMPLE_DATASETS: SampleDataset[] = [
     options: {},
   },
   {
-    label: 'Red Rocks (Medium) — Colorado, USA (~16.6 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.medium.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Hobu Office (Random Forest Model) (~19.1 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/hobu-office-random-forest-ma-model.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Red Rocks (Small) — Colorado, USA (~20.8 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.small.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Autzen (No Ground, H3-indexed) — Eugene, Oregon, USA (~30.8 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen-classified-no-ground.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Autzen (Large) — Eugene, Oregon, USA (~70.0 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.large.copc.laz',
-    options: {},
-  },
-  {
     label: 'Kate (~71.9 MB)',
     url: 'https://s3.amazonaws.com/hobu-lidar/kate.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Autzen (Medium) — Eugene, Oregon, USA (~80.9 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.medium.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Autzen (Small) — Eugene, Oregon, USA (~89.5 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.small.copc.laz',
     options: {},
   },
   {
@@ -111,18 +62,8 @@ const SAMPLE_DATASETS: SampleDataset[] = [
     options: {},
   },
   {
-    label: 'Clark County — Wisconsin, USA (~881.5 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/WI_Clark_TL_2018.copc.laz',
-    options: {},
-  },
-  {
     label: 'Millsite Reservoir — Utah, USA (~1.4 GB)',
     url: 'https://s3.amazonaws.com/hobu-lidar/millsite.copc.laz',
-    options: {},
-  },
-  {
-    label: 'DALES 3D (Training Split) (~1.8 GB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/dales3d-train.copc.laz',
     options: {},
   },
   {
@@ -133,16 +74,6 @@ const SAMPLE_DATASETS: SampleDataset[] = [
   {
     label: 'Iowa 3DEP (2019–2020) — Iowa, USA (~3.6 GB)',
     url: 'https://s3.amazonaws.com/hobu-lidar/iowa-50m-3dep-2019-2020.copc.laz',
-    options: {},
-  },
-  {
-    label: 'New York City — USA, citywide (~26.5 GB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/nyc.copc.laz',
-    options: {},
-  },
-  {
-    label: 'Montreal 2015 — Quebec, Canada (~51.9 GB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/montreal-2015.copc.laz',
     options: {},
   },
 ];

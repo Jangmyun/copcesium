@@ -10,7 +10,8 @@ export interface SampleDataset {
 // are the full file size (measured via HTTP HEAD), not what gets downloaded —
 // copcesium only fetches the octree nodes needed for the current view. Autzen
 // stays first as the project's default demo; the rest are sorted by size,
-// ascending. Mirrors examples/basic-viewer/main.ts's SAMPLE_DATASETS.
+// ascending. A curated subset of examples/basic-viewer/main.ts's fuller
+// SAMPLE_DATASETS list.
 export const SAMPLE_DATASETS: SampleDataset[] = [
   {
     // https://github.com/PDAL/data/tree/main/autzen — Oregon Lambert (feet),
@@ -27,23 +28,38 @@ export const SAMPLE_DATASETS: SampleDataset[] = [
     },
   },
   {
-    label: 'USGS Breakline Eval — Adams/Juneau County, Wisconsin, USA (~521 KB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/usgs-breakline-eval.copc.laz',
-    options: {},
-  },
-  {
-    label: 'CN Tower (Height Above Ground) — Toronto, Canada (~7.3 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz',
-    options: {},
-  },
-  {
     label: 'Red Rocks (Large) — Colorado, USA (~13.2 MB)',
     url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.large.copc.laz',
     options: {},
   },
   {
-    label: 'Hobu Office (Random Forest Model) (~19.1 MB)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/hobu-office-random-forest-ma-model.copc.laz',
+    label: 'Kate (~71.9 MB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/kate.copc.laz',
+    options: {},
+  },
+  {
+    label: 'Niagara Region — Ontario, Canada (~140.3 MB)',
+    url: 'https://canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com/pointclouds_nuagespoints/NRCAN/Hamilton_Niagara_2021_2/ON_Niagara_20210525_NAD83CSRS_UTM17N_1km_E656_N4771_CLASS.copc.laz',
+    options: {},
+  },
+  {
+    label: 'Trestle Bridge — Fort Leonard Wood, Missouri, USA (~324.8 MB)',
+    url: 'https://s3.amazonaws.com/grid-public-ept/20210421-FLW-Trestle-low-attitude.copc.laz',
+    options: {},
+  },
+  {
+    label: 'Millsite Reservoir — Utah, USA (~1.4 GB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/millsite.copc.laz',
+    options: {},
+  },
+  {
+    label: 'SoFi Stadium — Inglewood, California, USA (~2.0 GB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/sofi.copc.laz',
+    options: {},
+  },
+  {
+    label: 'Iowa 3DEP (2019–2020) — Iowa, USA (~3.6 GB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/iowa-50m-3dep-2019-2020.copc.laz',
     options: {},
   },
 ];

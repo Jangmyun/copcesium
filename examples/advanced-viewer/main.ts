@@ -66,65 +66,15 @@ const PRESETS: Record<string, PresetConfig> = {
       geoidOffset: -20,
     },
   },
-  usgsBreaklineEval: {
-    label: 'USGS Breakline Eval',
-    url: 'https://s3.amazonaws.com/hobu-lidar/usgs-breakline-eval.copc.laz',
-    size: '~521 KB',
-  },
-  cnTowerHag: {
-    label: 'CN Tower (Height Above Ground)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz',
-    size: '~7.3 MB',
-  },
-  icesatTest: {
-    label: 'ICESat Test',
-    url: 'https://s3.amazonaws.com/hobu-lidar/icesat-test.copc.laz',
-    size: '~7.5 MB',
-  },
   redrocksLarge: {
     label: 'Red Rocks (Large)',
     url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.large.copc.laz',
     size: '~13.2 MB',
   },
-  redrocksMedium: {
-    label: 'Red Rocks (Medium)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.medium.copc.laz',
-    size: '~16.6 MB',
-  },
-  hobuOffice: {
-    label: 'Hobu Office (Random Forest Model)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/hobu-office-random-forest-ma-model.copc.laz',
-    size: '~19.1 MB',
-  },
-  redrocksSmall: {
-    label: 'Red Rocks (Small)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.small.copc.laz',
-    size: '~20.8 MB',
-  },
-  autzenNoGround: {
-    label: 'Autzen (No Ground, H3-indexed)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen-classified-no-ground.copc.laz',
-    size: '~30.8 MB',
-  },
-  autzenEcefLarge: {
-    label: 'Autzen (Large)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.large.copc.laz',
-    size: '~70.0 MB',
-  },
   kate: {
     label: 'Kate',
     url: 'https://s3.amazonaws.com/hobu-lidar/kate.copc.laz',
     size: '~71.9 MB',
-  },
-  autzenEcefMedium: {
-    label: 'Autzen (Medium)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.medium.copc.laz',
-    size: '~80.9 MB',
-  },
-  autzenEcefSmall: {
-    label: 'Autzen (Small)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/autzen.small.copc.laz',
-    size: '~89.5 MB',
   },
   niagara: {
     label: 'Niagara Region',
@@ -136,20 +86,10 @@ const PRESETS: Record<string, PresetConfig> = {
     url: 'https://s3.amazonaws.com/grid-public-ept/20210421-FLW-Trestle-low-attitude.copc.laz',
     size: '~324.8 MB',
   },
-  wiClark: {
-    label: 'Clark County',
-    url: 'https://s3.amazonaws.com/hobu-lidar/WI_Clark_TL_2018.copc.laz',
-    size: '~881.5 MB',
-  },
   millsite: {
     label: 'Millsite Reservoir',
     url: 'https://s3.amazonaws.com/hobu-lidar/millsite.copc.laz',
     size: '~1.4 GB',
-  },
-  dales3d: {
-    label: 'DALES 3D (Training Split)',
-    url: 'https://s3.amazonaws.com/hobu-lidar/dales3d-train.copc.laz',
-    size: '~1.8 GB',
   },
   sofi: {
     label: 'SoFi Stadium',
@@ -160,16 +100,6 @@ const PRESETS: Record<string, PresetConfig> = {
     label: 'Iowa 3DEP (2019–2020)',
     url: 'https://s3.amazonaws.com/hobu-lidar/iowa-50m-3dep-2019-2020.copc.laz',
     size: '~3.6 GB',
-  },
-  nyc: {
-    label: 'New York City',
-    url: 'https://s3.amazonaws.com/hobu-lidar/nyc.copc.laz',
-    size: '~26.5 GB',
-  },
-  montreal: {
-    label: 'Montreal 2015',
-    url: 'https://s3.amazonaws.com/hobu-lidar/montreal-2015.copc.laz',
-    size: '~51.9 GB',
   },
 };
 
@@ -239,8 +169,13 @@ const ftFps = document.getElementById('ftFps')!;
 
 // ── Panel tabs ───────────────────────────────────────────────
 const PANEL_TITLES: Record<string, string> = {
-  data: 'Data', global: 'Global', appearance: 'Appearance',
-  filter: 'Filter', points: 'Points', info: 'Info', help: 'Help',
+  data: 'Data',
+  global: 'Global',
+  appearance: 'Appearance',
+  filter: 'Filter',
+  points: 'Points',
+  info: 'Info',
+  help: 'Help',
 };
 
 function switchTab(tab: string): void {
@@ -255,13 +190,16 @@ function switchTab(tab: string): void {
   panelTitle.textContent = PANEL_TITLES[tab] ?? tab;
   if (panel.classList.contains('collapsed')) toggleCollapse(false);
 }
-document.querySelectorAll('.rail-btn[data-tab]').forEach((btn) =>
-  btn.addEventListener('click', () => switchTab((btn as HTMLElement).dataset.tab ?? '')),
-);
+document
+  .querySelectorAll('.rail-btn[data-tab]')
+  .forEach((btn) =>
+    btn.addEventListener('click', () => switchTab((btn as HTMLElement).dataset.tab ?? '')),
+  );
 
 // ── Panel collapse ───────────────────────────────────────────
 function toggleCollapse(forceCollapsed?: boolean): void {
-  const collapsed = forceCollapsed !== undefined ? forceCollapsed : !panel.classList.contains('collapsed');
+  const collapsed =
+    forceCollapsed !== undefined ? forceCollapsed : !panel.classList.contains('collapsed');
   panel.classList.toggle('collapsed', collapsed);
   collapseBtn.classList.toggle('collapsed', collapsed);
 }
@@ -302,9 +240,10 @@ let _terrainGen = 0;
 terrainSelect.addEventListener('change', async () => {
   const gen = ++_terrainGen;
   try {
-    const provider = terrainSelect.value === 'world'
-      ? await Cesium.createWorldTerrainAsync()
-      : new Cesium.EllipsoidTerrainProvider();
+    const provider =
+      terrainSelect.value === 'world'
+        ? await Cesium.createWorldTerrainAsync()
+        : new Cesium.EllipsoidTerrainProvider();
     if (gen !== _terrainGen) return;
     viewer.terrainProvider = provider;
     viewer.scene.requestRender();
@@ -319,11 +258,12 @@ imagerySelect.addEventListener('change', async () => {
   const gen = ++_imageryGen;
   try {
     const v = imagerySelect.value;
-    const provider = v === 'satellite'
-      ? await Cesium.IonImageryProvider.fromAssetId(2)
-      : v === 'osm'
-        ? new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
-        : null;
+    const provider =
+      v === 'satellite'
+        ? await Cesium.IonImageryProvider.fromAssetId(2)
+        : v === 'osm'
+          ? new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
+          : null;
     if (gen !== _imageryGen) return;
     viewer.imageryLayers.removeAll();
     if (provider) viewer.imageryLayers.addImageryProvider(provider);
@@ -377,9 +317,10 @@ function updateColorLegend(mode: ColorMode): void {
     return;
   }
   if (mode === 'classification') {
-    colorLegend.innerHTML = `<div style="display:flex;flex-direction:column;gap:7px">${CLASSES
-      .map(([, name, color]) => `<div class="cls-stop"><span class="cls-stop-swatch" style="background:${color}"></span><span class="cls-stop-label">${name}</span></div>`)
-      .join('')}</div>`;
+    colorLegend.innerHTML = `<div style="display:flex;flex-direction:column;gap:7px">${CLASSES.map(
+      ([, name, color]) =>
+        `<div class="cls-stop"><span class="cls-stop-swatch" style="background:${color}"></span><span class="cls-stop-label">${name}</span></div>`,
+    ).join('')}</div>`;
     return;
   }
   colorLegend.innerHTML = `<div style="font-size:11.5px;color:var(--dim)">Uses the file's own RGB, falling back to the classification palette, then flat gray.</div>`;
@@ -404,11 +345,16 @@ function updateClassFilter(): void {
   const allOn = Object.values(_classOn).every((v) => v);
   currentDs.classificationFilter = allOn
     ? undefined
-    : Object.entries(_classOn).filter(([, on]) => on).map(([code]) => Number(code));
+    : Object.entries(_classOn)
+        .filter(([, on]) => on)
+        .map(([code]) => Number(code));
 }
 
 function syncAllCheck(): void {
-  filterAllCheck.classList.toggle('on', Object.values(_classOn).every((v) => v));
+  filterAllCheck.classList.toggle(
+    'on',
+    Object.values(_classOn).every((v) => v),
+  );
 }
 
 function rebuildClassList(): void {
@@ -477,7 +423,8 @@ function setActivePreset(key: string | null): void {
 }
 
 function setChipState(state: 'idle' | 'loading' | 'active', label?: string): void {
-  chipDot.className = 'chip-dot' + (state === 'active' ? ' active' : state === 'loading' ? ' loading' : '');
+  chipDot.className =
+    'chip-dot' + (state === 'active' ? ' active' : state === 'loading' ? ' loading' : '');
   chipName.textContent = label || 'No data loaded';
   chipPts.style.display = 'none';
 }
@@ -485,7 +432,10 @@ function setChipState(state: 'idle' | 'loading' | 'active', label?: string): voi
 function updateInfoPanel(name: string, rows: [string, string][]): void {
   infoName.textContent = name || '—';
   infoMeta.innerHTML = rows
-    .map(([k, v]) => `<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`)
+    .map(
+      ([k, v]) =>
+        `<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`,
+    )
     .join('');
 }
 
@@ -543,7 +493,11 @@ function stopStatsPolling(): void {
 }
 
 // ── Load ─────────────────────────────────────────────────────
-async function loadCopc(url: string, options: CopcDataSourceOptions, label?: string): Promise<void> {
+async function loadCopc(
+  url: string,
+  options: CopcDataSourceOptions,
+  label?: string,
+): Promise<void> {
   if (!url.trim()) return;
 
   if (currentDs) {
@@ -552,7 +506,12 @@ async function loadCopc(url: string, options: CopcDataSourceOptions, label?: str
     currentDs = null;
   }
 
-  const resolvedLabel = label ?? url.split('/').pop()!.replace(/\.copc\.laz$/, '');
+  const resolvedLabel =
+    label ??
+    url
+      .split('/')
+      .pop()!
+      .replace(/\.copc\.laz$/, '');
   errorBanner.classList.remove('show');
   errorBanner.textContent = '';
   setChipState('loading', resolvedLabel);
@@ -561,8 +520,8 @@ async function loadCopc(url: string, options: CopcDataSourceOptions, label?: str
   reloadBtn.disabled = true;
 
   try {
-    const activeMode = ((colorModeGrid.querySelector('.color-btn.active') as HTMLElement | null)?.dataset.mode ??
-      'rgb') as ColorMode;
+    const activeMode = ((colorModeGrid.querySelector('.color-btn.active') as HTMLElement | null)
+      ?.dataset.mode ?? 'rgb') as ColorMode;
     const ds = await CopcDataSource.load(url, viewer, {
       ...options,
       pixelSize: parseFloat(pixelSizeSlider.value),
@@ -570,7 +529,9 @@ async function loadCopc(url: string, options: CopcDataSourceOptions, label?: str
       colorMode: activeMode,
       classificationFilter: Object.values(_classOn).every((v) => v)
         ? undefined
-        : Object.entries(_classOn).filter(([, on]) => on).map(([code]) => Number(code)),
+        : Object.entries(_classOn)
+            .filter(([, on]) => on)
+            .map(([code]) => Number(code)),
     });
 
     currentDs = ds;
@@ -607,7 +568,14 @@ async function loadCopc(url: string, options: CopcDataSourceOptions, label?: str
 loadBtn.addEventListener('click', () => {
   setActivePreset(null);
   const url = urlInput.value.trim();
-  void loadCopc(url, {}, url.split('/').pop()!.replace(/\.copc\.laz$/, ''));
+  void loadCopc(
+    url,
+    {},
+    url
+      .split('/')
+      .pop()!
+      .replace(/\.copc\.laz$/, ''),
+  );
 });
 urlInput.addEventListener('keydown', (e: KeyboardEvent) => {
   if (e.key === 'Enter') loadBtn.click();

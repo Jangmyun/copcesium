@@ -1,3 +1,10 @@
+/* Ported from the original copcesium prototype UI (icon rail + tabbed panel,
+   dark/light theme, footer status bar) — see the project's `copc` prototype
+   repo. Only the visual shell moved; every control here is wired to a
+   feature `copcesium`'s public API actually exposes (pixelSize, colorMode,
+   classificationFilter, sseThreshold, maxDepth/nodeCount/cacheSize, zoomTo).
+   Terrain/imagery selection is plain Cesium, unrelated to copcesium. */
+
 * {
   margin: 0;
   padding: 0;
@@ -12,141 +19,767 @@ body,
   overflow: hidden;
 }
 
-.sidebar {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  bottom: 16px;
-  z-index: 1;
-  width: 300px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  border-radius: 12px;
-  background: rgba(17, 21, 28, 0.88);
-  backdrop-filter: blur(6px);
-  color: #e6e9ef;
-  font: 13px/1.4 system-ui, sans-serif;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+body {
+  background: #0b0e14;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
 }
 
-.sidebarHeader {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+/* ── Theme tokens ─────────────────────────────────────────── */
+.shell {
+  --bg: #0b0e14;
+  --panel: #11151d;
+  --panel2: #161b25;
+  --panel3: #1c222e;
+  --border: rgba(255, 255, 255, 0.08);
+  --border2: rgba(255, 255, 255, 0.14);
+  --text: #e7ebf2;
+  --dim: #96a0b0;
+  --faint: #5b6675;
+  --accent: oklch(0.76 0.13 232);
+  --accent2: oklch(0.62 0.14 236);
+  --accent-soft: oklch(0.76 0.13 232 / 0.14);
+  --rail: #0a0d13;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --rail-w: 52px;
+  --panel-w: 320px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
 }
 
-.sidebarHeader h1 {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.shell[data-theme='light'] {
+  --bg: #e9edf2;
+  --panel: #ffffff;
+  --panel2: #f5f7fa;
+  --panel3: #eef1f5;
+  --border: rgba(15, 23, 36, 0.1);
+  --border2: rgba(15, 23, 36, 0.16);
+  --text: #161c26;
+  --dim: #5a6472;
+  --faint: #8b96a5;
+  --accent: oklch(0.55 0.14 240);
+  --accent2: oklch(0.5 0.15 242);
+  --accent-soft: oklch(0.55 0.14 240 / 0.12);
+  --rail: #f5f7fa;
+  --shadow: 0 8px 30px rgba(20, 30, 50, 0.14);
 }
 
-.sidebarHeader span {
-  font-size: 11px;
-  color: #8a93a6;
+/* ── Scrollbar ────────────────────────────────────────────── */
+.shell ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
 }
-
-.panelSection {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.panelSection h2 {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #8a93a6;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.fieldValue {
-  float: right;
-  color: #8a93a6;
-}
-
-select,
-input[type='text'],
-.urlInput {
-  width: 100%;
-  padding: 5px 6px;
+.shell ::-webkit-scrollbar-thumb {
+  background: var(--border2);
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.06);
-  color: inherit;
-  font: inherit;
+}
+.shell ::-webkit-scrollbar-track {
+  background: transparent;
 }
 
-input[type='range'] {
+/* ── Inputs ───────────────────────────────────────────────── */
+.shell input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  accent-color: #4da3ff;
-}
-
-.buttonRow {
-  display: flex;
-  gap: 8px;
-}
-
-.buttonRow button {
-  flex: 1;
-  padding: 6px 8px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: #2a3543;
-  color: inherit;
-  font: inherit;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border2);
+  outline: none;
   cursor: pointer;
 }
-
-.buttonRow button:hover:not(:disabled) {
-  background: #35455a;
+.shell input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 13px;
+  width: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--border2);
 }
 
-.buttonRow button:disabled {
+.shell select {
+  font-family: inherit;
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 30px 9px 11px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  outline: none;
+}
+.shell select:focus {
+  border-color: var(--accent);
+}
+
+.shell input[type='number'] {
+  width: 100%;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  border-radius: 7px;
+  padding: 8px 10px;
+  outline: none;
+}
+.shell input[type='number']:focus {
+  border-color: var(--accent);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ── Icon rail ────────────────────────────────────────────── */
+.rail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--rail-w);
+  height: 100vh;
+  background: var(--rail);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0;
+  gap: 2px;
+  z-index: 20;
+}
+.railLogo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 10px;
+  box-shadow: 0 3px 10px var(--accent-soft);
+  flex: none;
+}
+.railBtn {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+  background: transparent;
+  color: var(--dim);
+  flex: none;
+}
+.railBtn:hover {
+  background: var(--panel3);
+  color: var(--text);
+}
+.railBtn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.railSpacer {
+  flex: 1;
+}
+.railCollapse {
+  width: 38px;
+  height: 38px;
+  border: none;
+  background: var(--panel3);
+  color: var(--dim);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: color 0.12s;
+  flex: none;
+}
+.railCollapse:hover {
+  color: var(--text);
+}
+.railCollapse svg {
+  transition: transform 0.22s ease;
+}
+.railCollapse.collapsed svg {
+  transform: rotate(180deg);
+}
+
+/* ── Left panel ───────────────────────────────────────────── */
+.panel {
+  position: fixed;
+  top: 0;
+  left: var(--rail-w);
+  width: var(--panel-w);
+  height: 100vh;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 10;
+  transition:
+    width 0.22s ease,
+    opacity 0.22s ease;
+}
+.panel.collapsed {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.panelHeader {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+}
+.panelBrand {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 15px;
+  letter-spacing: -0.3px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.panelVersion {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.panelBody {
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
+  width: var(--panel-w);
+}
+.panelTitle {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 2px 16px;
+  letter-spacing: -0.2px;
+}
+
+/* ── Section utilities ────────────────────────────────────── */
+.secLabel {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.secLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 20px 4px 8px;
+}
+.secLabelRow:first-child {
+  margin-top: 0;
+}
+.secLabelRow .label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.secLabelRow .count {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 18px 0;
+}
+
+/* ── Slider row ───────────────────────────────────────────── */
+.sliderRow {
+  margin-bottom: 16px;
+}
+.sliderHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.sliderHeader .label {
+  font-size: 12.5px;
+}
+.sliderHeader .val {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ── Dataset rows ─────────────────────────────────────────── */
+.datasetRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+  font-family: inherit;
+}
+.datasetRow:hover {
+  background: var(--panel2);
+}
+.datasetRow.active {
+  background: var(--panel3);
+  border-color: var(--border);
+}
+.datasetDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--faint);
+}
+.datasetRow.active .datasetDot {
+  background: var(--accent);
+}
+.datasetName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 400;
+}
+.datasetRow.active .datasetName {
+  font-weight: 600;
+}
+
+/* ── URL row ──────────────────────────────────────────────── */
+.urlRow {
+  display: flex;
+  gap: 7px;
+}
+.urlRow input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  border-radius: 7px;
+  padding: 7px 10px;
+  outline: none;
+}
+.urlRow input:focus {
+  border-color: var(--accent);
+}
+.urlRow button {
+  padding: 7px 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter 0.12s;
+  flex: none;
+}
+.urlRow button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.urlRow button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.classChecks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-}
-
-.classChecks label {
+/* ── Class filter rows ────────────────────────────────────── */
+.clsRow {
   display: flex;
   align-items: center;
-  gap: 4px;
-  white-space: nowrap;
+  gap: 11px;
+  padding: 10px 4px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+}
+.clsRow:hover {
+  background: var(--panel2);
+}
+.clsRow.off {
+  color: var(--faint);
+}
+.clsRow:first-child {
+  border-top: 1px solid var(--border);
+}
+.clsSwatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex: none;
+}
+.clsName {
+  flex: 1;
+  font-size: 12.5px;
+}
+.clsCheck {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 1px solid var(--border2);
+  background: transparent;
+  color: transparent;
+}
+.clsCheck.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 
-.stats {
+/* ── Color mode grid ──────────────────────────────────────── */
+.colorGrid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 10px;
-  font-variant-numeric: tabular-nums;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.colorBtn {
+  padding: 8px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.1s,
+    background 0.1s;
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--text);
+}
+.colorBtn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.colorBtn:hover:not(.active) {
+  border-color: var(--border2);
 }
 
-.stats dt {
-  color: #8a93a6;
+/* ── Legend ───────────────────────────────────────────────── */
+.legendBox {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 11px 12px;
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.legendBar {
+  width: 14px;
+  border-radius: 3px;
+  flex: none;
+}
+.legendLabels {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--dim);
 }
 
-.stats dd {
-  text-align: right;
+/* ── Meta / status rows ───────────────────────────────────── */
+.metaRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--border);
 }
-
+.metaKey {
+  font-size: 12px;
+  color: var(--dim);
+}
+.metaVal {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11.5px;
+}
 .error {
   color: #ff8080;
   white-space: pre-wrap;
+  margin-top: 14px;
+  font-size: 11.5px;
+}
+
+/* ── Shortcut rows ────────────────────────────────────────── */
+.shortcutRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcutRow span {
+  font-size: 12.5px;
+}
+.shell kbd {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 8px;
+}
+
+/* ── Active dataset chip ──────────────────────────────────── */
+.chip {
+  position: fixed;
+  top: 14px;
+  left: calc(var(--rail-w) + var(--panel-w) + 14px);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 12px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  z-index: 5;
+  transition: left 0.22s ease;
+  max-width: calc(100vw - var(--rail-w) - var(--panel-w) - 28px);
+}
+.chipDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+  background: var(--faint);
+}
+.chipDot.active {
+  background: var(--accent);
+}
+.chipDot.loading {
+  background: oklch(0.8 0.14 75);
+  animation: pulse 1.2s infinite;
+}
+.chipDot.error {
+  background: oklch(0.62 0.2 22);
+}
+.chipName {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chipMeta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--faint);
+  border-left: 1px solid var(--border);
+  padding-left: 9px;
+  white-space: nowrap;
+}
+
+/* ── Top-right viewport controls ──────────────────────────── */
+.vpControls {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  z-index: 5;
+}
+.heightOffsetGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+/* Specificity needs to beat `.shell input[type='number']` above (width,
+   background, border, padding, border-radius) so the compact stepper look
+   below actually applies instead of the panel's full-size number-input style. */
+.shell input.heightOffsetVal[type='number'] {
+  width: 34px;
+  padding: 4px 0;
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  outline: none;
+  white-space: nowrap;
+  /* Custom +/- buttons already cover the stepper; the native one would
+     duplicate it and doesn't fit in 34px anyway. */
+  -moz-appearance: textfield;
+}
+.shell input.heightOffsetVal[type='number']::-webkit-outer-spin-button,
+.shell input.heightOffsetVal[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.shell input.heightOffsetVal[type='number']:focus {
+  border-color: var(--accent);
+}
+.vpIconBtn {
+  width: 34px;
+  height: 34px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: color 0.12s;
+}
+.vpIconBtn:hover {
+  color: var(--text);
+}
+.vpZoomGroup {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.vpZoomBtn {
+  width: 34px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+.vpZoomBtn:last-child {
+  border-bottom: none;
+}
+.vpZoomBtn:hover {
+  color: var(--text);
+  background: var(--panel3);
+}
+
+/* ── Orbit hint ───────────────────────────────────────────── */
+.vpHint {
+  position: fixed;
+  bottom: 40px;
+  left: calc(var(--rail-w) + var(--panel-w) + 14px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  z-index: 5;
+  transition: left 0.22s ease;
+}
+
+/* ── Footer status bar ────────────────────────────────────── */
+.footer {
+  position: fixed;
+  left: calc(var(--rail-w) + var(--panel-w));
+  right: 0;
+  bottom: 0;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  z-index: 5;
+  transition: left 0.22s ease;
+}
+.ftSep {
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 12px;
+}
+.ftLbl {
+  color: var(--faint);
+}
+.ftSpc {
+  flex: 1;
+}
+.ftFps {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ftFpsDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: oklch(0.78 0.15 155);
 }

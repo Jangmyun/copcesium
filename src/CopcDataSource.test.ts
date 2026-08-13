@@ -653,6 +653,18 @@ describe('CopcDataSource runtime API', () => {
     expect(requestRender).toHaveBeenCalled();
   });
 
+  it('heightOffset get/set writes the shared ref and requests a render', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.heightOffset).toBe(0);
+    ds.heightOffset = -12.5;
+    expect(ds.heightOffset).toBe(-12.5);
+    expect(requestRender).toHaveBeenCalled();
+  });
+
   it('sseThreshold get/set triggers an immediate LoD pass', async () => {
     mockCopc(undefined);
     const { viewer } = makeFakeViewer();
