@@ -104,7 +104,9 @@ export class CopcDataSource {
     };
     this._autoIntensityRange = options.intensityRange === undefined;
     this._nodeCache = new NodeCache(options.maxCacheNodes, (_key, node) => this._destroyLoadedNode(node));
-    this._rangeFetcher = new RangeFetcher(url);
+    // Caps concurrent Range Requests at the worker pool's size, so fetching
+    // can't outrun decoding the way it did before this was wired up (#86).
+    this._rangeFetcher = new RangeFetcher(url, undefined, undefined, workerPool.concurrency);
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
   }

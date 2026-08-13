@@ -185,6 +185,60 @@ describe('RangeFetcher', () => {
     await expect(b).rejects.toThrow('network down');
   });
 
+  describe('maxConcurrent', () => {
+    it('does not start more than maxConcurrent group fetches at once', async () => {
+      const fetchMock = vi.fn().mockReturnValue(new Promise(() => {})); // never resolves
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 2);
+
+      // 4 far-apart (non-mergeable) requests -> 4 separate groups, cap of 2
+      fetcher.fetch(0, 10);
+      fetcher.fetch(1000, 1010);
+      fetcher.fetch(2000, 2010);
+      fetcher.fetch(3000, 3010);
+      await Promise.resolve(); // let the flush run
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('dispatches a queued group once an active one finishes, up to the cap', async () => {
+      let resolveFirst!: (value: ReturnType<typeof fakeResponse>) => void;
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)))
+        .mockResolvedValue(fakeResponse(makeSourceBytes(10)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      const a = fetcher.fetch(0, 10);
+      const b = fetcher.fetch(1000, 1010); // must wait for a's slot
+      await Promise.resolve();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      resolveFirst(fakeResponse(makeSourceBytes(10)));
+      await a;
+      await b; // resolves only once the queued group got its turn
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops a queued group entirely (no fetch) once every member is cancelled before it gets a slot', async () => {
+      const fetchMock = vi.fn().mockReturnValue(new Promise(() => {})); // the occupying group never resolves
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      fetcher.fetch(0, 10); // occupies the only slot
+      const queued = fetcher.fetch(1000, 1010);
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      queued.cancel();
+
+      await expect(queued).rejects.toThrow(/cancelled/);
+      expect(fetchMock).toHaveBeenCalledTimes(1); // the queued group never actually fetched
+    });
+  });
+
   describe('destroy()', () => {
     it('rejects requests still queued (not yet flushed to a fetch)', async () => {
       const fetchMock = vi.fn();
@@ -196,6 +250,21 @@ describe('RangeFetcher', () => {
 
       await expect(pending).rejects.toThrow(/destroyed/);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects a group that flushed but is still waiting behind maxConcurrent for a slot', async () => {
+      const fetchMock = vi.fn().mockReturnValue(new Promise(() => {})); // the occupying group never resolves
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      fetcher.fetch(0, 10); // occupies the only slot
+      const queued = fetcher.fetch(1000, 1010);
+      await Promise.resolve();
+
+      fetcher.destroy();
+
+      await expect(queued).rejects.toThrow(/destroyed/);
+      expect(fetchMock).toHaveBeenCalledTimes(1); // never got its own fetch call
     });
 
     it('aborts a fetch already in flight', async () => {
