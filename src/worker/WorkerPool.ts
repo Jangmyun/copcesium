@@ -67,6 +67,11 @@ export class WorkerPool {
     }
   }
 
+  /** How many tasks this pool can run at once — the number of workers it was built with. */
+  get concurrency(): number {
+    return this.workers.length;
+  }
+
   /**
    * @param timeoutMs Rejects (and frees up the worker/queue slot) if no
    *   response arrives in time — a hung Range Request or a wasm decode that

@@ -15,6 +15,12 @@ interface RangeRequest {
   group: GroupState | null;
 }
 
+/** One flushed, grouped batch of requests waiting for a fetch slot. */
+interface QueuedGroup {
+  requests: RangeRequest[];
+  state: GroupState;
+}
+
 /** A `fetch()` result whose underlying request can be abandoned early. */
 export type CancellableBytesPromise = Promise<Uint8Array> & { cancel: () => void };
 
@@ -32,10 +38,24 @@ function abortError(message: string): Error {
 // case of a handful of contiguous nodes into one request (#86).
 const DEFAULT_MAX_GROUP_BYTES = 512 * 1024;
 
+// Before #86, each node's Range Request was made inside its worker task, so
+// WorkerPool's own concurrency (its worker count) throttled how many were
+// ever in flight together. Moving the fetch to the main thread — ahead of
+// the worker handoff — dropped that gate: `_updateLoD()` dispatches every
+// newly-selected node's load in one synchronous pass (up to
+// `maxVisibleNodes`, e.g. 100), and with nothing here to hold them back they
+// all left as HTTP requests at once, well past what a browser's per-origin
+// connection limit or the decode pipeline behind it could actually use.
+// This default restores a comparable cap for callers that don't pass their
+// own (`CopcDataSource` passes its `WorkerPool`'s concurrency instead, so
+// fetch throughput tracks decode throughput exactly).
+const DEFAULT_MAX_CONCURRENT = 6;
+
 /**
  * Batches concurrent byte-range requests for one COPC file into fewer HTTP
  * Range Requests, merging ones within `gapBytes` of each other into a single
- * fetch and slicing the response back apart.
+ * fetch and slicing the response back apart. At most `maxConcurrent` group
+ * fetches run at once; the rest queue until a slot frees up.
  *
  * `CopcDataSource._updateLoD()` dispatches every newly-selected node's load
  * within the same synchronous pass, so requests queued in the same microtask
@@ -47,6 +67,8 @@ const DEFAULT_MAX_GROUP_BYTES = 512 * 1024;
 export class RangeFetcher {
   private pending: RangeRequest[] = [];
   private flushScheduled = false;
+  private readonly queue: QueuedGroup[] = [];
+  private activeCount = 0;
   private readonly inFlight = new Set<AbortController>();
   private destroyed = false;
 
@@ -54,6 +76,7 @@ export class RangeFetcher {
     private readonly url: string,
     private readonly gapBytes = 0,
     private readonly maxGroupBytes = DEFAULT_MAX_GROUP_BYTES,
+    private readonly maxConcurrent = DEFAULT_MAX_CONCURRENT,
   ) {}
 
   /** Resolves with the raw bytes for `[begin, end)`. */
@@ -77,10 +100,13 @@ export class RangeFetcher {
       // A request already merged into a group can't be pulled back out on its
       // own — the fetch is shared — but once every sibling in that group has
       // also been cancelled, the whole group's result is wanted by nobody, so
-      // its in-flight fetch (if it's gotten that far) can be aborted instead
-      // of downloading a response nothing will use.
+      // it can be dropped instead of doing (or downloading the result of) a
+      // fetch nothing will use: aborted if already in flight, or simply
+      // pulled out of the queue if it hadn't gotten a slot yet.
       const group = req.group;
-      if (group && --group.liveCount === 0) group.controller?.abort();
+      if (!group || --group.liveCount > 0) return;
+      if (group.controller) group.controller.abort();
+      else this._cancelQueuedGroup(group);
     };
     return promise;
   }
@@ -90,6 +116,10 @@ export class RangeFetcher {
     this.destroyed = true;
     for (const req of this.pending) req.reject(abortError('RangeFetcher: destroyed before its request was sent'));
     this.pending = [];
+    for (const { requests } of this.queue) {
+      for (const req of requests) req.reject(abortError('RangeFetcher: destroyed before its request was sent'));
+    }
+    this.queue.length = 0;
     for (const controller of this.inFlight) controller.abort();
   }
 
@@ -111,7 +141,30 @@ export class RangeFetcher {
     for (const group of this._group(live)) {
       const state: GroupState = { liveCount: group.length, controller: null };
       for (const req of group) req.group = state;
-      void this._fetchGroup(group, state);
+      this.queue.push({ requests: group, state });
+    }
+    this._pump();
+  }
+
+  /** Removes a not-yet-dispatched group from the queue and rejects its members. */
+  private _cancelQueuedGroup(state: GroupState): void {
+    const index = this.queue.findIndex((queued) => queued.state === state);
+    if (index === -1) return; // already dispatched by the time this ran
+    const [removed] = this.queue.splice(index, 1);
+    for (const req of removed!.requests) {
+      req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
+    }
+  }
+
+  /** Dispatches queued groups until `maxConcurrent` fetches are in flight. */
+  private _pump(): void {
+    while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
+      const { requests, state } = this.queue.shift()!;
+      this.activeCount++;
+      void this._fetchGroup(requests, state).finally(() => {
+        this.activeCount--;
+        this._pump();
+      });
     }
   }
 
