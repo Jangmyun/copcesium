@@ -3,10 +3,16 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-08-14
 
 ### Added
 
+- **`heightOffset` manually corrects a geoid/vertical-datum mismatch between
+  the point cloud and the globe surface.** Live property on `CopcDataSource`
+  (meters, default `0`), applied by shifting each node's model matrix along
+  its local "up" (the ECEF direction from Earth's center through the node
+  origin) rather than touching the shader or geometry, so it's a per-frame
+  translation update, not a re-decode.
 - **`maxPoints` option bounds the LoD render set by total point count, not
   just node count.** `maxVisibleNodes` caps how many nodes `selectNodes()`
   picks, but `Hierarchy.Node.pointCount` isn't uniform across a hierarchy, so
@@ -16,6 +22,51 @@ All notable changes to this project are documented here. This project follows
   selected nodes' point counts and stops once `maxPoints` (default
   5,000,000) is reached, whichever of the two limits comes first.
   `maxVisibleNodes` is unchanged and still applies. (#118)
+- **Opacity/translucency control.** `opacity` (`CopcDataSourceOptions.opacity`
+  / live `dataSource.opacity`, `0`-`1`, default `1`, validated at both load
+  time and on every assignment) is an alpha multiplier applied to every
+  point's colour via a `u_opacity` uniform — a style change, not a re-decode,
+  matching `pixelSize`/`colorMode`. Below `1`, the primitive switches to
+  alpha blending (`Pass.TRANSLUCENT`, `depthMask: false`) only when opacity
+  actually crosses the opaque threshold, not every frame. There's no
+  per-point depth sort, so overlapping translucent points may blend out of
+  order — sorted transparency would be a separate, larger feature. (#119)
+
+### Fixed
+
+- **Adjacent node fetches are coalesced into fewer HTTP Range Requests, and
+  Range Request support is verified up front.** Each node's fetch moved out
+  of its worker task and onto the main thread, ahead of the worker handoff —
+  requests queued in the same microtask tick are exactly the sibling nodes a
+  COPC writer already lays out contiguously, so sibling nodes selected in the
+  same LoD pass now share one merged Range Request (capped at 512 KiB per
+  group, so one slow response can't block an unbounded batch) instead of each
+  firing its own. That move also dropped the concurrency limit `WorkerPool`
+  used to provide implicitly (the fetch used to run inside the worker task it
+  throttled); merged group fetches are now capped at the worker pool's own
+  concurrency so fetch throughput can't outrun decode throughput. A server
+  that ignores `Range` and returns the whole file as `200 OK` is now caught
+  with a clear error up front (`loadCopcHierarchy()` probes for `206 Partial
+  Content`) instead of a confusing parse failure deep inside `Copc.create()`.
+  (#86)
+- **COPC files whose hierarchy spans multiple pages now subdivide past
+  whatever depth the root hierarchy page covered.** `loadCopcHierarchy()`
+  previously read only the root page and discarded the sub-page entry points
+  it returns, so zooming in on such a file silently stopped revealing more
+  detail once the root page's depth was exhausted. `CopcDataSource` now
+  lazily loads a needed sub-page mid-traversal, merges it into the live node
+  map, and re-runs LoD selection; `maxDepth` is computed live from the
+  current node map so it grows as sub-pages load instead of staying pinned
+  at the root page's depth. (#116)
+- **`RangeFetcher` now checks the HTTP response status and retries transient
+  failures.** A non-206 response — a `5xx`, a `416`, a CDN error page, an
+  expired pre-signed URL's `403`, or even a `200` from a server that ignored
+  the `Range` header and sent the whole file — was previously sliced at
+  range-relative offsets and handed to the decoder as if it were point data,
+  so the real cause surfaced several layers down as an opaque LAZ decode
+  error. `5xx` and network-level failures are now retried up to 3 times with
+  cancellable exponential backoff; a `4xx` fails immediately, since an
+  expired URL or a bad range won't fix itself on retry. (#117)
 
 ## [1.1.1] - 2026-08-07
 
