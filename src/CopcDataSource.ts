@@ -3,7 +3,7 @@ import proj4 from 'proj4';
 import { Copc, type Hierarchy } from 'copc';
 import type { ColorMode, CopcDataSourceOptions, LoadedNode, NodeRenderData } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
-import { isAncestorOf } from './copc/node';
+import { getDepth, isAncestorOf } from './copc/node';
 import { RangeFetcher } from './copc/RangeFetcher';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
@@ -58,7 +58,6 @@ export class CopcDataSource {
   /** Sub-page entry points not yet merged into `_nodes`; shrinks as pages load. */
   private readonly _pages: Hierarchy.Page.Map;
   private readonly _pendingPages = new Set<string>();
-  private readonly _maxDepth: number;
   private readonly _rootCenter: { x: number; y: number; z: number };
   private readonly _rootHalfSize: number;
   private readonly _options: ResolvedOptions;
@@ -95,7 +94,6 @@ export class CopcDataSource {
     this._copc = hierarchy.copc;
     this._nodes = hierarchy.nodes;
     this._pages = hierarchy.pages;
-    this._maxDepth = hierarchy.maxDepth;
     this._rootCenter = hierarchy.rootCenter;
     this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
@@ -521,9 +519,10 @@ export class CopcDataSource {
     void this._updateLoD();
   }
 
-  /** Deepest octree level present in the loaded hierarchy. */
+  /** Deepest octree level present in the loaded hierarchy so far — grows as
+   *  sub-pages load, so this is computed live rather than cached at load time. */
   get maxDepth(): number {
-    return this._maxDepth;
+    return Math.max(...Object.keys(this._nodes).map(getDepth));
   }
 
   /** Total number of nodes in the loaded hierarchy (loaded or not). */

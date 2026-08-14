@@ -400,6 +400,9 @@ describe('CopcDataSource update loop', () => {
       pageLength: 20,
     });
     await vi.waitFor(() => expect(ds.nodeCount).toBe(2));
+    // '1-1-1-1' is a depth-1 node the root page never knew about — maxDepth
+    // must reflect it once merged, not stay pinned at the root page's depth.
+    expect(ds.maxDepth).toBe(1);
 
     // The page is consumed once merged — a later pass rediscovering the same
     // key (e.g. via onPageNeeded firing again) must not re-fetch it.
