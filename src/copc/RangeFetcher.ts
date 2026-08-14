@@ -30,6 +30,30 @@ function abortError(message: string): Error {
   return err;
 }
 
+/** Carries `status` so the retry policy can tell a 5xx from a 4xx. */
+function httpError(status: number, begin: number, end: number): Error {
+  const err = new Error(
+    `RangeFetcher: server returned HTTP ${status} for bytes=${begin}-${end - 1} (expected 206 Partial Content)`,
+  ) as Error & { status: number };
+  err.status = status;
+  return err;
+}
+
+function isRetryable(err: unknown): boolean {
+  // A cancelled request must never be retried — `cancel()`/`destroy()` raise
+  // this name precisely to say the result is no longer wanted.
+  if ((err as Error).name === 'AbortError') return false;
+  const status = (err as { status?: number }).status;
+  // No status means `fetch()` itself rejected (DNS failure, connection reset,
+  // TLS error) rather than the server answering — transient often enough to
+  // be worth another attempt.
+  return status === undefined || status >= 500;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // A group's members all stay unresolved until its one shared fetch finishes,
 // so an unbounded group trades away progressive rendering (many small nodes
 // popping in as they each finish) for fewer, larger requests that all land at
@@ -50,6 +74,14 @@ const DEFAULT_MAX_GROUP_BYTES = 512 * 1024;
 // own (`CopcDataSource` passes its `WorkerPool`'s concurrency instead, so
 // fetch throughput tracks decode throughput exactly).
 const DEFAULT_MAX_CONCURRENT = 6;
+
+// Total attempts per group, retried only for the failures that a retry can
+// plausibly fix: 5xx and network-level errors. A 4xx (403 on an expired
+// pre-signed URL, 416 on a bad range) is a settled answer — retrying it just
+// delays the inevitable failure — and an AbortError means the caller already
+// said it no longer wants the result (#117).
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 250;
 
 /**
  * Batches concurrent byte-range requests for one COPC file into fewer HTTP
@@ -197,11 +229,7 @@ export class RangeFetcher {
     state.controller = controller;
     this.inFlight.add(controller);
     try {
-      const response = await fetch(this.url, {
-        headers: { Range: `bytes=${groupBegin}-${groupEnd - 1}` },
-        signal: controller.signal,
-      });
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      const bytes = await this._fetchRange(groupBegin, groupEnd, controller.signal);
       for (const req of group) {
         if (req.cancelled) {
           req.reject(abortError('RangeFetcher: request cancelled before its result was needed'));
@@ -216,6 +244,37 @@ export class RangeFetcher {
       for (const req of group) req.reject(error);
     } finally {
       this.inFlight.delete(controller);
+    }
+  }
+
+  /**
+   * One group's Range Request, retried on the failures a retry can fix.
+   *
+   * `signal` is reused across attempts rather than replaced per attempt:
+   * `cancel()` and `destroy()` abort the one controller `_fetchGroup()`
+   * registered, so swapping in a fresh controller mid-retry would strand an
+   * abort that landed against the previous one, leaving a cancelled group
+   * still fetching.
+   */
+  private async _fetchRange(begin: number, end: number, signal: AbortSignal): Promise<Uint8Array> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await fetch(this.url, {
+          headers: { Range: `bytes=${begin}-${end - 1}` },
+          signal,
+        });
+        // Strictly 206, not merely `ok`: a 200 means the server ignored the
+        // Range header and sent the whole file, and those bytes would then be
+        // sliced at range-relative offsets — silently handing the decoder data
+        // from the wrong part of the file instead of failing (#117).
+        if (response.status !== 206) throw httpError(response.status, begin, end);
+        return new Uint8Array(await response.arrayBuffer());
+      } catch (err) {
+        if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
+        await delay(RETRY_BASE_MS * 2 ** (attempt - 1));
+        // Cancelled while backing off — don't resurrect work nobody wants.
+        if (signal.aborted) throw abortError('RangeFetcher: request cancelled while waiting to retry');
+      }
     }
   }
 }

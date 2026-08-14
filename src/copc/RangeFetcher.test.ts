@@ -1,8 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RangeFetcher } from './RangeFetcher';
 
+/** A successful Range response: 206, since every request this class makes
+ *  carries a `Range` header. */
 function fakeResponse(bytes: Uint8Array) {
-  return { arrayBuffer: async () => bytes.buffer };
+  return { status: 206, arrayBuffer: async () => bytes.buffer };
+}
+
+/** A response the server answered with, but not a usable Range payload. */
+function statusResponse(status: number, bytes = new Uint8Array(0)) {
+  return { status, arrayBuffer: async () => bytes.buffer };
+}
+
+/** Fakes only `setTimeout`, so retry backoff is instant while the microtask
+ *  queue `_scheduleFlush()` relies on keeps running for real. */
+function useFakeBackoff() {
+  vi.useFakeTimers({ toFake: ['setTimeout'] });
 }
 
 /** All bytes at index `i` equal `i`, so a slice's own content proves which
@@ -14,7 +27,10 @@ function makeSourceBytes(length: number): Uint8Array {
 }
 
 describe('RangeFetcher', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 
   it('merges two adjacent requests queued in the same tick into one HTTP request', async () => {
     const source = makeSourceBytes(20);
@@ -154,7 +170,9 @@ describe('RangeFetcher', () => {
   it('aborts an in-flight group fetch once every one of its members has been cancelled', async () => {
     const fetchMock = vi.fn((_url: string, opts: { signal: AbortSignal }) => {
       return new Promise((_resolve, reject) => {
-        opts.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+        opts.signal.addEventListener('abort', () =>
+          reject(new DOMException('The operation was aborted.', 'AbortError')),
+        );
       });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -174,15 +192,112 @@ describe('RangeFetcher', () => {
   });
 
   it('rejects every request in a group when its fetch fails', async () => {
+    useFakeBackoff(); // a network-level failure is retried; skip the backoff waits
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
     const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
 
     const a = fetcher.fetch(0, 10);
     const b = fetcher.fetch(10, 20);
+    // Attached before the timers run: `runAllTimersAsync()` settles the
+    // rejection, and a handler added only afterwards arrives too late to
+    // count as handled.
+    const rejections = Promise.all([
+      expect(a).rejects.toThrow('network down'),
+      expect(b).rejects.toThrow('network down'),
+    ]);
+    await vi.runAllTimersAsync();
 
-    await expect(a).rejects.toThrow('network down');
-    await expect(b).rejects.toThrow('network down');
+    await rejections;
+  });
+
+  describe('response status', () => {
+    it('rejects a non-206 response instead of decoding the error body as data', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(403));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      // The status has to reach the caller — the whole point of #117 is that
+      // it previously surfaced as an opaque LAZ decode error much further down.
+      await expect(fetcher.fetch(0, 100)).rejects.toThrow(/403/);
+    });
+
+    it('rejects a 200 whole-file response rather than slicing it at range offsets', async () => {
+      // A server that ignores Range answers 200 with the entire file. `ok` is
+      // true, so an `ok`-only check would slice these bytes at range-relative
+      // offsets and hand back data from the wrong part of the file.
+      const wholeFile = makeSourceBytes(5000);
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(200, wholeFile));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      await expect(fetcher.fetch(1000, 1010)).rejects.toThrow(/200/);
+    });
+
+    it('does not retry a 4xx — an expired URL or bad range will not fix itself', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(416));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const request = fetcher.fetch(0, 10);
+      const rejection = expect(request).rejects.toThrow(/416/);
+      await vi.runAllTimersAsync();
+
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('retry', () => {
+    it('retries a 5xx and resolves once an attempt succeeds', async () => {
+      useFakeBackoff();
+      const source = makeSourceBytes(10);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(statusResponse(503))
+        .mockResolvedValueOnce(fakeResponse(source));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const request = fetcher.fetch(0, 10);
+      await vi.runAllTimersAsync();
+
+      expect(Array.from(await request)).toEqual(Array.from(source));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives up after 3 attempts on a persistent 5xx', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(503));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const request = fetcher.fetch(0, 10);
+      const rejection = expect(request).rejects.toThrow(/503/);
+      await vi.runAllTimersAsync();
+
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('stops retrying once the group is cancelled mid-backoff', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(503));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const request = fetcher.fetch(0, 10);
+      const rejection = expect(request).rejects.toThrow(/AbortError|cancelled/i);
+      await vi.advanceTimersByTimeAsync(0); // first attempt runs, then backs off
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      request.cancel();
+      await vi.runAllTimersAsync();
+
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(1); // never attempted again
+    });
   });
 
   describe('maxConcurrent', () => {
@@ -270,7 +385,9 @@ describe('RangeFetcher', () => {
     it('aborts a fetch already in flight', async () => {
       const fetchMock = vi.fn((_url: string, opts: { signal: AbortSignal }) => {
         return new Promise((_resolve, reject) => {
-          opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          opts.signal.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
         });
       });
       vi.stubGlobal('fetch', fetchMock);
