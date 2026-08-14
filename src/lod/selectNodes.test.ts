@@ -277,4 +277,37 @@ describe('selectNodes', () => {
 
     expect(selected).toEqual([]);
   });
+
+  it('reports a sub-page instead of treating its entry point as a childless node', () => {
+    // Root has no children in `nodes`, but one of its 8 child slots is a
+    // sub-page entry point (its subtree lives in a hierarchy page not yet loaded).
+    const nodes: Hierarchy.Node.Map = {
+      '0-0-0-0': { pointCount: 100, pointDataOffset: 0, pointDataLength: 1 },
+    };
+    const pages: Hierarchy.Page.Map = {
+      '1-1-1-1': { pageOffset: 0, pageLength: 100 },
+    };
+    const camera = makeCamera(
+      new Cesium.Cartesian3(0, 0, 30),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+
+    const neededPages: string[] = [];
+    const selected = selectNodes({
+      nodes,
+      pages,
+      onPageNeeded: (key) => neededPages.push(key),
+      getSphere: makeGetSphere(rootCenter, rootHalfSize),
+      camera,
+      viewportHeight: 1000,
+      sseThreshold: 16,
+      maxVisibleNodes: 100,
+    });
+
+    // The root's SSE exceeds the threshold, so it's still expanded; the only
+    // child slot with a hierarchy entry is the sub-page, not a selectable node.
+    expect(selected).toEqual(['0-0-0-0']);
+    expect(neededPages).toEqual(['1-1-1-1']);
+  });
 });

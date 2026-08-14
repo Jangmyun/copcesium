@@ -71,6 +71,19 @@ class MaxHeap<T> {
 export interface SelectNodesOptions {
   nodes: Hierarchy.Node.Map;
   /**
+   * Sub-page entry points not yet merged into `nodes`. A child key found
+   * here instead of in `nodes` is a node whose subtree lives in a hierarchy
+   * page that hasn't been loaded yet, not a childless node.
+   */
+  pages?: Hierarchy.Page.Map;
+  /**
+   * Called (possibly more than once per pass) with the key of a sub-page
+   * whose subtree is needed but not yet loaded. The traversal doesn't wait
+   * for it — the caller is expected to load it asynchronously and re-run
+   * selection once it's merged into `nodes`.
+   */
+  onPageNeeded?: (key: string) => void;
+  /**
    * Returns (and, per the caller's discretion, caches) a node's bounding
    * sphere. Pulled out as a callback rather than raw ingredients
    * (rootCenter/rootHalfSize/project/xyFactor) so a caller can memoize per
@@ -109,7 +122,7 @@ export interface SelectNodesOptions {
  * the ancestors it sits on top of.
  */
 export function selectNodes(options: SelectNodesOptions): string[] {
-  const { nodes, getSphere, camera, viewportHeight, sseThreshold, maxVisibleNodes } = options;
+  const { nodes, pages = {}, onPageNeeded, getSphere, camera, viewportHeight, sseThreshold, maxVisibleNodes } = options;
 
   const cullingVolume = getCullingVolume(camera);
   const fovy = getFovy(camera.frustum);
@@ -137,7 +150,11 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     if (nodeInfo.pointCount > 0 && sseOf(key) <= sseThreshold) continue;
 
     for (const childKey of getChildKeys(key)) {
-      if (nodes[childKey]) heap.push({ key: childKey, sse: sseOf(childKey) });
+      if (nodes[childKey]) {
+        heap.push({ key: childKey, sse: sseOf(childKey) });
+      } else if (pages[childKey]) {
+        onPageNeeded?.(childKey);
+      }
     }
   }
 

@@ -367,6 +367,46 @@ describe('CopcDataSource update loop', () => {
     expect(addPrimitive).toHaveBeenCalledTimes(1);
   });
 
+  it('loads a hierarchy sub-page discovered mid-traversal, merges it into the node map, and re-runs LoD', async () => {
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 10, 10, 10], rootHierarchyPage: { pageOffset: 0, pageLength: 10 } },
+      header: { min: [0, 0, 0], max: [10, 10, 10] },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({
+      nodes: { '0-0-0-0': { pointCount: 1, pointDataOffset: 0, pointDataLength: 1 } },
+      pages: { '1-1-1-1': { pageOffset: 100, pageLength: 20 } },
+    });
+    loadHierarchyPage.mockResolvedValueOnce({
+      nodes: { '1-1-1-1': { pointCount: 1, pointDataOffset: 5, pointDataLength: 1 } },
+      pages: {},
+    });
+    // Real selectNodes() is mocked out entirely in this file (see top-level
+    // vi.mock('./lod/selectNodes', ...)), so this test drives its
+    // onPageNeeded callback directly to simulate what the real traversal
+    // would do on hitting the sub-page entry point at '1-1-1-1'.
+    selectNodesMock.mockImplementation((opts: unknown) => {
+      (opts as { onPageNeeded?: (key: string) => void }).onPageNeeded?.('1-1-1-1');
+      return ['0-0-0-0'];
+    });
+
+    const { viewer, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+
+    await vi.waitFor(() => expect(loadHierarchyPage).toHaveBeenCalledTimes(2));
+    expect(loadHierarchyPage).toHaveBeenLastCalledWith('https://example.com/sample.copc.laz', {
+      pageOffset: 100,
+      pageLength: 20,
+    });
+    await vi.waitFor(() => expect(ds.nodeCount).toBe(2));
+
+    // The page is consumed once merged — a later pass rediscovering the same
+    // key (e.g. via onPageNeeded firing again) must not re-fetch it.
+    triggerUpdate();
+    expect(loadHierarchyPage).toHaveBeenCalledTimes(2);
+  });
+
   it('hides a cached node when it drops out of the LoD selection, and re-shows it without re-dispatching if reselected', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);

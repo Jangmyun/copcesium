@@ -50,6 +50,24 @@ describe('loadCopcHierarchy', () => {
     expect(Object.keys(result.nodes)).toHaveLength(3);
   });
 
+  it('returns the root page\'s unresolved sub-page entry points alongside its nodes', async () => {
+    create.mockResolvedValueOnce({
+      info: {
+        cube: [0, 0, 0, 10, 10, 10],
+        rootHierarchyPage: { pageOffset: 0, pageLength: 100 },
+      },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({
+      nodes: { '0-0-0-0': { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 } },
+      pages: { '3-1-1-1': { pageOffset: 100, pageLength: 50 } },
+    });
+
+    const result = await loadCopcHierarchy('https://example.com/sample.copc.laz');
+
+    expect(result.pages).toEqual({ '3-1-1-1': { pageOffset: 100, pageLength: 50 } });
+  });
+
   it('raises a descriptive error when the COPC header cannot be read', async () => {
     create.mockRejectedValueOnce(new Error('Invalid header: too short'));
 

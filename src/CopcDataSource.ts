@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import proj4 from 'proj4';
-import type { Copc, Hierarchy } from 'copc';
+import { Copc, type Hierarchy } from 'copc';
 import type { ColorMode, CopcDataSourceOptions, LoadedNode, NodeRenderData } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { isAncestorOf } from './copc/node';
@@ -55,6 +55,9 @@ export class CopcDataSource {
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
   private readonly _nodes: Hierarchy.Node.Map;
+  /** Sub-page entry points not yet merged into `_nodes`; shrinks as pages load. */
+  private readonly _pages: Hierarchy.Page.Map;
+  private readonly _pendingPages = new Set<string>();
   private readonly _maxDepth: number;
   private readonly _rootCenter: { x: number; y: number; z: number };
   private readonly _rootHalfSize: number;
@@ -91,6 +94,7 @@ export class CopcDataSource {
     this._viewer = viewer;
     this._copc = hierarchy.copc;
     this._nodes = hierarchy.nodes;
+    this._pages = hierarchy.pages;
     this._maxDepth = hierarchy.maxDepth;
     this._rootCenter = hierarchy.rootCenter;
     this._rootHalfSize = hierarchy.rootHalfSize;
@@ -254,9 +258,12 @@ export class CopcDataSource {
     }
     this._isUpdating = true;
     try {
+      const neededPages = new Set<string>();
       const newSelectedKeys = new Set(
         selectNodes({
           nodes: this._nodes,
+          pages: this._pages,
+          onPageNeeded: (key) => neededPages.add(key),
           getSphere: (key) => this._getSphere(key),
           camera: this._viewer.scene.camera,
           viewportHeight: this._viewer.scene.canvas.clientHeight,
@@ -264,6 +271,10 @@ export class CopcDataSource {
           maxVisibleNodes: this._options.maxVisibleNodes,
         }),
       );
+
+      for (const key of neededPages) {
+        if (!this._pendingPages.has(key)) void this._loadPage(key);
+      }
 
       // A load still in flight for a key the camera has since moved past is
       // decoding data nobody will show; cancel it so its worker slot frees up
@@ -396,6 +407,26 @@ export class CopcDataSource {
     } finally {
       this._pendingKeys.delete(key);
       this._cancels.delete(key);
+    }
+  }
+
+  /** Loads a hierarchy sub-page, merges its nodes/pages into the live maps,
+   *  and re-runs LoD selection so the newly revealed depth can be picked up. */
+  private async _loadPage(key: string): Promise<void> {
+    const page = this._pages[key];
+    if (!page) return;
+    this._pendingPages.add(key);
+    try {
+      const { nodes, pages } = await Copc.loadHierarchyPage(this._url, page);
+      if (this._destroyed) return;
+      Object.assign(this._nodes, nodes);
+      delete this._pages[key];
+      Object.assign(this._pages, pages);
+      void this._updateLoD();
+    } catch (err) {
+      console.error(`[CopcDataSource] Failed to load hierarchy page "${key}":`, err);
+    } finally {
+      this._pendingPages.delete(key);
     }
   }
 

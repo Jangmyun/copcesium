@@ -5,6 +5,7 @@ import { getDepth } from './node';
 export interface CopcHierarchy {
   copc: Copc;
   nodes: Hierarchy.Node.Map;
+  pages: Hierarchy.Page.Map;
   maxDepth: number;
   rootCenter: { x: number; y: number; z: number };
   rootHalfSize: number;
@@ -30,7 +31,8 @@ async function assertRangeRequestsSupported(url: string): Promise<void> {
 
 /**
  * Reads a COPC file's header/VLR metadata and its root hierarchy page, and
- * returns the full node map, the max depth, and the root cube (center/half size).
+ * returns the root node map, any unresolved sub-page entry points, the max
+ * depth covered by the root page, and the root cube (center/half size).
  */
 export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   await assertRangeRequestsSupported(url);
@@ -53,8 +55,8 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   const rootCenter = { x: (minx + maxx) / 2, y: (miny + maxy) / 2, z: (minz + maxz) / 2 };
   const rootHalfSize = (maxx - minx) / 2;
 
-  const { nodes } = await Copc.loadHierarchyPage(url, copc.info.rootHierarchyPage);
+  const { nodes, pages } = await Copc.loadHierarchyPage(url, copc.info.rootHierarchyPage);
   const maxDepth = Math.max(...Object.keys(nodes).map(getDepth));
 
-  return { copc, nodes, maxDepth, rootCenter, rootHalfSize };
+  return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize };
 }
