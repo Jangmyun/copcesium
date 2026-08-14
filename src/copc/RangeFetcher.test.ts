@@ -293,10 +293,44 @@ describe('RangeFetcher', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
       request.cancel();
-      await vi.runAllTimersAsync();
-
+      // No further timer advancement — see the next test for why that's the
+      // point: runAllTimersAsync() here would fast-forward through the
+      // backoff regardless of whether cancellation actually short-circuits
+      // it, so it can't tell a real fix from delay() still waiting out the
+      // full RETRY_BASE_MS underneath.
       await rejection;
       expect(fetchMock).toHaveBeenCalledTimes(1); // never attempted again
+    });
+
+    it('frees its maxConcurrent slot immediately when cancelled mid-backoff, without waiting out the delay', async () => {
+      // Review on #123: delay() originally ignored `signal`, so a cancelled
+      // group sat on its maxConcurrent slot for the rest of the backoff —
+      // freed only in _fetchGroup()'s finally, once _fetchRange() actually
+      // returns — instead of letting _pump() dispatch the next queued group
+      // right away.
+      useFakeBackoff();
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(statusResponse(503))
+        .mockResolvedValueOnce(fakeResponse(makeSourceBytes(10)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1); // 1 concurrent slot
+
+      const a = fetcher.fetch(0, 10); // takes the only slot; 503s, then backs off
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const b = fetcher.fetch(1000, 1010); // queued: a still holds the only slot
+      await Promise.resolve(); // let b's own flush queue it, separately from a's group
+
+      a.cancel();
+      // No timer is ever advanced from here on. If delay() only resolved via
+      // setTimeout, a would keep its slot for the rest of RETRY_BASE_MS and
+      // these awaits would hang until the test times out, rather than b
+      // reaching fetch() right away.
+      await expect(a).rejects.toThrow(/cancelled/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(b).resolves.toBeInstanceOf(Uint8Array);
     });
   });
 

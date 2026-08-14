@@ -50,8 +50,27 @@ function isRetryable(err: unknown): boolean {
   return status === undefined || status >= 500;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Resolves after `ms`, or immediately if `signal` aborts first. A plain
+ * `setTimeout` here would let a group cancelled mid-backoff sit on its
+ * `maxConcurrent` slot (only freed in `_fetchGroup()`'s `finally`, once
+ * `_fetchRange()` actually returns) for the rest of the delay — up to the
+ * full backoff, every retry — instead of freeing it for the next group
+ * `_pump()` is waiting to dispatch (#123 review).
+ */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // A group's members all stay unresolved until its one shared fetch finishes,
@@ -271,7 +290,7 @@ export class RangeFetcher {
         return new Uint8Array(await response.arrayBuffer());
       } catch (err) {
         if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
-        await delay(RETRY_BASE_MS * 2 ** (attempt - 1));
+        await delay(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
         // Cancelled while backing off — don't resurrect work nobody wants.
         if (signal.aborted) throw abortError('RangeFetcher: request cancelled while waiting to retry');
       }
