@@ -66,6 +66,10 @@ export class CopcDataSource {
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
   private readonly _nodes: Hierarchy.Node.Map;
+  /** Tracked incrementally as nodes are merged in, rather than recomputed with
+   *  `Math.max(...keys)` on every read — that spread blows the call stack once
+   *  a multi-page hierarchy's node count passes ~124k (#126). */
+  private _maxDepth: number;
   /** Sub-page entry points not yet merged into `_nodes`; shrinks as pages load. */
   private readonly _pages: Hierarchy.Page.Map;
   private readonly _pendingPages = new Set<string>();
@@ -104,6 +108,7 @@ export class CopcDataSource {
     this._viewer = viewer;
     this._copc = hierarchy.copc;
     this._nodes = hierarchy.nodes;
+    this._maxDepth = hierarchy.maxDepth;
     this._pages = hierarchy.pages;
     this._rootCenter = hierarchy.rootCenter;
     this._rootHalfSize = hierarchy.rootHalfSize;
@@ -431,6 +436,10 @@ export class CopcDataSource {
       const { nodes, pages } = await Copc.loadHierarchyPage(this._url, page);
       if (this._destroyed) return;
       Object.assign(this._nodes, nodes);
+      for (const nodeKey of Object.keys(nodes)) {
+        const depth = getDepth(nodeKey);
+        if (depth > this._maxDepth) this._maxDepth = depth;
+      }
       delete this._pages[key];
       Object.assign(this._pages, pages);
       void this._updateLoD();
@@ -547,9 +556,10 @@ export class CopcDataSource {
   }
 
   /** Deepest octree level present in the loaded hierarchy so far — grows as
-   *  sub-pages load, so this is computed live rather than cached at load time. */
+   *  sub-pages load, and is tracked incrementally in `_loadPage()` rather than
+   *  recomputed on every read (see `_maxDepth`). */
   get maxDepth(): number {
-    return Math.max(...Object.keys(this._nodes).map(getDepth));
+    return this._maxDepth;
   }
 
   /** Total number of nodes in the loaded hierarchy (loaded or not). */

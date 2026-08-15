@@ -410,6 +410,35 @@ describe('CopcDataSource update loop', () => {
     expect(loadHierarchyPage).toHaveBeenCalledTimes(2);
   });
 
+  it('merges a large (~150k-key) hierarchy sub-page without a maxDepth stack overflow (#126)', async () => {
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 10, 10, 10], rootHierarchyPage: { pageOffset: 0, pageLength: 10 } },
+      header: { min: [0, 0, 0], max: [10, 10, 10] },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({
+      nodes: { '0-0-0-0': { pointCount: 1, pointDataOffset: 0, pointDataLength: 1 } },
+      pages: { '1-1-1-1': { pageOffset: 100, pageLength: 20 } },
+    });
+    const bigNodes: Record<string, Hierarchy.Node> = {};
+    for (let i = 1; i <= 150_000; i++) {
+      bigNodes[`${i % 7}-${i}-0-0`] = { pointCount: 1, pointDataOffset: i, pointDataLength: 1 };
+    }
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: bigNodes, pages: {} });
+    selectNodesMock.mockImplementation((opts: unknown) => {
+      (opts as { onPageNeeded?: (key: string) => void }).onPageNeeded?.('1-1-1-1');
+      return ['0-0-0-0'];
+    });
+
+    const { viewer, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+
+    await vi.waitFor(() => expect(ds.nodeCount).toBe(150_001));
+    expect(() => ds.maxDepth).not.toThrow();
+    expect(ds.maxDepth).toBe(6);
+  });
+
   it('hides a cached node when it drops out of the LoD selection, and re-shows it without re-dispatching if reselected', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);

@@ -116,4 +116,21 @@ describe('loadCopcHierarchy', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('computes max depth without a stack overflow on a large (~150k-key) node map (#126)', async () => {
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
+      wkt: undefined,
+    });
+    const nodes: Record<string, { pointCount: number }> = {};
+    for (let i = 0; i < 150_000; i++) {
+      // Depths 0-6 so there's a definite max, spread across distinct keys.
+      nodes[`${i % 7}-${i}-0-0`] = { pointCount: 1 };
+    }
+    loadHierarchyPage.mockResolvedValueOnce({ nodes, pages: {} });
+
+    const result = await loadCopcHierarchy('https://example.com/sample.copc.laz');
+
+    expect(result.maxDepth).toBe(6);
+  });
 });

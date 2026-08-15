@@ -56,7 +56,13 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   const rootHalfSize = (maxx - minx) / 2;
 
   const { nodes, pages } = await Copc.loadHierarchyPage(url, copc.info.rootHierarchyPage);
-  const maxDepth = Math.max(...Object.keys(nodes).map(getDepth));
+  // A manual reduce instead of `Math.max(...keys.map(getDepth))` — spreading a
+  // large array into call arguments can blow the call stack (see #126).
+  let maxDepth = 0;
+  for (const key of Object.keys(nodes)) {
+    const depth = getDepth(key);
+    if (depth > maxDepth) maxDepth = depth;
+  }
 
   return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize };
 }
