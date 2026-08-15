@@ -131,15 +131,22 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
   const needsProj = proj !== 'EPSG:4326';
   const converter = needsProj ? proj4(proj, 'EPSG:4326') : null;
 
-  // Sample the RGB range once up front so 16-bit-encoded colors (0-65535,
-  // common in LAS producers) scale down correctly instead of clipping to a
-  // handful of near-black values.
+  // Read each point's raw RGB once into a scratch buffer while tracking
+  // maxColor in the same pass, so 16-bit-encoded colors (0-65535, common in
+  // LAS producers) still scale down correctly without a second round of
+  // getter calls (each of which does a bounds check, an offset computation,
+  // and a DataView read) during the main loop below.
   let maxColor = 0;
-  if (hasRGB) {
+  const rgbRaw = hasRGB ? new Uint16Array(n * 3) : null;
+  if (hasRGB && rgbRaw) {
     for (let i = 0; i < n; i++) {
       const r = getR!(i);
       const g = getG!(i);
       const b = getB!(i);
+      const i3 = i * 3;
+      rgbRaw[i3] = r;
+      rgbRaw[i3 + 1] = g;
+      rgbRaw[i3 + 2] = b;
       if (r > maxColor) maxColor = r;
       if (g > maxColor) maxColor = g;
       if (b > maxColor) maxColor = b;
@@ -211,10 +218,10 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
     elevations[i] = Math.max(0, Math.min(65535, Math.round((z - zMin) * zScale)));
 
     const i4 = i * 4;
-    if (hasRGB) {
-      colors[i4] = clamp255((getR!(i) / colorScale) * 255);
-      colors[i4 + 1] = clamp255((getG!(i) / colorScale) * 255);
-      colors[i4 + 2] = clamp255((getB!(i) / colorScale) * 255);
+    if (hasRGB && rgbRaw) {
+      colors[i4] = clamp255((rgbRaw[i3] / colorScale) * 255);
+      colors[i4 + 1] = clamp255((rgbRaw[i3 + 1] / colorScale) * 255);
+      colors[i4 + 2] = clamp255((rgbRaw[i3 + 2] / colorScale) * 255);
     } else if (getCls) {
       const [r, g, b] = CLASSIFICATION_COLORS[cls] ?? DEFAULT_CLASS_COLOR;
       colors[i4] = r;
