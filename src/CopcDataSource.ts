@@ -3,7 +3,7 @@ import proj4 from 'proj4';
 import { Copc, type Hierarchy } from 'copc';
 import type { ColorMode, CopcDataSourceOptions, LoadedNode, NodeRenderData } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
-import { getDepth, isAncestorOf } from './copc/node';
+import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { RangeFetcher } from './copc/RangeFetcher';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
@@ -313,6 +313,10 @@ export class CopcDataSource {
       }
 
       const stillShown = new Set(newSelectedKeys);
+      // Bucketed once per pass (not once per deselected key) so
+      // _isReplacementReady() doesn't re-parse every candidate key on every
+      // call -- see findRelevantKeys().
+      const selectionBuckets = bucketKeysByDepth(newSelectedKeys);
       for (const key of this._selectedKeys) {
         if (newSelectedKeys.has(key)) continue;
         const node = this._nodeCache.peek(key);
@@ -320,7 +324,7 @@ export class CopcDataSource {
         const primitive = node.primitive as PointCloudPrimitive;
         if (!primitive.show) continue;
 
-        if (this._isReplacementReady(key, newSelectedKeys)) {
+        if (this._isReplacementReady(key, selectionBuckets)) {
           primitive.show = false;
           sceneChanged = true;
         } else {
@@ -351,11 +355,8 @@ export class CopcDataSource {
    *  and shown; a node with neither relationship in the new selection (e.g. a
    *  sibling-only change, or it simply left the frustum) has nothing that
    *  would cover its absence anyway, so it's treated as immediately ready. */
-  private _isReplacementReady(key: string, newSelectedKeys: Set<string>): boolean {
-    const relevant: string[] = [];
-    for (const candidate of newSelectedKeys) {
-      if (isAncestorOf(key, candidate) || isAncestorOf(candidate, key)) relevant.push(candidate);
-    }
+  private _isReplacementReady(key: string, selectionBuckets: Map<number, ParsedKey[]>): boolean {
+    const relevant = findRelevantKeys(key, selectionBuckets);
     if (relevant.length === 0) return true;
 
     return relevant.every((candidate) => {

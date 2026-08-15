@@ -26,6 +26,54 @@ export function isAncestorOf(ancestorKey: string, key: string): boolean {
   return x >> shift === ax && y >> shift === ay && z >> shift === az;
 }
 
+/** A node key split into its integer parts, kept alongside the original
+ *  string so callers don't have to re-parse it after a bucket lookup. */
+export interface ParsedKey {
+  key: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Groups `keys` by depth into pre-parsed integer tuples. Used to make
+ *  repeated ancestor/descendant lookups (see `findRelevantKeys`) cheap: each
+ *  key is split once here instead of being re-split by every comparison. */
+export function bucketKeysByDepth(keys: Iterable<string>): Map<number, ParsedKey[]> {
+  const buckets = new Map<number, ParsedKey[]>();
+  for (const key of keys) {
+    const [d, x, y, z] = key.split('-').map(Number);
+    let bucket = buckets.get(d);
+    if (!bucket) buckets.set(d, (bucket = []));
+    bucket.push({ key, x, y, z });
+  }
+  return buckets;
+}
+
+/**
+ * Returns the keys in `buckets` that are an ancestor or descendant of `key`
+ * at any depth -- equivalent to scanning every candidate with two
+ * `isAncestorOf()` calls apiece, but without re-parsing `buckets`' keys on
+ * every call, and skipping candidates at `key`'s own depth outright (neither
+ * relationship is possible there, since `isAncestorOf` requires a depth
+ * difference).
+ */
+export function findRelevantKeys(key: string, buckets: Map<number, ParsedKey[]>): string[] {
+  const [d, x, y, z] = key.split('-').map(Number);
+  const relevant: string[] = [];
+  for (const [cd, candidates] of buckets) {
+    if (cd === d) continue;
+    const shift = cd > d ? cd - d : d - cd;
+    for (const c of candidates) {
+      const isRelevant =
+        cd > d
+          ? c.x >> shift === x && c.y >> shift === y && c.z >> shift === z
+          : x >> shift === c.x && y >> shift === c.y && z >> shift === c.z;
+      if (isRelevant) relevant.push(c.key);
+    }
+  }
+  return relevant;
+}
+
 /**
  * Returns the 8 child keys of a node key.
  * D-X-Y-Z → (D+1)-(2X+dx)-(2Y+dy)-(2Z+dz), dx/dy/dz ∈ {0,1}
