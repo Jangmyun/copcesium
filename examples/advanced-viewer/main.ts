@@ -100,6 +100,16 @@ const PRESETS: Record<string, PresetConfig> = {
     url: 'https://s3.amazonaws.com/hobu-lidar/iowa-50m-3dep-2019-2020.copc.laz',
     size: '~3.6 GB',
   },
+  nyc: {
+    label: 'New York City',
+    url: 'https://s3.amazonaws.com/hobu-lidar/nyc.copc.laz',
+    size: '~26.5 GB',
+  },
+  montreal: {
+    label: 'Montréal',
+    url: 'https://s3.amazonaws.com/hobu-lidar/montreal-2015.copc.laz',
+    size: '~51.9 GB',
+  },
 };
 
 // ASPRS classification codes this example's filter panel and legend cover.
@@ -589,6 +599,12 @@ reloadBtn.addEventListener('click', () => {
 });
 
 // ── Initial load ─────────────────────────────────────────────
+// The legend is otherwise only drawn on click, leaving the box empty next to
+// an already-active mode button until the user picks a different one.
+updateColorLegend(
+  ((colorModeGrid.querySelector('.color-btn.active') as HTMLElement | null)?.dataset.mode ??
+    'intensity') as ColorMode,
+);
 renderPresetList(null);
 setActivePreset('autzen');
 urlInput.value = PRESETS.autzen.url;

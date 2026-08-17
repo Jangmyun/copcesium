@@ -204,7 +204,7 @@ export default function ViewerContent({
   const [proj, setProj] = useState(SAMPLE_DATASETS[0].options.proj ?? 'EPSG:4326');
   const [pixelSize, setPixelSize] = useState(2);
   const [sseThreshold, setSseThreshold] = useState(250);
-  const [colorMode, setColorMode] = useState<ColorMode>('classification');
+  const [colorMode, setColorMode] = useState<ColorMode>('intensity');
   const [checkedClasses, setCheckedClasses] = useState<Set<number>>(
     () => new Set(CLASSES.map(([code]) => code)),
   );

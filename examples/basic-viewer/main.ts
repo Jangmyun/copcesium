@@ -76,6 +76,17 @@ const SAMPLE_DATASETS: SampleDataset[] = [
     url: 'https://s3.amazonaws.com/hobu-lidar/iowa-50m-3dep-2019-2020.copc.laz',
     options: {},
   },
+
+  {
+    label: 'New York City — New York, USA (~26.5 GB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/nyc.copc.laz',
+    options: {},
+  },
+  {
+    label: 'Montréal — Québec, Canada (~51.9 GB)',
+    url: 'https://s3.amazonaws.com/hobu-lidar/montreal-2015.copc.laz',
+    options: {},
+  },
 ];
 
 const urlInput = document.getElementById('urlInput') as HTMLInputElement;

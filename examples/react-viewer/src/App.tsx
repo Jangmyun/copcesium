@@ -24,7 +24,7 @@ export default function App() {
   const [url, setUrl] = useState(SAMPLE_DATASETS[0].url);
   const [pixelSize, setPixelSize] = useState(2);
   const [sseThreshold, setSseThreshold] = useState(250);
-  const [colorMode, setColorMode] = useState<ColorMode>('rgb');
+  const [colorMode, setColorMode] = useState<ColorMode>('intensity');
   const [checkedClasses, setCheckedClasses] = useState<Set<number>>(
     () => new Set(CLASSES.map(([code]) => code)),
   );
