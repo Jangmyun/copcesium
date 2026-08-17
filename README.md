@@ -20,6 +20,7 @@ CesiumJS provider for real-time [COPC](https://copc.io/) (Cloud Optimized Point 
 ## Table of contents
 
 - [Installation](#installation)
+- [Setup](#setup)
 - [Quick start](#quick-start)
 - [Options](#options)
 - [API reference](#api-reference)
@@ -37,6 +38,42 @@ npm install copcesium cesium
 ```
 
 `cesium` is a peer dependency (`>=1.100.0`) — install whichever version your app already uses. copcesium is **ESM-only** (no CommonJS build): the Worker and its `laz-perf` WASM are inlined into a single `.mjs` at build time, which needs `import.meta.url` semantics that `require()` can't provide.
+
+## Setup
+
+copcesium itself needs no setup — its Worker and WASM are inlined into the published `.mjs`, so there's no side asset to wire up. **CesiumJS does**: it fetches `Workers/`, `Assets/`, `Widgets/`, and `ThirdParty/` at runtime, and a bundler won't find those on its own. Skipping this step leaves a blank page and 404s in the console.
+
+With Vite, [`vite-plugin-cesium`](https://www.npmjs.com/package/vite-plugin-cesium) handles it:
+
+```bash
+npm install -D vite-plugin-cesium
+```
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
+import cesium from 'vite-plugin-cesium';
+
+export default defineConfig({ plugins: [cesium()] });
+```
+
+Cesium also renders into an element you provide, which needs an explicit height — a container with no height produces a 0px canvas, which looks exactly like a broken build:
+
+```html
+<!-- index.html -->
+<style>
+  html, body, #cesiumContainer { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+</style>
+
+<div id="cesiumContainer"></div>
+<script type="module" src="/main.ts"></script>
+```
+
+On another bundler, do the same two things by hand: copy `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}` into your static output, and point Cesium at them before the first `import`:
+
+```js
+window.CESIUM_BASE_URL = '/cesium/';
+```
 
 ## Quick start
 

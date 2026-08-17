@@ -20,6 +20,7 @@
 ## 목차
 
 - [설치](#설치)
+- [셋업](#셋업)
 - [빠른 시작](#빠른-시작)
 - [옵션](#옵션)
 - [API 레퍼런스](#api-레퍼런스)
@@ -36,6 +37,42 @@ npm install copcesium cesium
 ```
 
 `cesium`은 peer dependency(`>=1.100.0`)입니다 — 이미 프로젝트에서 쓰고 있는 버전을 그대로 설치하면 됩니다. copcesium은 **ESM 전용**입니다(CommonJS 빌드 없음). Worker와 `laz-perf` WASM이 빌드 시점에 단일 `.mjs`로 인라인되는데, 이때 `require()`가 제공하지 못하는 `import.meta.url` 시맨틱이 필요하기 때문입니다.
+
+## 셋업
+
+copcesium 자체는 셋업이 필요 없습니다 — Worker와 WASM이 배포되는 `.mjs`에 인라인되어 있어서 따로 연결할 부수 에셋이 없습니다. **하지만 CesiumJS는 필요합니다.** Cesium은 런타임에 `Workers/`, `Assets/`, `Widgets/`, `ThirdParty/`를 가져오는데, 번들러가 이를 알아서 찾아주지는 않습니다. 이 단계를 건너뛰면 **빈 화면과 콘솔의 404**만 남습니다.
+
+Vite를 쓴다면 [`vite-plugin-cesium`](https://www.npmjs.com/package/vite-plugin-cesium)이 처리해줍니다:
+
+```bash
+npm install -D vite-plugin-cesium
+```
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite';
+import cesium from 'vite-plugin-cesium';
+
+export default defineConfig({ plugins: [cesium()] });
+```
+
+또한 Cesium은 여러분이 제공한 엘리먼트 안에 렌더링하며, 그 엘리먼트에는 **명시적인 높이**가 필요합니다. 높이가 없는 컨테이너는 0px 캔버스가 되는데, 화면상으로는 빌드가 깨진 것과 구별되지 않습니다:
+
+```html
+<!-- index.html -->
+<style>
+  html, body, #cesiumContainer { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+</style>
+
+<div id="cesiumContainer"></div>
+<script type="module" src="/main.ts"></script>
+```
+
+다른 번들러를 쓴다면 같은 두 가지를 직접 해주면 됩니다. `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}`를 정적 출력 경로로 복사하고, 첫 `import` 전에 Cesium이 그곳을 보도록 지정합니다:
+
+```js
+window.CESIUM_BASE_URL = '/cesium/';
+```
 
 ## 빠른 시작
 
