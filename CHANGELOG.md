@@ -3,6 +3,40 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-08-17
+
+### Fixed
+
+- **Lowering `opacity` below 1 stopped rendering entirely.** The fragment
+  shader declared its output as `out vec4 fragColor;`, but Cesium's shader
+  pipeline recognizes the literal name `out_FragColor` — it auto-injects
+  `layout(location = 0) out vec4 out_FragColor;` when a fragment shader
+  references that name and doesn't already declare it. A differently named
+  output was invisible to that step, so once `opacity < 1` switched the draw
+  command to `Pass.TRANSLUCENT` and Cesium's order-independent-translucency
+  pass added its own multi-render-target outputs, the shader was left with an
+  output carrying no explicit location — which WebGL rejects, failing
+  compilation and halting the render. The output is now referenced as
+  `out_FragColor` and left undeclared, so Cesium's own declaration is the only
+  one. Declaring it here would break the derived shaders instead:
+  `PointCloudEyeDomeLighting` rewrites this shader for `POINTS` commands (which
+  ours are) by prepending its own `out_FragData_0` and replacing every
+  `out_FragColor` in the source, which would turn a local declaration into a
+  duplicate. (#173)
+- **A hierarchy page that answered with a permanent 4xx burned the whole retry
+  budget.** `_loadPage()` treated every `Copc.loadHierarchyPage()` failure the
+  same, so a 404 on a removed page (or a 416 on a bad range) spent all three
+  attempts and both backoff delays before giving up on an answer that was never
+  going to change. The cause sat one layer deeper than it looked: `_loadPage()`
+  passed the raw URL to `Copc.loadHierarchyPage()`, and the `copc` package's
+  default HTTP getter never inspects the response status — a 404 comes back as
+  ordinary body bytes rather than a classifiable error, so no `status` ever
+  reached the catch block to classify. `_loadPage()` now passes a
+  single-attempt, status-checked getter (strictly 206, matching
+  `RangeFetcher`'s convention from #117) and gives up immediately when
+  `isRetryable()` says the failure is settled. Transient and 5xx-shaped
+  failures keep the full retry budget. (#139)
+
 ## [1.3.0] - 2026-08-17
 
 ### Added
