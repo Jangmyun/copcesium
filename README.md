@@ -220,8 +220,8 @@ Full details — the detection flow, the proj4 fallback table, vertical-unit (`z
 
 copcesium is framework-agnostic, but a large share of Cesium usage happens through React — two more examples show that integration:
 
-- [`examples/react-viewer`](./examples/react-viewer) — the same minimal viewer, from a plain React component (`useRef`/`useEffect`, no wrapper library).
-- [`examples/react-resium-viewer`](./examples/react-resium-viewer) — a styled sidebar viewer built on [resium](https://resium.reearth.io/), reaching `copcesium`'s imperative API via resium's `useCesium()` hook.
+- [`examples/react/react-viewer`](./examples/react/react-viewer) — the same minimal viewer, from a plain React component (`useRef`/`useEffect`, no wrapper library).
+- [`examples/react/react-resium-viewer`](./examples/react/react-resium-viewer) — a styled sidebar viewer built on [resium](https://resium.reearth.io/), reaching `copcesium`'s imperative API via resium's `useCesium()` hook.
 
 ```bash
 git clone https://github.com/Jangmyun/copcesium.git

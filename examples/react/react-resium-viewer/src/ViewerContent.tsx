@@ -1,7 +1,7 @@
 // Rendered as a child of resium's <Viewer>, so `useCesium()` here resolves
 // to the real Cesium.Viewer instance from context — the idiomatic resium way
 // to reach imperative Cesium/copcesium APIs, in contrast to the ref-based
-// escape hatch shown in examples/react-viewer.
+// escape hatch shown in examples/react/react-viewer.
 //
 // The icon-rail/tabbed-panel/footer shell is ported from copcesium's earlier
 // prototype UI, restyled but structurally the same. Only the design moved —
