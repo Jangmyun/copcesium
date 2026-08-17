@@ -151,6 +151,10 @@ const filterAllCheck = document.getElementById('filterAllCheck')!;
 const classFilterList = document.getElementById('classFilterList')!;
 
 const pixelSizeSlider = document.getElementById('pixelSizeSlider') as HTMLInputElement;
+const opacitySlider = document.getElementById('opacitySlider') as HTMLInputElement;
+const opacityDisplay = document.getElementById('opacityDisplay')!;
+const heightOffsetSlider = document.getElementById('heightOffsetSlider') as HTMLInputElement;
+const heightOffsetDisplay = document.getElementById('heightOffsetDisplay')!;
 const pixelSizeDisplay = document.getElementById('pixelSizeDisplay')!;
 
 const infoName = document.getElementById('infoName')!;
@@ -300,6 +304,19 @@ pixelSizeSlider.addEventListener('input', () => {
   const v = parseFloat(pixelSizeSlider.value);
   pixelSizeDisplay.textContent = v.toFixed(1);
   if (currentDs) currentDs.pixelSize = v;
+});
+opacitySlider.addEventListener('input', () => {
+  const v = parseFloat(opacitySlider.value);
+  opacityDisplay.textContent = v.toFixed(2);
+  if (currentDs) currentDs.opacity = v;
+});
+// Corrects a geoid/vertical-datum mismatch that leaves the cloud floating
+// above or buried under the globe surface. A model-matrix shift per node, so
+// dragging this costs nothing beyond a re-render.
+heightOffsetSlider.addEventListener('input', () => {
+  const v = parseFloat(heightOffsetSlider.value);
+  heightOffsetDisplay.textContent = `${v.toFixed(1)} m`;
+  if (currentDs) currentDs.heightOffset = v;
 });
 
 // ── Appearance: color mode ──────────────────────────────────
@@ -543,12 +560,17 @@ async function loadCopc(
       pixelSize: parseFloat(pixelSizeSlider.value),
       sseThreshold: parseInt(sseSlider.value, 10),
       colorMode: activeMode,
+      opacity: parseFloat(opacitySlider.value),
       classificationFilter: Object.values(_classOn).every((v) => v)
         ? undefined
         : Object.entries(_classOn)
             .filter(([, on]) => on)
             .map(([code]) => Number(code)),
     });
+
+    // heightOffset is a live property only — it isn't part of
+    // CopcDataSourceOptions, so it's applied after load rather than passed in.
+    ds.heightOffset = parseFloat(heightOffsetSlider.value);
 
     currentDs = ds;
     currentUrl = url;

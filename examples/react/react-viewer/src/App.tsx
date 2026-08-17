@@ -25,6 +25,8 @@ export default function App() {
   const [pixelSize, setPixelSize] = useState(2);
   const [sseThreshold, setSseThreshold] = useState(250);
   const [colorMode, setColorMode] = useState<ColorMode>('intensity');
+  const [opacity, setOpacity] = useState(1);
+  const [heightOffset, setHeightOffset] = useState(0);
   const [checkedClasses, setCheckedClasses] = useState<Set<number>>(
     () => new Set(CLASSES.map(([code]) => code)),
   );
@@ -56,6 +58,7 @@ export default function App() {
           pixelSize,
           sseThreshold,
           colorMode,
+          opacity,
           classificationFilter,
         });
         // The viewer (and this component) may have unmounted while the
@@ -65,6 +68,10 @@ export default function App() {
           ds.destroy();
           return;
         }
+        // heightOffset is a live property only — it isn't part of
+        // CopcDataSourceOptions, so it's applied after load rather than
+        // passed in.
+        ds.heightOffset = heightOffset;
         dsRef.current = ds;
         setStatus('Loaded');
       } catch (err) {
@@ -75,7 +82,7 @@ export default function App() {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pixelSize, sseThreshold, colorMode, classificationFilter],
+    [pixelSize, sseThreshold, colorMode, opacity, heightOffset, classificationFilter],
   );
 
   // Runs once: create the viewer and load the initial dataset. Live property
@@ -128,6 +135,21 @@ export default function App() {
     const value = Number(e.target.value);
     setSseThreshold(value);
     if (dsRef.current) dsRef.current.sseThreshold = value;
+  }
+
+  function handleOpacityChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = Number(e.target.value);
+    setOpacity(value);
+    if (dsRef.current) dsRef.current.opacity = value;
+  }
+
+  // Corrects a geoid/vertical-datum mismatch that leaves the cloud floating
+  // above or buried under the globe surface. A model-matrix shift per node,
+  // so dragging this costs nothing beyond a re-render.
+  function handleHeightOffsetChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = Number(e.target.value);
+    setHeightOffset(value);
+    if (dsRef.current) dsRef.current.heightOffset = value;
   }
 
   function handleColorModeChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -198,6 +220,28 @@ export default function App() {
             step={10}
             value={sseThreshold}
             onChange={handleSseThresholdChange}
+          />
+        </label>
+        <label>
+          opacity: <span>{opacity.toFixed(2)}</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={opacity}
+            onChange={handleOpacityChange}
+          />
+        </label>
+        <label>
+          heightOffset (m): <span>{heightOffset.toFixed(1)}</span>
+          <input
+            type="range"
+            min={-100}
+            max={100}
+            step={0.5}
+            value={heightOffset}
+            onChange={handleHeightOffsetChange}
           />
         </label>
         <hr />

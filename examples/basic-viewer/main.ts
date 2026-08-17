@@ -108,6 +108,10 @@ const errorEl = document.getElementById('error')!;
 const pixelSizeSlider = document.getElementById('pixelSize') as HTMLInputElement;
 const pixelSizeValue = document.getElementById('pixelSizeValue')!;
 const sseThresholdSlider = document.getElementById('sseThreshold') as HTMLInputElement;
+const opacitySlider = document.getElementById('opacity') as HTMLInputElement;
+const opacityValue = document.getElementById('opacityValue')!;
+const heightOffsetSlider = document.getElementById('heightOffset') as HTMLInputElement;
+const heightOffsetValue = document.getElementById('heightOffsetValue')!;
 const sseThresholdValue = document.getElementById('sseThresholdValue')!;
 const colorModeSelect = document.getElementById('colorMode') as HTMLSelectElement;
 const classChecksEl = document.getElementById('classChecks')!;
@@ -145,8 +149,12 @@ async function load(url: string, options: CopcDataSourceOptions = {}): Promise<v
       pixelSize: parseFloat(pixelSizeSlider.value),
       sseThreshold: parseFloat(sseThresholdSlider.value),
       colorMode: colorModeSelect.value as ColorMode,
+      opacity: parseFloat(opacitySlider.value),
       classificationFilter: readClassFilter(),
     });
+    // heightOffset is a live property only — it isn't part of
+    // CopcDataSourceOptions, so it's applied after load rather than passed in.
+    currentDs.heightOffset = parseFloat(heightOffsetSlider.value);
     statusEl.textContent = 'Loaded';
   } catch (err) {
     statusEl.textContent = '';
@@ -186,6 +194,21 @@ sseThresholdValue.textContent = sseThresholdSlider.value;
 sseThresholdSlider.addEventListener('input', () => {
   sseThresholdValue.textContent = sseThresholdSlider.value;
   if (currentDs) currentDs.sseThreshold = parseFloat(sseThresholdSlider.value);
+});
+
+opacityValue.textContent = opacitySlider.value;
+opacitySlider.addEventListener('input', () => {
+  opacityValue.textContent = opacitySlider.value;
+  if (currentDs) currentDs.opacity = parseFloat(opacitySlider.value);
+});
+
+// Corrects a geoid/vertical-datum mismatch that leaves the cloud floating
+// above or buried under the globe surface. A model-matrix shift per node, so
+// dragging this costs nothing beyond a re-render.
+heightOffsetValue.textContent = heightOffsetSlider.value;
+heightOffsetSlider.addEventListener('input', () => {
+  heightOffsetValue.textContent = heightOffsetSlider.value;
+  if (currentDs) currentDs.heightOffset = parseFloat(heightOffsetSlider.value);
 });
 
 colorModeSelect.addEventListener('change', () => {

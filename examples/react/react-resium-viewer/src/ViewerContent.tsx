@@ -6,11 +6,11 @@
 // The icon-rail/tabbed-panel/footer shell is ported from copcesium's earlier
 // prototype UI, restyled but structurally the same. Only the design moved —
 // every control below is wired to a feature the current `copcesium` library
-// actually exposes (`pixelSize`, `colorMode`, `classificationFilter`,
-// `sseThreshold`, `heightOffset`, `maxDepth`/`nodeCount`/`cacheSize`,
-// `zoomTo()`). The prototype's per-node progress readout, opacity, and
-// per-dataset CRS override sliders relied on an older library API this
-// version doesn't have, so they aren't reproduced here.
+// actually exposes (`pixelSize`, `opacity`, `colorMode`,
+// `classificationFilter`, `sseThreshold`, `heightOffset`,
+// `maxDepth`/`nodeCount`/`cacheSize`, `zoomTo()`). The prototype's per-node
+// progress readout and per-dataset CRS override sliders relied on an older
+// library API this version doesn't have, so they aren't reproduced here.
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useCesium } from 'resium';
 import type { ColorMode } from 'copcesium';
@@ -203,6 +203,7 @@ export default function ViewerContent({
   const [url, setUrl] = useState(SAMPLE_DATASETS[0].url);
   const [proj, setProj] = useState(SAMPLE_DATASETS[0].options.proj ?? 'EPSG:4326');
   const [pixelSize, setPixelSize] = useState(2);
+  const [opacity, setOpacity] = useState(1);
   const [sseThreshold, setSseThreshold] = useState(250);
   const [colorMode, setColorMode] = useState<ColorMode>('intensity');
   const [checkedClasses, setCheckedClasses] = useState<Set<number>>(
@@ -225,7 +226,7 @@ export default function ViewerContent({
     if (!viewer || initialLoadTriggered.current) return;
     initialLoadTriggered.current = true;
     const dataset = SAMPLE_DATASETS[0];
-    void load(dataset.url, { ...dataset.options, pixelSize, sseThreshold, colorMode });
+    void load(dataset.url, { ...dataset.options, pixelSize, opacity, sseThreshold, colorMode });
     // Only the initial load reads the current slider/select state; every
     // later load or live edit goes through the handlers below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -250,6 +251,7 @@ export default function ViewerContent({
     void load(dataset.url, {
       ...dataset.options,
       pixelSize,
+      opacity,
       sseThreshold,
       colorMode,
       classificationFilter: readClassFilter(checkedClasses),
@@ -263,6 +265,7 @@ export default function ViewerContent({
     setHeightOffsetText('0');
     void load(url.trim(), {
       pixelSize,
+      opacity,
       sseThreshold,
       colorMode,
       classificationFilter: readClassFilter(checkedClasses),
@@ -273,6 +276,12 @@ export default function ViewerContent({
     const value = Number(e.target.value);
     setPixelSize(value);
     if (dataSourceRef.current) dataSourceRef.current.pixelSize = value;
+  }
+
+  function handleOpacityChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = Number(e.target.value);
+    setOpacity(value);
+    if (dataSourceRef.current) dataSourceRef.current.opacity = value;
   }
 
   function handleSseThresholdChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -653,20 +662,36 @@ export default function ViewerContent({
           )}
 
           {tab === 'points' && (
-            <div className="sliderRow">
-              <div className="sliderHeader">
-                <span className="label">Point size</span>
-                <span className="val">{pixelSize.toFixed(1)}</span>
+            <>
+              <div className="sliderRow">
+                <div className="sliderHeader">
+                  <span className="label">Point size</span>
+                  <span className="val">{pixelSize.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={8}
+                  step={0.1}
+                  value={pixelSize}
+                  onChange={handlePixelSizeChange}
+                />
               </div>
-              <input
-                type="range"
-                min={0.5}
-                max={8}
-                step={0.1}
-                value={pixelSize}
-                onChange={handlePixelSizeChange}
-              />
-            </div>
+              <div className="sliderRow">
+                <div className="sliderHeader">
+                  <span className="label">Opacity</span>
+                  <span className="val">{opacity.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={opacity}
+                  onChange={handleOpacityChange}
+                />
+              </div>
+            </>
           )}
 
           {tab === 'info' && (
