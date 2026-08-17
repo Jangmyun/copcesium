@@ -118,7 +118,15 @@ void main() {
 
 export const fragmentShaderSource = `
 in vec4 v_color;
-out vec4 fragColor;
+// Cesium's order-independent-translucency pass rewrites this shader on the
+// fly for the translucent (opacity < 1) draw path: it string-matches the
+// output variable name "out_FragColor" (with an explicit location) to strip
+// this declaration and inject its own multi-render-target outputs instead.
+// A differently named/undecorated "out" here survives that rewrite alongside
+// the injected outputs, leaving one output without an explicit location -
+// which WebGL rejects ("must explicitly specify all locations ... multiple
+// fragment outputs") the moment opacity drops below 1.
+layout(location = 0) out vec4 out_FragColor;
 void main() {
-  fragColor = v_color;
+  out_FragColor = v_color;
 }`;
