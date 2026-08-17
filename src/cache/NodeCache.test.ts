@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NodeCache } from './NodeCache';
 import type { LoadedNode } from '../types';
+import type { PointCloudPrimitive } from '../renderer/PointCloudPrimitive';
 
-function makeNode(key: string): LoadedNode {
-  return { key, primitive: { destroyed: false }, pointCount: 1 };
+// The cache only ever holds `primitive` and hands it back to onEvict, so a bare
+// stand-in is enough; a real PointCloudPrimitive would need a GPU context.
+function makeNode(key: string, pointCount = 1): LoadedNode {
+  return { key, primitive: {} as unknown as PointCloudPrimitive, pointCount };
 }
 
 describe('NodeCache', () => {
@@ -260,8 +263,8 @@ describe('NodeCache', () => {
     // 21 bytes/point * 100 points = 2100 bytes/node; budget of 3000 fits one
     // node but not two.
     const cache = new NodeCache(10, onEvict, 3000);
-    const a: LoadedNode = { key: 'a', primitive: {}, pointCount: 100 };
-    const b: LoadedNode = { key: 'b', primitive: {}, pointCount: 100 };
+    const a = makeNode('a', 100);
+    const b = makeNode('b', 100);
 
     cache.set('a', a);
     cache.set('b', b); // still well under maxNodes, but over maxBytes -> evicts 'a'
@@ -274,7 +277,7 @@ describe('NodeCache', () => {
   it('does not evict on byte size when maxBytes is undefined, however large pointCount gets', () => {
     const onEvict = vi.fn();
     const cache = new NodeCache(10, onEvict);
-    const huge: LoadedNode = { key: 'huge', primitive: {}, pointCount: 10_000_000 };
+    const huge = makeNode('huge', 10_000_000);
 
     cache.set('huge', huge);
 
@@ -286,9 +289,9 @@ describe('NodeCache', () => {
     const onEvict = vi.fn();
     // Budget for exactly two 100-point (2100-byte) nodes.
     const cache = new NodeCache(10, onEvict, 4200);
-    const a: LoadedNode = { key: 'a', primitive: {}, pointCount: 100 };
-    const b: LoadedNode = { key: 'b', primitive: {}, pointCount: 100 };
-    const c: LoadedNode = { key: 'c', primitive: {}, pointCount: 100 };
+    const a = makeNode('a', 100);
+    const b = makeNode('b', 100);
+    const c = makeNode('c', 100);
 
     cache.set('a', a);
     cache.set('b', b);
@@ -302,9 +305,9 @@ describe('NodeCache', () => {
   it('subtracts a node from the byte total once it is evicted, so freed bytes are not double-counted', () => {
     const onEvict = vi.fn();
     const cache = new NodeCache(10, onEvict, 2100);
-    const a: LoadedNode = { key: 'a', primitive: {}, pointCount: 100 };
-    const b: LoadedNode = { key: 'b', primitive: {}, pointCount: 100 };
-    const c: LoadedNode = { key: 'c', primitive: {}, pointCount: 100 };
+    const a = makeNode('a', 100);
+    const b = makeNode('b', 100);
+    const c = makeNode('c', 100);
 
     cache.set('a', a);
     cache.set('b', b); // evicts 'a', leaving only 'b' (2100 bytes, at budget)

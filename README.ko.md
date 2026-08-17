@@ -210,8 +210,8 @@ CORS, Range Request, 좌표가 엉뚱한 위치에 찍히는 문제는 [Troubles
 
 copcesium은 프레임워크에 종속되지 않지만, Cesium 사용의 상당수는 React를 통해 이루어집니다 — 아래 두 예제가 그 통합 방식을 보여줍니다:
 
-- [`examples/react-viewer`](./examples/react-viewer) — 같은 최소 구성의 뷰어를 순수 React 컴포넌트(`useRef`/`useEffect`, 별도 래퍼 라이브러리 없음)로 구현한 예제.
-- [`examples/react-resium-viewer`](./examples/react-resium-viewer) — [resium](https://resium.reearth.io/) 기반의 스타일링된 사이드바 뷰어로, resium의 `useCesium()` 훅을 통해 `copcesium`의 명령형 API에 접근합니다.
+- [`examples/react/react-viewer`](./examples/react/react-viewer) — 같은 최소 구성의 뷰어를 순수 React 컴포넌트(`useRef`/`useEffect`, 별도 래퍼 라이브러리 없음)로 구현한 예제.
+- [`examples/react/react-resium-viewer`](./examples/react/react-resium-viewer) — [resium](https://resium.reearth.io/) 기반의 스타일링된 사이드바 뷰어로, resium의 `useCesium()` 훅을 통해 `copcesium`의 명령형 API에 접근합니다.
 
 ```bash
 git clone https://github.com/Jangmyun/copcesium.git
