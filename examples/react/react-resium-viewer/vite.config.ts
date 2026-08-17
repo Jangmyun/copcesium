@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import cesium from 'vite-plugin-cesium';
 import { resolve } from 'path';
-import { lazPerfWasmInlinePlugin } from '../../vite-plugins/lazPerfWasmInline.ts';
+import { lazPerfWasmInlinePlugin } from '../../../vite-plugins/lazPerfWasmInline.ts';
 
 // `npm run dev` (default mode) installs `copcesium` from the registry, the
 // only way to exercise the published package the way a real consumer does.
@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: useSrc ? [react(), cesium(), lazPerfWasmInlinePlugin()] : [react(), cesium()],
     resolve: useSrc
-      ? { alias: { copcesium: resolve(import.meta.dirname, '../../src') } }
+      ? { alias: { copcesium: resolve(import.meta.dirname, '../../../src') } }
       : undefined,
     // Registered again for the worker sub-build for the same reason as in
     // the root vite.config.ts: Vite compiles `?worker&inline` entries in an

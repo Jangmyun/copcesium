@@ -3,7 +3,7 @@
 Minimal, unstyled example that loads a COPC point cloud into a CesiumJS
 viewer from a **plain React component** — no wrapper library, just
 `useRef`/`useEffect`/`useCallback` around the same imperative `copcesium` API
-used in [`examples/basic-viewer`](../basic-viewer). This is a standalone
+used in [`examples/basic-viewer`](../../basic-viewer). This is a standalone
 project — it installs `copcesium` from the npm registry, not from this
 repo's `src/`.
 
@@ -38,7 +38,7 @@ npm run preview
 ## Developing against this repo's `src/` instead
 
 `npm run dev:src` runs the same example but aliases the `copcesium` import to
-`../../src`, so a change to this repo's source is visible in the browser
+`../../../src`, so a change to this repo's source is visible in the browser
 immediately via Vite HMR — no build, `npm pack`, or publish step. The app
 code is unchanged either way; only where `copcesium` resolves to differs.
 

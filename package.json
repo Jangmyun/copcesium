@@ -40,7 +40,10 @@
     "laz",
     "webgl"
   ],
-  "author": "",
+  "contributors": [
+    { "name": "Jangmyun", "email": "cndlsrb2739@gmail.com" },
+    { "name": "김선교 (seongyooo)", "email": "seonlineseon@gmail.com" }
+  ],
   "bugs": {
     "url": "https://github.com/Jangmyun/copcesium/issues"
   },

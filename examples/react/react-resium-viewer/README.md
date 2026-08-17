@@ -11,7 +11,7 @@ resium's `<Viewer>` for viewer setup/lifecycle (terrain, disabled default
 widgets) and reaches the underlying `Cesium.Viewer` from a child component
 via resium's `useCesium()` hook — the idiomatic resium pattern for dropping
 into imperative Cesium/copcesium APIs, in contrast to the `ref`-based escape
-hatch shown in [`examples/react-viewer`](../react-viewer) (which has no
+hatch shown in [`examples/react/react-viewer`](../react-viewer) (which has no
 resium `<Viewer>` context to read from). See `src/ViewerContent.tsx` and
 `src/useCopcDataSource.ts` for the full pattern.
 
@@ -44,7 +44,7 @@ npm run preview
 ## Developing against this repo's `src/` instead
 
 `npm run dev:src` runs the same example but aliases the `copcesium` import to
-`../../src`, so a change to this repo's source is visible in the browser
+`../../../src`, so a change to this repo's source is visible in the browser
 immediately via Vite HMR — no build, `npm pack`, or publish step. The app
 code is unchanged either way; only where `copcesium` resolves to differs.
 
