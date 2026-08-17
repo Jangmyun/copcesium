@@ -83,7 +83,17 @@ export default function App() {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const viewer = new Cesium.Viewer(containerRef.current);
+    const viewer = new Cesium.Viewer(containerRef.current, {
+      // No Cesium Ion token required: the plain WGS84 ellipsoid plus OpenStreetMap
+      // tiles. Cesium's own default base layer is an Ion asset, so leaving these
+      // out makes a blank VITE_CESIUM_TOKEN fail with an error panel over the
+      // canvas. baseLayerPicker and geocoder are Ion-backed too.
+      baseLayer: new Cesium.ImageryLayer(
+        new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }),
+      ),
+      baseLayerPicker: false,
+      geocoder: false,
+    });
     viewerRef.current = viewer;
     void load(SAMPLE_DATASETS[0].url, SAMPLE_DATASETS[0].options);
 

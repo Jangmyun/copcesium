@@ -12,15 +12,6 @@ import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
-// Without a valid VITE_CESIUM_TOKEN this silently falls back to the flat
-// WGS84 ellipsoid (no error dialog) — logging here makes that failure mode
-// visible, since a flat fallback also throws off the camera controller's
-// rotate/tilt pivot picking (it's calibrated against real terrain height).
-const worldTerrain = Cesium.Terrain.fromWorldTerrain();
-worldTerrain.errorEvent.addEventListener((err) => {
-  console.error('[main] World Terrain failed to load (check VITE_CESIUM_TOKEN):', err);
-});
-
 const viewer = new Cesium.Viewer('cesiumContainer', {
   baseLayerPicker: false,
   sceneModePicker: false,
@@ -30,7 +21,13 @@ const viewer = new Cesium.Viewer('cesiumContainer', {
   homeButton: false,
   navigationHelpButton: false,
   fullscreenButton: false,
-  terrain: worldTerrain,
+  // No Cesium Ion token required out of the box: the plain WGS84 ellipsoid
+  // plus OpenStreetMap tiles. Cesium World Terrain and Ion Satellite stay
+  // available from the Global tab as opt-in upgrades a token unlocks — the
+  // same split react-resium-viewer uses.
+  baseLayer: new Cesium.ImageryLayer(
+    new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' }),
+  ),
   // Static point-cloud viewer with no animated entities — render only when
   // something actually changes (camera move, tile load, or CopcDataSource
   // touching the scene) instead of every frame.
