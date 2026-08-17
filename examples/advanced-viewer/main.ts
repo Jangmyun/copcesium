@@ -123,6 +123,7 @@ const CLASSES: [number, string, string][] = [
 const app = document.getElementById('app')!;
 const panel = document.getElementById('panel')!;
 const collapseBtn = document.getElementById('collapseBtn')!;
+const railLogo = document.getElementById('railLogo')!;
 const panelTitle = document.getElementById('panelTitle')!;
 const presetList = document.getElementById('presetList')!;
 const presetCount = document.getElementById('presetCount')!;
@@ -189,11 +190,19 @@ function switchTab(tab: string): void {
   panelTitle.textContent = PANEL_TITLES[tab] ?? tab;
   if (panel.classList.contains('collapsed')) toggleCollapse(false);
 }
-document
-  .querySelectorAll('.rail-btn[data-tab]')
-  .forEach((btn) =>
-    btn.addEventListener('click', () => switchTab((btn as HTMLElement).dataset.tab ?? '')),
-  );
+document.querySelectorAll('.rail-btn[data-tab]').forEach((btn) =>
+  btn.addEventListener('click', () => {
+    const el = btn as HTMLElement;
+    // Re-clicking the tab that's already showing collapses the panel, so the
+    // rail button doubles as its own toggle. Any other tab keeps the old
+    // behaviour: switch to it, expanding first if collapsed.
+    if (el.classList.contains('active') && !panel.classList.contains('collapsed')) {
+      toggleCollapse(true);
+      return;
+    }
+    switchTab(el.dataset.tab ?? '');
+  }),
+);
 
 // ── Panel collapse ───────────────────────────────────────────
 function toggleCollapse(forceCollapsed?: boolean): void {
@@ -203,6 +212,7 @@ function toggleCollapse(forceCollapsed?: boolean): void {
   collapseBtn.classList.toggle('collapsed', collapsed);
 }
 collapseBtn.addEventListener('click', () => toggleCollapse());
+railLogo.addEventListener('click', () => toggleCollapse());
 
 // ── Theme ────────────────────────────────────────────────────
 let theme = 'dark';

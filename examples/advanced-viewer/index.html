@@ -81,6 +81,7 @@
     }
     .rail-logo {
       width: 30px; height: 30px; border-radius: 8px;
+      border: none; padding: 0; cursor: pointer;
       background: linear-gradient(135deg, var(--accent), var(--accent2));
       display: flex; align-items: center; justify-content: center;
       margin-bottom: 10px; box-shadow: 0 3px 10px var(--accent-soft);
@@ -378,12 +379,12 @@
 
     <!-- ── ICON RAIL ─────────────────────────────────────────── -->
     <nav id="rail">
-      <div class="rail-logo">
+      <button class="rail-logo" id="railLogo" type="button" title="Toggle panel">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round">
           <path d="M12 2 3 7v10l9 5 9-5V7z"/>
           <path d="M3 7l9 5 9-5M12 12v10" opacity=".65"/>
         </svg>
-      </div>
+      </button>
 
       <button class="rail-btn active" data-tab="data" title="Data">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
