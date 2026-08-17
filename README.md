@@ -2,11 +2,19 @@
   <img src="./assets/icon.png" width="120" alt="copcesium icon" />
 </p>
 
+<!-- Demo GIF slot. Drop the capture at assets/demo.gif, then uncomment:
+<p align="center">
+  <img src="./assets/demo.gif" width="760" alt="copcesium streaming a COPC point cloud onto the CesiumJS globe" />
+</p>
+-->
+
 # [copcesium](https://github.com/Jangmyun/copcesium) &middot; [![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-92.51%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 [한국어 README](./README.ko.md)
 
 CesiumJS provider for real-time [COPC](https://copc.io/) (Cloud Optimized Point Cloud) streaming and rendering.
+
+**▶ [Try the live demo](https://copcesium.vercel.app/)** — streams multi-gigabyte public COPC files straight from S3 in your browser. No install, no Cesium Ion token.
 
 - **Streaming, not loading:** only the octree nodes visible to the current camera are fetched, over HTTP Range Requests — never the whole file.
 - **Off the main thread:** LAZ decompression and coordinate transforms run in a pool of reused Web Workers, so decoding never blocks the UI.
@@ -19,6 +27,7 @@ CesiumJS provider for real-time [COPC](https://copc.io/) (Cloud Optimized Point 
 
 ## Table of contents
 
+- [Demo](#demo)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Options](#options)
@@ -29,6 +38,20 @@ CesiumJS provider for real-time [COPC](https://copc.io/) (Cloud Optimized Point 
 - [Roadmap](#roadmap)
 - [Credits](#credits)
 - [License](#license)
+
+## Demo
+
+**[copcesium.vercel.app](https://copcesium.vercel.app/)** runs the [`advanced-viewer`](./examples/advanced-viewer) example against public COPC datasets — from the ~81 MB Autzen Stadium survey up to New York City (26.5 GB, 4.76 B points) and Montréal (51.9 GB, 9.72 B points). Nothing is downloaded up front: pan and zoom, and watch only the octree nodes the camera can see get fetched.
+
+It opens on the WGS84 ellipsoid with OpenStreetMap imagery, so no Cesium Ion token is needed. Supply one and Cesium World Terrain and satellite imagery become selectable from the Global tab.
+
+<!-- Walkthrough video slot. Replace VIDEO_ID with the YouTube id, then uncomment:
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=VIDEO_ID">
+    <img src="https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg" width="760" alt="Watch the copcesium walkthrough" />
+  </a>
+</p>
+-->
 
 ## Installation
 
@@ -220,6 +243,8 @@ Full details — the detection flow, the proj4 fallback table, vertical-unit (`z
 ## Example
 
 [`examples/basic-viewer`](./examples/basic-viewer) is a minimal, standalone project that installs `copcesium` from the npm registry (not from this repo's `src/`) — a URL input, `pixelSize`/`sseThreshold` sliders, a `colorMode` picker, per-class filter checkboxes, a "Remove & reload" button, and an on-screen error area. It loads a public sample dataset ([Autzen Stadium](https://github.com/PDAL/data/tree/main/autzen)) automatically.
+
+[`examples/advanced-viewer`](./examples/advanced-viewer) is the fuller reference built on the same public API — a collapsible icon rail and tabbed sidebar, preset datasets, per-color-mode legends, terrain/imagery pickers, a camera/FPS HUD, and light/dark theming. **This is what [the live demo](https://copcesium.vercel.app/) runs.**
 
 copcesium is framework-agnostic, but a large share of Cesium usage happens through React — two more examples show that integration:
 

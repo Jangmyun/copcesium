@@ -2,11 +2,19 @@
   <img src="./assets/icon.png" width="120" alt="copcesium icon" />
 </p>
 
+<!-- 데모 GIF 자리. assets/demo.gif 에 캡처를 넣고 주석을 해제하세요:
+<p align="center">
+  <img src="./assets/demo.gif" width="760" alt="CesiumJS 지구본 위에 COPC 포인트 클라우드를 스트리밍하는 copcesium" />
+</p>
+-->
+
 # [copcesium](https://github.com/Jangmyun/copcesium) &middot; [![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues)
 
 [English README](./README.md)
 
 [COPC](https://copc.io/)(Cloud Optimized Point Cloud)를 CesiumJS에서 실시간으로 스트리밍·렌더링하는 라이브러리입니다.
+
+**▶ [라이브 데모 보기](https://copcesium.vercel.app/)** — 수십 GB짜리 공개 COPC 파일을 S3에서 바로 브라우저로 스트리밍합니다. 설치도, Cesium Ion 토큰도 필요 없습니다.
 
 - **로드가 아니라 스트리밍:** 현재 카메라에 보이는 옥트리 노드만 HTTP Range Request로 가져옵니다 — 파일 전체를 내려받지 않습니다.
 - **메인 스레드 밖에서 디코딩:** LAZ 압축 해제와 좌표 변환은 재사용되는 Web Worker 풀에서 실행되어, 디코딩이 UI를 막지 않습니다.
@@ -19,6 +27,7 @@
 
 ## 목차
 
+- [데모](#데모)
 - [설치](#설치)
 - [빠른 시작](#빠른-시작)
 - [옵션](#옵션)
@@ -28,6 +37,20 @@
 - [예제](#예제)
 - [Credits](#credits)
 - [라이선스](#라이선스)
+
+## 데모
+
+**[copcesium.vercel.app](https://copcesium.vercel.app/)** 은 [`examples/advanced-viewer`](./examples/advanced-viewer) 예제를 공개 COPC 데이터셋에 연결해 띄운 것입니다 — 약 81 MB의 Autzen Stadium 측량 데이터부터 뉴욕(26.5 GB, 47.6억 점), 몬트리올(51.9 GB, 97.2억 점)까지 있습니다. 미리 내려받는 것은 없습니다. 화면을 이동하고 확대해 보면 카메라에 보이는 옥트리 노드만 그때그때 요청되는 것을 확인할 수 있습니다.
+
+WGS84 타원체와 OpenStreetMap 배경지도로 시작하므로 Cesium Ion 토큰이 필요 없습니다. 토큰을 넣으면 Global 탭에서 Cesium World Terrain과 위성 영상을 선택할 수 있습니다.
+
+<!-- 설명 영상 자리. VIDEO_ID 를 유튜브 영상 id로 바꾸고 주석을 해제하세요:
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=VIDEO_ID">
+    <img src="https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg" width="760" alt="copcesium 소개 영상 보기" />
+  </a>
+</p>
+-->
 
 ## 설치
 
@@ -207,6 +230,8 @@ CORS, Range Request, 좌표가 엉뚱한 위치에 찍히는 문제는 [Troubles
 ## 예제
 
 [`examples/basic-viewer`](./examples/basic-viewer)는 이 저장소의 `src/`가 아니라 npm 레지스트리에서 `copcesium`을 설치해 쓰는 최소한의 독립 프로젝트입니다 — URL 입력창, `pixelSize`/`sseThreshold` 슬라이더, `colorMode` 선택 박스, 분류별 필터 체크박스, "Remove & reload" 버튼, 화면에 표시되는 에러 영역이 있습니다. 공개 샘플 데이터셋([Autzen Stadium](https://github.com/PDAL/data/tree/main/autzen))을 자동으로 로드합니다.
+
+[`examples/advanced-viewer`](./examples/advanced-viewer)는 같은 공개 API 위에 올린 더 완전한 레퍼런스입니다 — 접히는 아이콘 레일과 탭 사이드바, 프리셋 데이터셋, 색상 모드별 범례, 지형/배경지도 선택, 카메라·FPS HUD, 라이트/다크 테마를 갖췄습니다. **[라이브 데모](https://copcesium.vercel.app/)가 바로 이 예제입니다.**
 
 copcesium은 프레임워크에 종속되지 않지만, Cesium 사용의 상당수는 React를 통해 이루어집니다 — 아래 두 예제가 그 통합 방식을 보여줍니다:
 
