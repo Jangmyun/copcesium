@@ -2,11 +2,18 @@
   <img src="./assets/icon.png" width="120" alt="copcesium icon" />
 </p>
 
-<!-- 데모 GIF 자리. assets/demo.gif 에 캡처를 넣고 주석을 해제하세요:
-<p align="center">
-  <img src="./assets/demo.gif" width="760" alt="CesiumJS 지구본 위에 COPC 포인트 클라우드를 스트리밍하는 copcesium" />
-</p>
--->
+<table align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="./assets/demo-autzen.gif" width="100%" alt="CesiumJS 지구본 위에 Autzen Stadium COPC 데이터를 스트리밍하는 copcesium" />
+      <br /><sub><b>Autzen Stadium</b> — 미국 오리건 · 약 81 MB</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="./assets/demo-niagara.gif" width="100%" alt="Niagara Region의 조밀한 도심 COPC 타일을 스트리밍하는 copcesium" />
+      <br /><sub><b>Niagara Region</b> — 캐나다 온타리오 · 약 140 MB</sub>
+    </td>
+  </tr>
+</table>
 
 # [copcesium](https://github.com/Jangmyun/copcesium) &middot; [![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues)
 
