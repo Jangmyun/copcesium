@@ -1,10 +1,18 @@
 import * as Cesium from 'cesium';
 import proj4 from 'proj4';
 import { Copc, type Hierarchy } from 'copc';
-import type { ColorMode, CopcDataSourceOptions, LoadedNode, NodeRenderData } from './types';
+import type {
+  ColorMode,
+  CopcDataSourceOptions,
+  CopcStats,
+  LoadedNode,
+  NodeRenderData,
+  StageTiming,
+} from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
+import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
@@ -86,6 +94,19 @@ const PAGE_RETRY_BASE_MS = 1000;
 // to a permanent give-up.
 const PAGE_FAILURE_RESET_MS = 60_000;
 
+type StageName = 'fetch' | 'decode' | 'upload';
+
+/** How many recent nodes each stage's percentiles are computed over. Bounded
+ *  so a long session doesn't accumulate one sample per node forever; large
+ *  enough that a single slow node can't drag the median. */
+const STAGE_SAMPLE_WINDOW = 256;
+
+function percentile(sorted: number[], fraction: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.floor(sorted.length * fraction));
+  return sorted[index]!;
+}
+
 // Bounds `_sphereCache` independently of `maxCacheNodes`: every candidate the
 // BFS selectNodes() pass touches while walking the hierarchy gets a sphere
 // computed, not just currently-loaded/visible nodes, so this cache sees a much
@@ -110,6 +131,15 @@ export class CopcDataSource {
    *  so retries can be spaced out and stale counts discarded; cleared once a
    *  page loads. */
   private readonly _pageFailures = new Map<string, { count: number; at: number }>();
+  private readonly _counter: TransferCounter;
+  /** Shared status-checked, counting Getter for hierarchy sub-pages. Retry
+   *  policy stays with `_loadPage()`, which already owns the attempt count and
+   *  backoff — this getter makes exactly one attempt (#139). */
+  private readonly _pageGetter: (begin: number, end: number) => Promise<Uint8Array>;
+  /** Bounded rolling samples per pipeline stage; see `stats`. */
+  private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
+  /** Emitted `performance.measure` entries since the last clear; see `_recordStage`. */
+  private readonly _measureCount: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
   private readonly _rootCenter: { x: number; y: number; z: number };
   private readonly _rootHalfSize: number;
   private readonly _options: ResolvedOptions;
@@ -167,7 +197,9 @@ export class CopcDataSource {
     );
     // Caps concurrent Range Requests at the worker pool's size, so fetching
     // can't outrun decoding the way it did before this was wired up (#86).
-    this._rangeFetcher = new RangeFetcher(url, undefined, undefined, workerPool.concurrency);
+    this._counter = hierarchy.counter;
+    this._pageGetter = createCountingGetter(url, this._counter);
+    this._rangeFetcher = new RangeFetcher(url, undefined, undefined, workerPool.concurrency, this._counter);
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
   }
@@ -451,7 +483,9 @@ export class CopcDataSource {
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
       const rangeTask = this._rangeFetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
       this._cancels.set(key, rangeTask.cancel);
+      const fetchStart = performance.now();
       const compressedBytes = await rangeTask;
+      this._recordStage('fetch', fetchStart);
       if (this._destroyed) return;
 
       const payload: NodeConversionPayload = {
@@ -467,12 +501,16 @@ export class CopcDataSource {
       };
       const task = this._workerPool.run<NodeRenderData>(payload, [compressedBytes.buffer]);
       this._cancels.set(key, task.cancel);
+      const decodeStart = performance.now();
       const renderData = await task;
+      this._recordStage('decode', decodeStart);
       if (this._destroyed) return;
 
       const boundingSphere = this._getSphere(key);
       this._growAutoIntensityRange(renderData.maxIntensity);
+      const uploadStart = performance.now();
       const primitive = await createNodePrimitive(renderData, boundingSphere, this._style);
+      this._recordStage('upload', uploadStart);
       if (this._destroyed) {
         primitive.destroy();
         return;
@@ -497,28 +535,6 @@ export class CopcDataSource {
     }
   }
 
-  /** A single-attempt, status-checked Getter for `Copc.loadHierarchyPage()`.
-   *  The default getter it falls back to when passed a URL never inspects
-   *  the response status, so a 404/416 comes back as body bytes instead of a
-   *  classifiable error, and `_loadPage()` can't tell it apart from a
-   *  transient failure worth retrying. Retrying is `_loadPage()`'s own job
-   *  (it already owns the attempt count and backoff), so this makes exactly
-   *  one attempt and lets the caller decide what to do with a failure. */
-  private _fetchHierarchyPageBytes = async (begin: number, end: number): Promise<Uint8Array> => {
-    const response = await fetch(this._url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
-    // Strictly 206, not merely `ok` — same reasoning as RangeFetcher (#117):
-    // a 200 means the server ignored the Range header and sent the whole
-    // file, which would otherwise be silently misread as just this page.
-    if (response.status !== 206) {
-      const err = new Error(
-        `CopcDataSource: server returned HTTP ${response.status} for hierarchy page bytes=${begin}-${end - 1} (expected 206 Partial Content)`,
-      ) as Error & { status: number };
-      err.status = response.status;
-      throw err;
-    }
-    return new Uint8Array(await response.arrayBuffer());
-  };
-
   /** Loads a hierarchy sub-page, merges its nodes/pages into the live maps,
    *  and re-runs LoD selection so the newly revealed depth can be picked up. */
   private async _loadPage(key: string): Promise<void> {
@@ -533,7 +549,7 @@ export class CopcDataSource {
     }
     this._pendingPages.add(key);
     try {
-      const { nodes, pages } = await Copc.loadHierarchyPage(this._fetchHierarchyPageBytes, page);
+      const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
       if (this._destroyed) return;
       Object.assign(this._nodes, nodes);
       for (const nodeKey of Object.keys(nodes)) {
@@ -694,6 +710,60 @@ export class CopcDataSource {
   }
 
   /** Number of nodes currently retained in the LRU cache. */
+  /** Records one stage's elapsed time, and emits a `performance.measure` so
+   *  the same breakdown appears on DevTools' Performance timeline without the
+   *  caller wiring anything up. Measured from timestamps rather than paired
+   *  marks, so there are no marks left to clean up. */
+  private _recordStage(stage: StageName, startedAt: number): void {
+    const end = performance.now();
+    const samples = this._stageSamples[stage];
+    samples.push(end - startedAt);
+    if (samples.length > STAGE_SAMPLE_WINDOW) samples.shift();
+
+    const name = `copcesium ${stage}`;
+    try {
+      performance.measure(name, { start: startedAt, end });
+      // The User Timing buffer has no default cap, so three entries per node
+      // would accumulate for the page's lifetime — tens of MB over a long
+      // session on a large dataset, never reclaimed. Dropping our own
+      // measures periodically bounds that. A DevTools *recording* still
+      // captures them as they happen; only post-hoc `getEntriesByType()`
+      // sees just the recent window, which is what `stats` is for anyway.
+      if (++this._measureCount[stage] >= STAGE_SAMPLE_WINDOW) {
+        this._measureCount[stage] = 0;
+        performance.clearMeasures(name);
+      }
+    } catch {
+      // User Timing is unavailable in some embedders; the samples above
+      // remain the source of truth for `stats`.
+    }
+  }
+
+  private _stageTiming(stage: StageName): StageTiming {
+    const sorted = [...this._stageSamples[stage]].sort((a, b) => a - b);
+    return { count: sorted.length, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+  }
+
+  /**
+   * Bytes spent and per-stage latency for this data source (#181).
+   *
+   * `transferredBytes` covers every path that touches the file — the
+   * Range-support probe, the header, hierarchy pages, and node point data — so
+   * `transferredBytes / fileBytes` is the defensible form of the streaming
+   * claim rather than a point-data-only subset.
+   */
+  get stats(): CopcStats {
+    return {
+      fileBytes: this._counter.fileBytes,
+      requestCount: this._counter.requestCount,
+      transferredBytes: this._counter.transferredBytes,
+      pendingNodes: this._pendingKeys.size,
+      fetch: this._stageTiming('fetch'),
+      decode: this._stageTiming('decode'),
+      upload: this._stageTiming('upload'),
+    };
+  }
+
   get cacheSize(): number {
     return this._nodeCache.size;
   }

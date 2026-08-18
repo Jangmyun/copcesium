@@ -104,6 +104,43 @@ export interface NodeRenderData {
   maxIntensity: number;
 }
 
+/** Latency distribution for one stage of the per-node load pipeline. */
+export interface StageTiming {
+  /** Nodes that completed this stage since load. */
+  count: number;
+  /** Median and 95th percentile, in milliseconds, over a rolling window of
+   *  recent nodes. Percentiles rather than a mean because the two failure
+   *  shapes differ: one pathological node and a uniformly slow pipeline
+   *  average the same but call for different fixes. */
+  p50: number;
+  p95: number;
+}
+
+/**
+ * What one data source has spent, for measuring the streaming claim rather
+ * than asserting it. Read from `dataSource.stats`.
+ */
+export interface CopcStats {
+  /** Total size of the COPC file, read from a range response's
+   *  `Content-Range` — the whole point of comparison for `transferredBytes`. */
+  fileBytes: number;
+  /** HTTP range responses received, counting merged fetches once (#86). */
+  requestCount: number;
+  /** Bytes actually received across every path: the Range-support probe, the
+   *  header, hierarchy pages, and node point data. */
+  transferredBytes: number;
+  /** Nodes currently in flight — fetching, decoding, or uploading. Zero means
+   *  the current view is fully resolved, which is the only externally visible
+   *  signal a benchmark can use to know when to stop the clock. */
+  pendingNodes: number;
+  /** Waiting on the network for a node's compressed point data. */
+  fetch: StageTiming;
+  /** LAZ decode plus coordinate transform, in a worker. */
+  decode: StageTiming;
+  /** Building the Cesium primitive and uploading its buffers to the GPU. */
+  upload: StageTiming;
+}
+
 /** A node built into a Cesium Primitive, ready to be added to the Scene */
 export interface LoadedNode {
   key: string;

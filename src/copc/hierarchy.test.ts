@@ -16,10 +16,20 @@ const { loadCopcHierarchy } = await import('./hierarchy');
 // well-behaved 206 response so tests unrelated to that probe don't have to
 // know it exists, and override it in the ones that do.
 const fetchMock = vi.fn();
+/** A minimal stand-in for a `206` range response, including the
+ *  `Content-Range` that discloses the file size (#181). */
+function rangeResponse(total = 1_000_000, status = 206) {
+  return {
+    status,
+    headers: { get: (name: string) => (name === 'Content-Range' ? `bytes 0-0/${total}` : null) },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  };
+}
+
 beforeEach(() => {
   create.mockClear();
   loadHierarchyPage.mockClear();
-  fetchMock.mockReset().mockResolvedValue({ status: 206 });
+  fetchMock.mockReset().mockResolvedValue(rangeResponse());
   vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -83,7 +93,7 @@ describe('loadCopcHierarchy', () => {
   });
 
   it('rejects with a clear error when the server ignores the Range header', async () => {
-    fetchMock.mockResolvedValueOnce({ status: 200 }); // whole file, not a 206 partial response
+    fetchMock.mockResolvedValueOnce(rangeResponse(1_000_000, 200)); // whole file, not a 206 partial response
 
     await expect(loadCopcHierarchy('https://example.com/sample.copc.laz')).rejects.toThrow(
       /Range Request|206/,
