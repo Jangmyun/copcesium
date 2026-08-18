@@ -9,6 +9,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
+import { autoRunWalk, benchRequested, mountBenchTab } from './bench';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -187,6 +188,7 @@ const PANEL_TITLES: Record<string, string> = {
   points: 'Points',
   info: 'Info',
   help: 'Help',
+  bench: 'Benchmark',
 };
 
 function switchTab(tab: string): void {
@@ -244,6 +246,7 @@ homeBtn.addEventListener('click', () => {
   if (currentDs) void currentDs.zoomTo();
   else viewer.camera.flyHome();
 });
+
 zoomInBtn.addEventListener('click', () => {
   const h = viewer.camera.positionCartographic.height;
   viewer.camera.zoomIn(h * 0.35);
@@ -635,6 +638,21 @@ updateColorLegend(
     'intensity') as ColorMode,
 );
 renderPresetList(null);
-setActivePreset('autzen');
-urlInput.value = PRESETS.autzen.url;
-void loadCopc(PRESETS.autzen.url, PRESETS.autzen.options ?? {}, PRESETS.autzen.label);
+// `?bench` drives a fixed camera walk and reports stats per stop, so an
+// optimization can be compared against a baseline instead of a memory of how
+// it felt. `?bench=nyc` (or any preset key) measures that dataset instead of
+// the default one. Results go to the console and `window.__copcesiumBench`.
+const benchTarget = benchRequested();
+const startKey = benchTarget && PRESETS[benchTarget] ? benchTarget : 'autzen';
+const startPreset = PRESETS[startKey]!;
+
+setActivePreset(startKey);
+urlInput.value = startPreset.url;
+// The Benchmark tab is always live: open it and the numbers tick as you fly
+// the camera yourself. `?bench` additionally kicks off the scripted walk once
+// the first dataset has loaded, for a reproducible run.
+mountBenchTab(viewer, () => currentDs);
+
+void loadCopc(startPreset.url, startPreset.options ?? {}, startPreset.label).then(() => {
+  if (benchTarget !== null) autoRunWalk();
+});
