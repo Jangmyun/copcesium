@@ -296,11 +296,15 @@ export class RangeFetcher {
         // sliced at range-relative offsets — silently handing the decoder data
         // from the wrong part of the file instead of failing (#117).
         if (response.status !== 206) throw httpError(response.status, begin, end);
-        // Counted here rather than in `fetch()`: this is the merged span that
-        // actually crossed the wire, and it runs once per response, so a
-        // retried attempt is only counted when it finally delivers bytes.
-        this.counter?.record(begin, end);
-        return new Uint8Array(await response.arrayBuffer());
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        // Counted after the body is in hand, not at the response headers: the
+        // LoD pass cancels requests the camera has moved past (#86), and an
+        // abort partway through the download would otherwise be tallied as a
+        // full transfer. Counted here rather than in `fetch()` because this is
+        // the merged span that actually crossed the wire, and it runs once per
+        // response, so a retried attempt only counts when it finally delivers.
+        this.counter?.record(begin, begin + bytes.length);
+        return bytes;
       } catch (err) {
         if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
         await delay(RETRY_BASE_MS * 2 ** (attempt - 1), signal);

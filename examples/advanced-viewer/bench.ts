@@ -16,9 +16,9 @@ interface StatsCapable {
     requestCount: number;
     transferredBytes: number;
     pendingNodes: number;
-    fetch: { p50: number; p95: number };
-    decode: { p50: number; p95: number };
-    upload: { p50: number; p95: number };
+    fetch: { count: number; p50: number; p95: number };
+    decode: { count: number; p50: number; p95: number };
+    upload: { count: number; p50: number; p95: number };
   };
 }
 
@@ -158,30 +158,54 @@ class BenchPanel {
     this.results.replaceChildren();
   }
 
-  /** The always-on readout, refreshed while the tab is open. */
-  renderLive(stats: StatsCapable['stats'] | null): void {
+  /**
+   * The always-on readout.
+   *
+   * Split into totals and a live rate because they answer different things:
+   * the totals are what the session has cost so far, the rate is what it's
+   * costing right now. A single cumulative number can't tell a finished load
+   * from one still streaming hard.
+   */
+  renderLive(stats: StatsCapable['stats'] | null, bytesPerSec: number): void {
     if (!stats) {
       this.live.innerHTML = `<div style="color:var(--dim);font-size:12px">Load a dataset to measure.</div>`;
       return;
     }
+    const pct =
+      stats.fileBytes > 0 ? `${((stats.transferredBytes / stats.fileBytes) * 100).toFixed(3)}%` : 'unknown';
+
     this.live.innerHTML =
-      statBlock('file', formatSize(stats.fileBytes)) +
+      `<div class="sec-label" style="margin-bottom:8px">session total</div>` +
+      statBlock('file', stats.fileBytes > 0 ? formatSize(stats.fileBytes) : 'unknown') +
       statBlock('transferred', formatSize(stats.transferredBytes), true) +
-      statBlock(
-        'of file',
-        stats.fileBytes > 0 ? `${((stats.transferredBytes / stats.fileBytes) * 100).toFixed(4)}%` : '—',
-        true,
-      ) +
+      statBlock('of file', pct, true) +
       statBlock('requests', String(stats.requestCount)) +
-      statBlock('in flight', String(stats.pendingNodes)) +
-      `<div class="sec-label" style="margin:12px 0 6px">latency p50/p95 (ms)</div>` +
+      statBlock('nodes loaded', String(stats.upload.count)) +
+      `<div class="sec-label" style="margin:14px 0 8px">right now</div>` +
+      statBlock('in flight', `${stats.pendingNodes} node${stats.pendingNodes === 1 ? '' : 's'}`) +
+      statBlock('transfer rate', bytesPerSec > 0 ? `${formatSize(bytesPerSec)}/s` : 'idle') +
+      `<div class="sec-label" style="margin:14px 0 6px">per-node latency</div>` +
+      `<div style="font-size:10.5px;color:var(--dim);margin-bottom:6px;line-height:1.5">` +
+      `p50 = half the nodes were faster than this. p95 = all but the slowest 5% were.<br>` +
+      `Over the last ${stats.upload.count > 0 ? Math.min(256, stats.upload.count) : 0} node(s).</div>` +
       `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
+      `<tr style="color:var(--dim);text-align:left">` +
+      ['stage', 'p50', 'p95', 'n'].map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`).join('') +
+      `</tr>` +
       (['fetch', 'decode', 'upload'] as const)
-        .map(
-          (k) =>
-            `<tr><td style="padding:3px 6px 3px 0;color:var(--dim)">${k}</td>` +
-            `<td>${Math.round(stats[k].p50)} / ${Math.round(stats[k].p95)}</td></tr>`,
-        )
+        .map((k) => {
+          const t = stats[k];
+          const cells =
+            t.count === 0
+              ? ['—', '—', '0']
+              : [`${Math.round(t.p50)} ms`, `${Math.round(t.p95)} ms`, String(t.count)];
+          return (
+            `<tr style="border-top:1px solid var(--border)">` +
+            `<td style="padding:4px 6px 4px 0;color:var(--dim)">${k}</td>` +
+            cells.map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`).join('') +
+            `</tr>`
+          );
+        })
         .join('') +
       `</table>`;
   }
@@ -388,10 +412,28 @@ export function mountBenchTab(viewer: Cesium.Viewer, getDataSource: () => CopcDa
     });
   };
 
+  // Transfer rate is derived here rather than in the library: it's a display
+  // concern, and the counter only needs to be a monotonic total.
+  let lastBytes = 0;
+  let lastAt = performance.now();
+  let rate = 0;
+
   const tick = (): void => {
     const ds = getDataSource();
     const capable = ds ? asStatsCapable(ds) : null;
-    panel.renderLive(capable ? capable.stats : null);
+    if (capable) {
+      const now = performance.now();
+      const elapsed = (now - lastAt) / 1000;
+      if (elapsed > 0) {
+        const delta = capable.stats.transferredBytes - lastBytes;
+        // Smoothed, or the readout flickers between a burst and a gap in a
+        // way that's impossible to read at a 250ms refresh.
+        rate = rate * 0.6 + (delta / elapsed) * 0.4;
+        lastBytes = capable.stats.transferredBytes;
+        lastAt = now;
+      }
+    }
+    panel.renderLive(capable ? capable.stats : null, rate < 1024 ? 0 : rate);
     // Re-appending is cheap and keeps the button below the readout, which
     // `renderLive` replaces wholesale on every tick.
     if (!run.isConnected) document.getElementById('benchBody')?.appendChild(run);

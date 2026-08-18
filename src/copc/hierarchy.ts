@@ -26,9 +26,11 @@ export interface CopcHierarchy {
 async function assertRangeRequestsSupported(url: string, counter: TransferCounter): Promise<void> {
   if (!/^https?:\/\//i.test(url)) return; // local/fs getter has no such failure mode
   const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
-  // This response already discloses the file size in `Content-Range`, so
-  // reading it here saves the HEAD request that would otherwise be needed
-  // to report what fraction of the file a session actually transferred.
+  // The probe response carries the file size in `Content-Range`, which costs
+  // nothing to read — but only where it's readable. `Content-Range` is not a
+  // CORS-safelisted response header, and the public sample buckets send no
+  // `Access-Control-Expose-Headers`, so in a browser this comes back null even
+  // though the header is on the wire. It does work same-origin and in Node.
   const total = parseContentRangeTotal(response.headers?.get('Content-Range') ?? null);
   if (total !== undefined) counter.setFileBytes(total);
   counter.record(0, 1);
@@ -40,6 +42,19 @@ async function assertRangeRequestsSupported(url: string, counter: TransferCounte
   }
 }
 
+/** Last resort for the file size when `Content-Range` isn't readable. */
+async function readFileSizeViaHead(url: string, counter: TransferCounter): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) return;
+  try {
+    const response = await fetch(url, { method: 'HEAD' });
+    const length = Number(response.headers?.get('Content-Length'));
+    if (Number.isFinite(length) && length > 0) counter.setFileBytes(length);
+  } catch {
+    // Not worth failing a load over: an unknown file size costs the
+    // transferred-fraction readout, nothing else.
+  }
+}
+
 /**
  * Reads a COPC file's header/VLR metadata and its root hierarchy page, and
  * returns the root node map, any unresolved sub-page entry points, the max
@@ -48,6 +63,10 @@ async function assertRangeRequestsSupported(url: string, counter: TransferCounte
 export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   const counter = new TransferCounter();
   await assertRangeRequestsSupported(url, counter);
+  // Falls back to a HEAD when the probe couldn't disclose the size — see the
+  // CORS note above. `Content-Length` *is* safelisted, so a HEAD reads it from
+  // any origin. One extra headers-only request, and only when needed.
+  if (counter.fileBytes === 0) await readFileSizeViaHead(url, counter);
   // `Copc.create()` and `loadHierarchyPage()` both accept a Getter in place of
   // a URL, which is what makes the header and root-page bytes countable —
   // handing them the URL would route them through copc's own uncounted (and
