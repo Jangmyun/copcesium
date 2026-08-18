@@ -636,12 +636,16 @@ updateColorLegend(
     'intensity') as ColorMode,
 );
 renderPresetList(null);
-setActivePreset('autzen');
-urlInput.value = PRESETS.autzen.url;
-void loadCopc(PRESETS.autzen.url, PRESETS.autzen.options ?? {}, PRESETS.autzen.label).then(() => {
-  // `?bench` drives a fixed camera walk and reports stats per stop, so an
-  // optimization can be compared against a baseline instead of a memory of
-  // how it felt. Append `?bench` to any dataset — including the deployed
-  // demo — and read the console.
-  if (benchRequested() && currentDs) void runBench(viewer, currentDs, currentUrl);
+// `?bench` drives a fixed camera walk and reports stats per stop, so an
+// optimization can be compared against a baseline instead of a memory of how
+// it felt. `?bench=nyc` (or any preset key) measures that dataset instead of
+// the default one. Results go to the console and `window.__copcesiumBench`.
+const benchTarget = benchRequested();
+const startKey = benchTarget && PRESETS[benchTarget] ? benchTarget : 'autzen';
+const startPreset = PRESETS[startKey]!;
+
+setActivePreset(startKey);
+urlInput.value = startPreset.url;
+void loadCopc(startPreset.url, startPreset.options ?? {}, startPreset.label).then(() => {
+  if (benchTarget !== null && currentDs) void runBench(viewer, currentDs, currentUrl);
 });

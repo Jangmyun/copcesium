@@ -210,7 +210,15 @@ export async function runBench(
   return result;
 }
 
-/** `?bench` in the URL turns the walk on. */
-export function benchRequested(): boolean {
-  return new URLSearchParams(window.location.search).has('bench');
+/**
+ * `?bench` runs the walk on whatever dataset is loaded; `?bench=<presetKey>`
+ * (e.g. `?bench=nyc`) switches to that preset first, so the three reference
+ * datasets can be measured without touching the UI.
+ *
+ * Returns `null` when no benchmark was asked for, `''` for "use what's
+ * loaded", or the requested preset key.
+ */
+export function benchRequested(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  return params.has('bench') ? (params.get('bench') ?? '') : null;
 }
