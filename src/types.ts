@@ -16,7 +16,24 @@ export interface CopcDataSourceOptions {
   proj?: string;
   projDef?: string | null;
   geoidOffset?: number;
+  /**
+   * Worker pool size — how many nodes decode at once. Also the default for
+   * `maxConcurrentRequests`. Default `5`.
+   */
   concurrency?: number;
+  /**
+   * How many HTTP Range Requests may be in flight at once. Defaults to
+   * `concurrency`, which is how the two were fused before they could be set
+   * apart.
+   *
+   * They bound stages with different shapes. Decoding is CPU-bound and
+   * saturates at a handful of workers; fetching is latency-bound, so a
+   * high-RTT link keeps far more requests usefully in flight than there are
+   * cores. Raising `concurrency` to buy fetch parallelism also spawns that
+   * many workers, each carrying its own laz-perf WASM instance, which is
+   * memory spent on a stage that was never the bottleneck.
+   */
+  maxConcurrentRequests?: number;
   debounceMs?: number;
   maxCacheNodes?: number;
   /**

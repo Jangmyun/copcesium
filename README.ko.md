@@ -148,6 +148,7 @@ interface CopcDataSourceOptions {
   projDef?: string | null;
   geoidOffset?: number;
   concurrency?: number;
+  maxConcurrentRequests?: number;
   debounceMs?: number;
   maxCacheNodes?: number;
   maxCacheBytes?: number;
@@ -172,6 +173,7 @@ interface CopcDataSourceOptions {
 | `zFactor` | 자동 감지 | 파일의 Z 단위를 미터로 변환하는 계수. `proj`/`projDef`를 직접 지정해도, WKT에 수직 단위 정보가 있으면 감지됩니다. |
 | `xyFactor` | 자동 감지 | 파일의 XY 단위를 미터로 변환하는 계수(bounding sphere 크기 계산에 사용). |
 | `concurrency` | `5` | 노드를 병렬로 디코딩하는 Worker 스레드 개수. `load()`에 `workerPool`을 넘기면 무시됨. |
+| `maxConcurrentRequests` | = `concurrency` | 동시에 진행할 HTTP Range Request 수. 네트워크는 지연 바운드, 디코드는 CPU 바운드라 포화하는 폭이 다릅니다. 할 일 없는 워커를 늘리지 않고 전송만 넓히려면 `concurrency` 대신 이쪽을 올리세요. |
 | `debounceMs` | `100` | 전체 LoD 재선택 패스 사이의 최소 간격. 더 가벼운 frustum 전용 가시성 체크는 매 프레임 계속 돕니다. |
 | `maxCacheNodes` | `150` | 메모리에 유지하는 최대 노드 수(LRU) — 초과하면 선택되지 않은 것 중 가장 오래 안 쓰인 노드부터 정리됩니다. |
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |

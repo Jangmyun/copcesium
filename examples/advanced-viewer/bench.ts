@@ -34,6 +34,7 @@ interface StatsCapable {
  */
 const TUNING_PARAMS = [
   'concurrency',
+  'maxConcurrentRequests',
   'maxCacheNodes',
   'maxCacheBytes',
   'maxVisibleNodes',
@@ -126,8 +127,14 @@ const CONVERGE_TIMEOUT_MS = 60_000;
 
 export interface StopResult {
   label: string;
-  /** Wall time from arrival at the waypoint to a settled view. */
+  /** Wall time from arrival at the waypoint to a settled view. Includes the
+   *  fixed `SETTLE_MS` quiet period, which is roughly half of a typical stop —
+   *  use `loadMs` to compare configurations. */
   convergeMs: number;
+  /** `convergeMs` minus the settle window: time actually spent loading. The
+   *  constant is the same every stop, so leaving it in dilutes whatever
+   *  difference a configuration change makes by about half (#194). */
+  loadMs: number;
   /** Bytes, requests, and decoded nodes this stop alone added. */
   bytesDelta: number;
   requestsDelta: number;
@@ -160,9 +167,11 @@ export interface BenchResult {
   /** Tuning options this run resolved to, so two pasted results can be told
    *  apart. Populated from the URL query by the viewer (#194). */
   options: Record<string, number>;
-  /** Sum of every stop's `convergeMs` — the headline for comparing two
-   *  configurations over the same walk. */
+  /** Sum of every stop's `convergeMs`, settle windows included. */
   totalConvergeMs: number;
+  /** Sum of every stop's `loadMs` — the headline for comparing two
+   *  configurations over the same walk. */
+  totalLoadMs: number;
   fileBytes: number;
   transferredBytes: number;
   requestCount: number;
@@ -269,7 +278,7 @@ class BenchPanel {
           `<tr style="border-top:1px solid var(--border)">` +
           [
             s.label + (s.timedOut ? ' &#9888;' : ''),
-            String(s.convergeMs),
+            String(s.loadMs),
             formatSize(s.bytesDelta),
             String(s.requestsDelta),
             String(s.nodesDelta),
@@ -285,7 +294,7 @@ class BenchPanel {
       `<div class="sec-label" style="margin:14px 0 6px">fixed walk — per stop</div>` +
       `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
       `<tr style="color:var(--dim);text-align:left">` +
-      ['stop', 'ms', 'bytes', 'reqs', 'nodes', 'rate']
+      ['stop', 'load ms', 'bytes', 'reqs', 'nodes', 'rate']
         .map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`)
         .join('') +
       `</tr>${rows}</table>`;
@@ -407,10 +416,17 @@ async function runWalk(
     stops.push({
       label: wp.label,
       convergeMs: Math.round(convergeMs),
+      // Floor at 0: a stop with nothing to load still reports one full quiet
+      // period, and a few milliseconds of loop overhead must not read as
+      // negative work.
+      loadMs: Math.max(0, Math.round(convergeMs - SETTLE_MS)),
       bytesDelta: s.transferredBytes - prevBytes,
       requestsDelta: s.requestCount - prevRequests,
       nodesDelta: s.decode.count - prevNodes,
-      bytesPerSec: convergeMs > 0 ? Math.round(((s.transferredBytes - prevBytes) * 1000) / convergeMs) : 0,
+      bytesPerSec:
+        convergeMs > SETTLE_MS
+          ? Math.round(((s.transferredBytes - prevBytes) * 1000) / (convergeMs - SETTLE_MS))
+          : 0,
       transferredBytes: s.transferredBytes,
       requestCount: s.requestCount,
       sessionFetchP50: Math.round(s.fetch.p50),
@@ -431,6 +447,7 @@ async function runWalk(
     url,
     options: tuningOptions(),
     totalConvergeMs: stops.reduce((sum, stop) => sum + stop.convergeMs, 0),
+    totalLoadMs: stops.reduce((sum, stop) => sum + stop.loadMs, 0),
     fileBytes: final.fileBytes,
     transferredBytes: final.transferredBytes,
     requestCount: final.requestCount,

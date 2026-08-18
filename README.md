@@ -149,6 +149,7 @@ interface CopcDataSourceOptions {
   projDef?: string | null;
   geoidOffset?: number;
   concurrency?: number;
+  maxConcurrentRequests?: number;
   debounceMs?: number;
   maxCacheNodes?: number;
   maxCacheBytes?: number;
@@ -174,6 +175,7 @@ interface CopcDataSourceOptions {
 | `zFactor` | auto-detected | Factor converting the file's Z unit to meters. Detected from the WKT's vertical unit when present, even if `proj`/`projDef` is overridden. |
 | `xyFactor` | auto-detected | Factor converting the file's XY unit to meters (used for bounding-sphere sizing). |
 | `concurrency` | `5` | Number of Worker threads decoding nodes in parallel. Ignored if a `workerPool` is passed to `load()`. |
+| `maxConcurrentRequests` | = `concurrency` | HTTP Range Requests in flight at once. Fetching is latency-bound and decoding is CPU-bound, so they saturate at different widths; raise this instead of `concurrency` to widen fetching without spawning workers that have nothing to do. |
 | `debounceMs` | `100` | Minimum interval between full LoD re-selection passes. A lighter frustum-only visibility check still runs every frame. |
 | `maxCacheNodes` | `150` | Maximum nodes kept in memory (LRU) before the least-recently-used, currently-unselected ones are torn down. |
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |

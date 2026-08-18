@@ -20,14 +20,21 @@ vi.mock('copc', () => ({
 // already do for the mocked `copc` module below.
 const workerPoolRun = vi.fn();
 const workerPoolDestroy = vi.fn();
+/** Pool sizes requested, so what the data source derives from one can be checked. */
+const workerPoolSizes: number[] = [];
 vi.mock('./worker/WorkerPool', () => ({
   // `new`-able: mockImplementation's function must support construction, which
   // an arrow function cannot — returning an object from a regular function
   // constructor makes `new WorkerPool(...)` resolve to that object (per spec).
-  WorkerPool: vi.fn().mockImplementation(function () {
+  WorkerPool: vi.fn().mockImplementation(function (_factory: unknown, size: number) {
+    workerPoolSizes.push(size);
     return {
       run: (...args: unknown[]) => workerPoolRun(...args),
       destroy: (...args: unknown[]) => workerPoolDestroy(...args),
+      // The real pool reports its worker count here, and CopcDataSource reads
+      // it to size the range fetcher. Omitting it left that read undefined,
+      // so the fetcher silently fell back to its own default in every test.
+      concurrency: size,
     };
   }),
 }));
@@ -38,6 +45,8 @@ vi.mock('./worker/WorkerPool', () => ({
 // that don't care about the fetch stage can ignore it entirely.
 const rangeFetcherFetch = vi.fn();
 const rangeFetcherDestroy = vi.fn();
+/** Constructor calls, so the concurrency cap it receives can be asserted on. */
+const rangeFetcherCtor = vi.fn();
 // `isRetryable` is kept real (via `importOriginal`) rather than mocked — it's
 // a pure function with no fetch dependency, and `_loadPage()`'s give-up tests
 // below rely on its actual status-based classification.
@@ -45,7 +54,8 @@ vi.mock('./copc/RangeFetcher', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./copc/RangeFetcher')>();
   return {
     ...actual,
-    RangeFetcher: vi.fn().mockImplementation(function () {
+    RangeFetcher: vi.fn().mockImplementation(function (...args: unknown[]) {
+      rangeFetcherCtor(...args);
       return {
         fetch: (...args: unknown[]) => rangeFetcherFetch(...args),
         destroy: (...args: unknown[]) => rangeFetcherDestroy(...args),
@@ -116,6 +126,7 @@ function rangeResponse(total = 1_000_000, status = 206) {
 // accumulate across unrelated tests and mockReturnValue() leaks between them.
 beforeEach(() => {
   vi.clearAllMocks();
+  workerPoolSizes.length = 0;
   isInFrustumMock.mockReturnValue(true);
   fetchMock.mockResolvedValue(rangeResponse());
   vi.stubGlobal('fetch', fetchMock);
@@ -1010,6 +1021,34 @@ describe('CopcDataSource update loop', () => {
 
     expect(ds.stats.decode.count).toBe(1);
     expect(ds.stats.upload.count).toBe(0);
+  });
+
+  // Fetching is latency-bound and decoding is CPU-bound, so they saturate at
+  // different widths; before #194 one number set both, and buying fetch
+  // parallelism meant spawning workers that had nothing to do.
+  it('caps concurrent requests at the worker count by default', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { concurrency: 7 });
+
+    // (url, gapBytes, maxGroupBytes, maxConcurrent, counter)
+    expect(rangeFetcherCtor.mock.calls[0]![3]).toBe(7);
+  });
+
+  it('lets maxConcurrentRequests exceed the worker count', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      concurrency: 5,
+      maxConcurrentRequests: 24,
+    });
+
+    expect(rangeFetcherCtor.mock.calls[0]![3]).toBe(24);
+    // The pool stays small: the point is to widen fetching *without* paying
+    // for 24 workers and 24 laz-perf instances.
+    expect(workerPoolSizes.at(-1)).toBe(5);
   });
 
   it('destroy() tears down the worker pool and node cache, and removes both listeners', async () => {

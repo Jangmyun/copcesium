@@ -64,12 +64,17 @@ Options with no UI can be set from the query string, so a sweep needs no edit
 and no dev-server restart:
 
 ```
-http://localhost:5173/?bench=nyc&concurrency=12
+http://localhost:5173/?bench=nyc&concurrency=5&maxConcurrentRequests=24
 http://localhost:5173/?bench=nyc&maxVisibleNodes=400&maxPoints=20000000
 ```
 
-`concurrency`, `maxCacheNodes`, `maxCacheBytes`, `maxVisibleNodes`,
-`maxPoints`, `debounceMs`, and `lodHysteresis` are accepted; anything
+Vary one at a time, alternate the order across repeats rather than running
+all of one setting back to back, and keep DevTools open with "Disable cache"
+checked — a second run over the same walk otherwise serves from the HTTP
+cache and reads as a win for whichever setting went second.
+
+`concurrency`, `maxConcurrentRequests`, `maxCacheNodes`, `maxCacheBytes`,
+`maxVisibleNodes`, `maxPoints`, `debounceMs`, and `lodHysteresis` are accepted; anything
 non-numeric is ignored with a console warning. `sseThreshold` is deliberately
 not here — it has a slider, and two sources for one value would fight. The
 values in effect are recorded in the walk's JSON under `options`, so two
@@ -77,8 +82,15 @@ pasted results can be told apart.
 
 ### Reading the numbers
 
-`convergeMs`, `bytesDelta`, `requestsDelta`, `nodesDelta`, and `bytesPerSec`
-are scoped to a single stop. The `session*` percentiles are not: they are
+Compare configurations with `totalLoadMs`, not `totalConvergeMs`. Every stop
+ends with a fixed `SETTLE_MS` quiet period used to decide the view has
+stopped changing; across six stops that is a constant ~3.8 s, roughly half a
+typical walk, and leaving it in halves the apparent size of any difference.
+`loadMs` is `convergeMs` with it removed, and `bytesPerSec` is computed over
+`loadMs` for the same reason.
+
+`convergeMs`, `loadMs`, `bytesDelta`, `requestsDelta`, `nodesDelta`, and
+`bytesPerSec` are scoped to a single stop. The `session*` percentiles are not: they are
 snapshots of the data source's rolling window taken on arrival, so a stop that
 transfers nothing still reports whatever the window held, and consecutive
 stops often repeat a value. Compare configurations with `totalConvergeMs` and

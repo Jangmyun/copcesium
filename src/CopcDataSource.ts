@@ -45,18 +45,23 @@ function validateOpacity(value: number): number {
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
- * `intensityRange`, and `maxCacheBytes` stay optional because their unset
- * state is meaningful — "no filter", "auto-range as nodes arrive", and "no
- * byte-based cache limit" aren't expressible as a value.
+ * `intensityRange`, `maxCacheBytes`, and `maxConcurrentRequests` stay optional
+ * because their unset state is meaningful — "no filter", "auto-range as nodes
+ * arrive", "no byte-based cache limit", and "follow the worker pool's size"
+ * aren't expressible as a fixed value. The last one in particular has no
+ * constant default: it tracks `concurrency`, which the caller may set, and an
+ * externally-supplied `WorkerPool` overrides even that.
  */
-type ResolvedOptions = Required<
-  Omit<CopcDataSourceOptions, 'classificationFilter' | 'intensityRange' | 'maxCacheBytes'>
-> &
-  Pick<CopcDataSourceOptions, 'classificationFilter' | 'intensityRange' | 'maxCacheBytes'>;
+type OpenEndedOption =
+  | 'classificationFilter'
+  | 'intensityRange'
+  | 'maxCacheBytes'
+  | 'maxConcurrentRequests';
 
-const DEFAULT_OPTIONS: Required<
-  Omit<CopcDataSourceOptions, 'classificationFilter' | 'intensityRange' | 'maxCacheBytes'>
-> = {
+type ResolvedOptions = Required<Omit<CopcDataSourceOptions, OpenEndedOption>> &
+  Pick<CopcDataSourceOptions, OpenEndedOption>;
+
+const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = {
   proj: 'EPSG:4326',
   projDef: null,
   geoidOffset: 0,
@@ -200,11 +205,18 @@ export class CopcDataSource {
       (_key, node) => this._destroyLoadedNode(node),
       options.maxCacheBytes,
     );
-    // Caps concurrent Range Requests at the worker pool's size, so fetching
-    // can't outrun decoding the way it did before this was wired up (#86).
+    // Defaults to the worker pool's size, which keeps fetching from outrunning
+    // decoding the way it did before any cap existed (#86) — but is settable
+    // on its own, because the two stages saturate at different widths.
     this._counter = hierarchy.counter;
     this._pageGetter = createCountingGetter(url, this._counter);
-    this._rangeFetcher = new RangeFetcher(url, undefined, undefined, workerPool.concurrency, this._counter);
+    this._rangeFetcher = new RangeFetcher(
+      url,
+      undefined,
+      undefined,
+      options.maxConcurrentRequests ?? workerPool.concurrency,
+      this._counter,
+    );
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
   }
