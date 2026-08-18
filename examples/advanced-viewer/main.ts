@@ -36,6 +36,14 @@ const viewer = new Cesium.Viewer('cesiumContainer', {
 });
 (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = 'none';
 
+// BENCH INSTRUMENTATION (bench/192-tilt-lod-instrumentation) -- exposes the
+// viewer/CopcDataSource/Cesium globals the #192/#193 tilt-flicker measurement
+// scripts drive from Playwright. Not for merging into main.
+(window as unknown as { __viewer: unknown; __CopcDataSource: unknown; __Cesium: unknown }).__viewer = viewer;
+(window as unknown as { __viewer: unknown; __CopcDataSource: unknown; __Cesium: unknown }).__CopcDataSource =
+  CopcDataSource;
+(window as unknown as { __viewer: unknown; __CopcDataSource: unknown; __Cesium: unknown }).__Cesium = Cesium;
+
 // ── Preset datasets ─────────────────────────────────────────
 // Freely streamable public COPC files (HTTP range requests, no auth). `size`
 // is the full file size (measured via HTTP HEAD), not what gets downloaded —
@@ -578,6 +586,8 @@ async function loadCopc(
     currentDs = ds;
     currentUrl = url;
     currentOptions = options;
+    // BENCH INSTRUMENTATION (bench/192-tilt-lod-instrumentation) -- see note above.
+    (window as unknown as { __currentDs: unknown }).__currentDs = ds;
     activeLabel = resolvedLabel;
     setChipState('active', resolvedLabel);
 

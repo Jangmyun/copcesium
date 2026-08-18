@@ -393,6 +393,16 @@ export class CopcDataSource {
         }),
       );
 
+      // BENCH INSTRUMENTATION (bench/192-tilt-lod-instrumentation) -- logs each
+      // selection pass to window.__lodLog for the #192/#193 tilt-flicker
+      // measurement scripts in examples/advanced-viewer. Not for merging into main.
+      (window as unknown as { __lodLog?: unknown[] }).__lodLog ??= [];
+      (window as unknown as { __lodLog: { t: number; moving: boolean; keys: string[] }[] }).__lodLog.push({
+        t: performance.now(),
+        moving: this._cameraMoving,
+        keys: [...newSelectedKeys].sort(),
+      });
+
       this._dispatchPageLoads(neededPages);
       this._cancelStaleLoads(newSelectedKeys);
 
