@@ -9,7 +9,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
-import { benchRequested, runBench } from './bench';
+import { autoRunWalk, benchRequested, mountBenchTab } from './bench';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -188,6 +188,7 @@ const PANEL_TITLES: Record<string, string> = {
   points: 'Points',
   info: 'Info',
   help: 'Help',
+  bench: 'Benchmark',
 };
 
 function switchTab(tab: string): void {
@@ -646,15 +647,11 @@ const startPreset = PRESETS[startKey]!;
 
 setActivePreset(startKey);
 urlInput.value = startPreset.url;
+// The Benchmark tab is always live: open it and the numbers tick as you fly
+// the camera yourself. `?bench` additionally kicks off the scripted walk once
+// the first dataset has loaded, for a reproducible run.
+mountBenchTab(viewer, () => currentDs);
+
 void loadCopc(startPreset.url, startPreset.options ?? {}, startPreset.label).then(() => {
-  if (benchTarget !== null && currentDs) {
-    void runBench(viewer, currentDs, currentUrl);
-  } else {
-    // Without this, the harness is invisible: nothing on the page hints that
-    // it exists, so the only way to find it is to already know.
-    console.info(
-      '[copcesium] benchmark available — reload with ?bench to run a fixed camera walk, ' +
-        `or ?bench=<preset> to pick a dataset (${Object.keys(PRESETS).join(', ')}).`,
-    );
-  }
+  if (benchTarget !== null) autoRunWalk();
 });

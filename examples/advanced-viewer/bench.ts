@@ -63,8 +63,26 @@ const WAYPOINTS: Waypoint[] = [
   { label: 'pull-back', headingDeg: 180, pitchDeg: -60, rangeFactor: 2.5 },
 ];
 
-/** Fixed, so flight time is identical every run rather than distance-dependent. */
-const FLIGHT_SECONDS = 2;
+/**
+ * Seconds per halving (or doubling) of viewing distance, plus a floor.
+ *
+ * A single fixed duration was the wrong call: the walk drops from 2.5x the
+ * dataset radius to 0.25x, so a flat 2s made that leg an order of magnitude
+ * faster than the ones either side of it. The camera outran the loader and
+ * the descent showed holes where nodes for the new view hadn't arrived — not
+ * a rendering bug, just a camera moving faster than any real user would drag
+ * it, which is also not the thing worth measuring.
+ *
+ * Scaling by log2 of the range ratio keeps apparent speed constant instead:
+ * every halving of distance gets the same time to stream in.
+ */
+const SECONDS_PER_OCTAVE = 1.4;
+const MIN_FLIGHT_SECONDS = 1.5;
+
+function flightSeconds(fromFactor: number, toFactor: number): number {
+  const octaves = Math.abs(Math.log2(toFactor / fromFactor));
+  return Math.max(MIN_FLIGHT_SECONDS, octaves * SECONDS_PER_OCTAVE);
+}
 /** How long `pendingNodes` must stay at 0 before a view counts as settled. A
  *  single zero reading isn't enough: the LoD pass runs on a `debounceMs`
  *  timer, so there's a gap between one batch draining and the next starting. */
@@ -104,115 +122,129 @@ export interface BenchResult {
 }
 
 /**
- * An on-screen readout, because a benchmark whose results only exist in the
- * console can't be shown to anyone — not in a screen recording, not to
- * someone looking over your shoulder. Uses the viewer's own theme tokens so
- * it belongs to the page rather than sitting on top of it.
+ * The Benchmark tab.
+ *
+ * Two ways to measure, because they answer different questions.
+ *
+ * **Live** — just fly the camera yourself and watch the numbers. Every run
+ * differs, so this can't show that an optimization helped, but for "what did
+ * this session actually cost" it's the more honest measurement: it's a real
+ * viewing session rather than a synthetic path.
+ *
+ * **Fixed walk** — a scripted six-stop route. Reproducible, so two builds can
+ * be compared. Waypoints are offsets from the dataset's own bounding sphere,
+ * making the same walk meaningful for an 81 MB file and a 51.9 GB one alike.
  */
 class BenchPanel {
-  private readonly root: HTMLDivElement;
+  private readonly body: HTMLElement;
+  private readonly live: HTMLDivElement;
   private readonly status: HTMLDivElement;
-  private readonly body: HTMLDivElement;
+  private readonly results: HTMLDivElement;
 
-  constructor(url: string) {
-    this.root = document.createElement('div');
-    this.root.style.cssText = [
-      'position:fixed', 'top:14px', 'left:50%', 'transform:translateX(-50%)',
-      'z-index:9999', 'min-width:520px', 'max-width:min(92vw,900px)',
-      'background:var(--panel,#11151d)', 'color:var(--text,#e7ebf2)',
-      'border:1px solid var(--border2,rgba(255,255,255,.14))', 'border-radius:10px',
-      'box-shadow:0 10px 40px rgba(0,0,0,.5)', 'padding:14px 16px',
-      "font-family:'IBM Plex Sans',system-ui,sans-serif", 'font-size:12.5px',
-    ].join(';');
-
-    const title = document.createElement('div');
-    title.style.cssText = 'font-weight:600;font-size:13.5px;margin-bottom:2px';
-    title.textContent = 'Benchmark — fixed camera walk';
-    const sub = document.createElement('div');
-    sub.style.cssText =
-      "font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--faint,#5b6675);word-break:break-all";
-    sub.textContent = url;
-
+  constructor() {
+    this.body = document.getElementById('benchBody') ?? document.body;
+    this.live = document.createElement('div');
     this.status = document.createElement('div');
-    this.status.style.cssText = 'margin-top:10px;color:var(--accent,#48bff5);font-weight:600';
-    this.body = document.createElement('div');
-    this.body.style.cssText = 'margin-top:10px';
-
-    this.root.append(title, sub, this.status, this.body);
-    document.body.appendChild(this.root);
+    this.status.style.cssText = 'color:var(--accent);font-weight:600;font-size:12.5px;margin-top:12px';
+    this.results = document.createElement('div');
+    this.body.replaceChildren(this.live, this.status, this.results);
   }
 
   setStatus(text: string): void {
     this.status.textContent = text;
   }
 
-  /** Replaces the body with the finished run's headline and per-stop table. */
-  finish(result: BenchResult): void {
-    const mb = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`);
-    this.status.textContent = 'Done';
+  clearResults(): void {
+    this.results.replaceChildren();
+  }
 
-    const headline = document.createElement('div');
-    headline.style.cssText =
-      'display:flex;gap:22px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--border,rgba(255,255,255,.08))';
-    const stat = (label: string, value: string, accent = false): HTMLDivElement => {
-      const d = document.createElement('div');
-      d.innerHTML =
-        `<div style="font-size:10.5px;color:var(--dim,#96a0b0)">${label}</div>` +
-        `<div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;` +
-        `color:${accent ? 'var(--accent,#48bff5)' : 'inherit'}">${value}</div>`;
-      return d;
-    };
-    headline.append(
-      stat('file', mb(result.fileBytes)),
-      stat('transferred', mb(result.transferredBytes), true),
-      stat('of file', `${(result.transferredFraction * 100).toFixed(4)}%`, true),
-      stat('requests', String(result.requestCount)),
-    );
-
-    const table = document.createElement('table');
-    table.style.cssText =
-      "width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px";
-    const head = ['stop', 'converge', 'bytes', 'reqs', 'fetch p50/p95', 'decode p50/p95', 'upload p50/p95'];
-    table.innerHTML =
-      `<tr style="color:var(--dim,#96a0b0);text-align:left">${head
-        .map((h) => `<th style="padding:4px 8px 4px 0;font-weight:500">${h}</th>`)
-        .join('')}</tr>` +
-      result.stops
+  /** The always-on readout, refreshed while the tab is open. */
+  renderLive(stats: StatsCapable['stats'] | null): void {
+    if (!stats) {
+      this.live.innerHTML = `<div style="color:var(--dim);font-size:12px">Load a dataset to measure.</div>`;
+      return;
+    }
+    this.live.innerHTML =
+      statBlock('file', formatSize(stats.fileBytes)) +
+      statBlock('transferred', formatSize(stats.transferredBytes), true) +
+      statBlock(
+        'of file',
+        stats.fileBytes > 0 ? `${((stats.transferredBytes / stats.fileBytes) * 100).toFixed(4)}%` : '—',
+        true,
+      ) +
+      statBlock('requests', String(stats.requestCount)) +
+      statBlock('in flight', String(stats.pendingNodes)) +
+      `<div class="sec-label" style="margin:12px 0 6px">latency p50/p95 (ms)</div>` +
+      `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
+      (['fetch', 'decode', 'upload'] as const)
         .map(
-          (s) =>
-            `<tr style="border-top:1px solid var(--border,rgba(255,255,255,.08))">` +
-            [
-              s.label + (s.timedOut ? ' ⚠' : ''),
-              `${s.convergeMs} ms`,
-              (s.bytesDelta / 1e6).toFixed(1) + ' MB',
-              String(s.requestsDelta),
-              `${s.fetchP50}/${s.fetchP95}`,
-              `${s.decodeP50}/${s.decodeP95}`,
-              `${s.uploadP50}/${s.uploadP95}`,
-            ]
-              .map((c) => `<td style="padding:4px 8px 4px 0">${c}</td>`)
-              .join('') +
-            `</tr>`,
+          (k) =>
+            `<tr><td style="padding:3px 6px 3px 0;color:var(--dim)">${k}</td>` +
+            `<td>${Math.round(stats[k].p50)} / ${Math.round(stats[k].p95)}</td></tr>`,
         )
-        .join('');
+        .join('') +
+      `</table>`;
+  }
+
+  /** Appends the fixed walk's per-stop breakdown below the live readout. */
+  renderWalk(result: BenchResult): void {
+    const rows = result.stops
+      .map(
+        (s) =>
+          `<tr style="border-top:1px solid var(--border)">` +
+          [s.label + (s.timedOut ? ' &#9888;' : ''), String(s.convergeMs), formatSize(s.bytesDelta), String(s.requestsDelta)]
+            .map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`)
+            .join('') +
+          `</tr>`,
+      )
+      .join('');
+
+    this.results.innerHTML =
+      `<div class="sec-label" style="margin:14px 0 6px">fixed walk — per stop</div>` +
+      `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
+      `<tr style="color:var(--dim);text-align:left">` +
+      ['stop', 'ms', 'bytes', 'reqs'].map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`).join('') +
+      `</tr>${rows}</table>`;
 
     const copy = document.createElement('button');
     copy.textContent = 'Copy JSON';
-    copy.style.cssText =
-      'margin-top:10px;padding:5px 11px;border-radius:6px;cursor:pointer;font:inherit;font-size:11.5px;' +
-      'background:var(--panel3,#1c222e);color:var(--text,#e7ebf2);border:1px solid var(--border2,rgba(255,255,255,.14))';
+    copy.style.cssText = BUTTON_CSS;
     copy.onclick = () => {
       void navigator.clipboard.writeText(JSON.stringify(result, null, 2));
       copy.textContent = 'Copied';
     };
-
-    this.body.replaceChildren(headline, table, copy);
+    this.results.appendChild(copy);
   }
+}
+
+const BUTTON_CSS =
+  'margin-top:12px;padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit;font-size:11.5px;' +
+  'background:var(--panel3);color:var(--text);border:1px solid var(--border2)';
+
+function formatSize(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+function statBlock(label: string, value: string, accent = false): string {
+  return (
+    `<div style="margin-bottom:9px">` +
+    `<div style="font-size:10.5px;color:var(--dim)">${label}</div>` +
+    `<div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;` +
+    `color:${accent ? 'var(--accent)' : 'inherit'}">${value}</div></div>`
+  );
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-async function flyTo(viewer: Cesium.Viewer, sphere: Cesium.BoundingSphere, wp: Waypoint): Promise<void> {
+async function flyTo(
+  viewer: Cesium.Viewer,
+  sphere: Cesium.BoundingSphere,
+  wp: Waypoint,
+  seconds: number,
+): Promise<void> {
   return new Promise<void>((resolve) => {
     viewer.scene.camera.flyToBoundingSphere(sphere, {
       offset: new Cesium.HeadingPitchRange(
@@ -220,7 +252,7 @@ async function flyTo(viewer: Cesium.Viewer, sphere: Cesium.BoundingSphere, wp: W
         Cesium.Math.toRadians(wp.pitchDeg),
         sphere.radius * wp.rangeFactor,
       ),
-      duration: FLIGHT_SECONDS,
+      duration: seconds,
       complete: () => resolve(),
     });
   });
@@ -243,10 +275,11 @@ async function waitUntilSettled(ds: StatsCapable, onTick?: (pending: number) => 
   }
 }
 
-export async function runBench(
+async function runWalk(
   viewer: Cesium.Viewer,
   dataSource: CopcDataSource,
   url: string,
+  panel: BenchPanel,
 ): Promise<BenchResult | null> {
   const ds = asStatsCapable(dataSource);
   if (!ds) {
@@ -265,14 +298,16 @@ export async function runBench(
     '0-0-0-0',
   );
 
-  const panel = new BenchPanel(url);
   const stops: StopResult[] = [];
   let prevBytes = ds.stats.transferredBytes;
   let prevRequests = ds.stats.requestCount;
 
+  let prevFactor = WAYPOINTS[0]!.rangeFactor;
   for (const [i, wp] of WAYPOINTS.entries()) {
+    const seconds = flightSeconds(prevFactor, wp.rangeFactor);
+    prevFactor = wp.rangeFactor;
     panel.setStatus(`Stop ${i + 1}/${WAYPOINTS.length} — ${wp.label} · flying`);
-    await flyTo(viewer, rootSphere, wp);
+    await flyTo(viewer, rootSphere, wp, seconds);
 
     const startedAt = performance.now();
     const timedOut = await waitUntilSettled(ds, (pending) => {
@@ -321,20 +356,68 @@ export async function runBench(
       `  fraction        ${(result.transferredFraction * 100).toFixed(3)}% of the file`,
   );
   console.table(stops);
-  panel.finish(result);
+  panel.setStatus('Fixed walk complete');
+  panel.renderWalk(result);
   (window as unknown as { __copcesiumBench?: BenchResult }).__copcesiumBench = result;
   return result;
 }
 
 /**
- * `?bench` runs the walk on whatever dataset is loaded; `?bench=<presetKey>`
- * (e.g. `?bench=nyc`) switches to that preset first, so the three reference
- * datasets can be measured without touching the UI.
+ * Wires the Benchmark tab: a live readout that ticks while the tab is open,
+ * and a button that runs the fixed walk.
  *
- * Returns `null` when no benchmark was asked for, `''` for "use what's
- * loaded", or the requested preset key.
+ * `getDataSource` is a callback rather than a value because the active data
+ * source is replaced whenever a different dataset is loaded.
+ */
+export function mountBenchTab(viewer: Cesium.Viewer, getDataSource: () => CopcDataSource | null): void {
+  const panel = new BenchPanel();
+  let running = false;
+
+  const run = document.createElement('button');
+  run.textContent = 'Run fixed walk';
+  run.style.cssText = BUTTON_CSS;
+  run.onclick = () => {
+    const ds = getDataSource();
+    if (!ds || running) return;
+    running = true;
+    run.disabled = true;
+    panel.clearResults();
+    void runWalk(viewer, ds, currentUrlOf(ds), panel).finally(() => {
+      running = false;
+      run.disabled = false;
+    });
+  };
+
+  const tick = (): void => {
+    const ds = getDataSource();
+    const capable = ds ? asStatsCapable(ds) : null;
+    panel.renderLive(capable ? capable.stats : null);
+    // Re-appending is cheap and keeps the button below the readout, which
+    // `renderLive` replaces wholesale on every tick.
+    if (!run.isConnected) document.getElementById('benchBody')?.appendChild(run);
+  };
+  tick();
+  setInterval(tick, 250);
+
+  (window as unknown as { __copcesiumRunBench?: () => void }).__copcesiumRunBench = () => run.click();
+}
+
+/** The URL a data source was loaded from, for labelling results. */
+function currentUrlOf(ds: CopcDataSource): string {
+  return (ds as unknown as { _url?: string })._url ?? '';
+}
+
+/**
+ * `?bench` auto-runs the fixed walk once the initial dataset is loaded;
+ * `?bench=<presetKey>` picks which dataset to load first. Without it the tab
+ * still works — it just waits for you to fly the camera or press the button.
  */
 export function benchRequested(): string | null {
   const params = new URLSearchParams(window.location.search);
   return params.has('bench') ? (params.get('bench') ?? '') : null;
+}
+
+/** Starts the fixed walk programmatically (used by the `?bench` auto-run). */
+export function autoRunWalk(): void {
+  (window as unknown as { __copcesiumRunBench?: () => void }).__copcesiumRunBench?.();
 }

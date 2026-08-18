@@ -25,26 +25,38 @@ npm run dev
 
 ## Benchmark
 
-`?bench` runs a fixed six-stop camera walk and reports what it cost — file
-size, bytes actually transferred, the percentage of the file that crossed the
-wire, and per-stop fetch/decode/upload percentiles. Results render in a panel
-on the page (and go to the console and `window.__copcesiumBench`).
+The sidebar's **Benchmark** tab measures what a session actually cost: file
+size, bytes transferred, the percentage of the file that crossed the wire,
+request count, and fetch/decode/upload latency percentiles.
 
 ```bash
 npm run dev:src          # `stats` only exists in this repo's src/ for now
 ```
 
-Then open the printed URL with the query appended:
+Two ways to use it, answering different questions:
+
+**Fly the camera yourself.** Open the tab and the numbers tick as you drag and
+zoom. Every session differs, so this can't prove an optimization helped — but
+for "what did looking at this dataset cost me", a real viewing session is the
+more honest measurement.
+
+**Run the fixed walk.** The button drives a scripted six-stop route (zooming
+from 2.5x the dataset radius down to 0.25x, orbiting, then pulling back).
+Reproducible, so two builds can be compared. Waypoints are offsets from the
+dataset's own bounding sphere, which makes the same walk meaningful for an
+81 MB file and a 51.9 GB one alike. Flight time scales with the distance
+covered, so the camera never outruns the loader.
+
+`?bench` runs the walk automatically once the page loads, and
+`?bench=<preset>` picks the dataset first:
 
 ```
-http://localhost:5173/?bench            # whatever dataset loads by default
-http://localhost:5173/?bench=nyc        # 26.5 GB New York City
-http://localhost:5173/?bench=montreal   # 51.9 GB Montreal
+http://localhost:5173/?bench=autzen     # 81 MB
+http://localhost:5173/?bench=nyc        # 26.5 GB
+http://localhost:5173/?bench=montreal   # 51.9 GB
 ```
 
-Waypoints are offsets from the dataset's own bounding sphere, so the same walk
-is comparable across datasets of very different extent. Hand-flying the camera
-gives a different number every run, which is what this exists to avoid.
+Results also go to the console and `window.__copcesiumBench`.
 
 ## Build
 
