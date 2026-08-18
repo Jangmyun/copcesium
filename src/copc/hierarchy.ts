@@ -1,6 +1,7 @@
 import { Copc } from 'copc';
 import type { Hierarchy } from 'copc';
 import { getDepth } from './node';
+import { createCountingGetter, parseContentRangeTotal, TransferCounter } from './TransferCounter';
 
 export interface CopcHierarchy {
   copc: Copc;
@@ -9,6 +10,10 @@ export interface CopcHierarchy {
   maxDepth: number;
   rootCenter: { x: number; y: number; z: number };
   rootHalfSize: number;
+  /** Carries the bytes this load already spent, so `CopcDataSource` can keep
+   *  counting into the same tally instead of starting from zero after the
+   *  header and root page are on the wire. */
+  counter: TransferCounter;
 }
 
 /**
@@ -18,9 +23,15 @@ export interface CopcHierarchy {
  * `Copc.create()`. Probing for `206 Partial Content` up front turns that into
  * a clear, actionable error instead (#86).
  */
-async function assertRangeRequestsSupported(url: string): Promise<void> {
+async function assertRangeRequestsSupported(url: string, counter: TransferCounter): Promise<void> {
   if (!/^https?:\/\//i.test(url)) return; // local/fs getter has no such failure mode
   const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+  // This response already discloses the file size in `Content-Range`, so
+  // reading it here saves the HEAD request that would otherwise be needed
+  // to report what fraction of the file a session actually transferred.
+  const total = parseContentRangeTotal(response.headers?.get('Content-Range') ?? null);
+  if (total !== undefined) counter.setFileBytes(total);
+  counter.record(0, 1);
   if (response.status !== 206) {
     throw new Error(
       `Server did not honor an HTTP Range Request (expected 206 Partial Content, got ${response.status}). ` +
@@ -35,11 +46,17 @@ async function assertRangeRequestsSupported(url: string): Promise<void> {
  * depth covered by the root page, and the root cube (center/half size).
  */
 export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
-  await assertRangeRequestsSupported(url);
+  const counter = new TransferCounter();
+  await assertRangeRequestsSupported(url, counter);
+  // `Copc.create()` and `loadHierarchyPage()` both accept a Getter in place of
+  // a URL, which is what makes the header and root-page bytes countable —
+  // handing them the URL would route them through copc's own uncounted (and
+  // status-blind) default getter instead.
+  const getter = createCountingGetter(url, counter);
 
   let copc: Copc;
   try {
-    copc = await Copc.create(url);
+    copc = await Copc.create(getter);
   } catch (err) {
     const e = err as Error;
     if (/must be at least|Invalid header|COPC info VLR/i.test(e.message)) {
@@ -55,7 +72,7 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   const rootCenter = { x: (minx + maxx) / 2, y: (miny + maxy) / 2, z: (minz + maxz) / 2 };
   const rootHalfSize = (maxx - minx) / 2;
 
-  const { nodes, pages } = await Copc.loadHierarchyPage(url, copc.info.rootHierarchyPage);
+  const { nodes, pages } = await Copc.loadHierarchyPage(getter, copc.info.rootHierarchyPage);
   // A manual reduce instead of `Math.max(...keys.map(getDepth))` — spreading a
   // large array into call arguments can blow the call stack (see #126).
   let maxDepth = 0;
@@ -64,5 +81,5 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
     if (depth > maxDepth) maxDepth = depth;
   }
 
-  return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize };
+  return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize, counter };
 }

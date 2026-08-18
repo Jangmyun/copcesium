@@ -99,6 +99,16 @@ function makeResolvedCancellable<T>(value: T): Promise<T> & { cancel: () => void
 // ever touching the mocked `copc` module above; default it to a well-behaved
 // 206 response so tests unrelated to that probe don't have to know it exists.
 const fetchMock = vi.fn();
+/** A minimal stand-in for a `206` range response, including the
+ *  `Content-Range` that discloses the file size (#181). */
+function rangeResponse(total = 1_000_000, status = 206) {
+  return {
+    status,
+    headers: { get: (name: string) => (name === 'Content-Range' ? `bytes 0-0/${total}` : null) },
+    arrayBuffer: async () => new ArrayBuffer(0),
+  };
+}
+
 
 // workerPoolRun/workerPoolDestroy/selectNodesMock/isInFrustumMock/
 // rangeFetcherFetch are shared across every test in this file, so their state
@@ -107,7 +117,7 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   isInFrustumMock.mockReturnValue(true);
-  fetchMock.mockResolvedValue({ status: 206 });
+  fetchMock.mockResolvedValue(rangeResponse());
   vi.stubGlobal('fetch', fetchMock);
   rangeFetcherFetch.mockImplementation(() => makeResolvedCancellable(new Uint8Array([0])));
 });
@@ -1148,6 +1158,29 @@ describe('CopcDataSource runtime API', () => {
     expect(ds.nodeCount).toBe(1); // the single '0-0-0-0' node from mockCopc()'s fixture
     expect(ds.maxDepth).toBe(0);
     expect(ds.cacheSize).toBe(0); // nothing loaded yet
+  });
+
+  it('reports the file size and the bytes spent reaching it via stats (#181)', async () => {
+    mockCopc(undefined);
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+    // Read off the probe's Content-Range, not a separate HEAD request.
+    expect(ds.stats.fileBytes).toBe(1_000_000);
+    // The probe alone is one request; the point of counting centrally is that
+    // the header and hierarchy pages land in the same tally as point data.
+    expect(ds.stats.requestCount).toBeGreaterThan(0);
+    expect(ds.stats.transferredBytes).toBeGreaterThan(0);
+    // Far short of the whole file — that gap is the claim being measured.
+    expect(ds.stats.transferredBytes).toBeLessThan(ds.stats.fileBytes);
+  });
+
+  it('starts every stage timing empty, so percentiles read 0 before any node loads', async () => {
+    mockCopc(undefined);
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+    for (const stage of [ds.stats.fetch, ds.stats.decode, ds.stats.upload]) {
+      expect(stage).toEqual({ count: 0, p50: 0, p95: 0 });
+    }
   });
 });
 
