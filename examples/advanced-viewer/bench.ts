@@ -103,6 +103,113 @@ export interface BenchResult {
   stops: StopResult[];
 }
 
+/**
+ * An on-screen readout, because a benchmark whose results only exist in the
+ * console can't be shown to anyone — not in a screen recording, not to
+ * someone looking over your shoulder. Uses the viewer's own theme tokens so
+ * it belongs to the page rather than sitting on top of it.
+ */
+class BenchPanel {
+  private readonly root: HTMLDivElement;
+  private readonly status: HTMLDivElement;
+  private readonly body: HTMLDivElement;
+
+  constructor(url: string) {
+    this.root = document.createElement('div');
+    this.root.style.cssText = [
+      'position:fixed', 'top:14px', 'left:50%', 'transform:translateX(-50%)',
+      'z-index:9999', 'min-width:520px', 'max-width:min(92vw,900px)',
+      'background:var(--panel,#11151d)', 'color:var(--text,#e7ebf2)',
+      'border:1px solid var(--border2,rgba(255,255,255,.14))', 'border-radius:10px',
+      'box-shadow:0 10px 40px rgba(0,0,0,.5)', 'padding:14px 16px',
+      "font-family:'IBM Plex Sans',system-ui,sans-serif", 'font-size:12.5px',
+    ].join(';');
+
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:600;font-size:13.5px;margin-bottom:2px';
+    title.textContent = 'Benchmark — fixed camera walk';
+    const sub = document.createElement('div');
+    sub.style.cssText =
+      "font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--faint,#5b6675);word-break:break-all";
+    sub.textContent = url;
+
+    this.status = document.createElement('div');
+    this.status.style.cssText = 'margin-top:10px;color:var(--accent,#48bff5);font-weight:600';
+    this.body = document.createElement('div');
+    this.body.style.cssText = 'margin-top:10px';
+
+    this.root.append(title, sub, this.status, this.body);
+    document.body.appendChild(this.root);
+  }
+
+  setStatus(text: string): void {
+    this.status.textContent = text;
+  }
+
+  /** Replaces the body with the finished run's headline and per-stop table. */
+  finish(result: BenchResult): void {
+    const mb = (n: number): string => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`);
+    this.status.textContent = 'Done';
+
+    const headline = document.createElement('div');
+    headline.style.cssText =
+      'display:flex;gap:22px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--border,rgba(255,255,255,.08))';
+    const stat = (label: string, value: string, accent = false): HTMLDivElement => {
+      const d = document.createElement('div');
+      d.innerHTML =
+        `<div style="font-size:10.5px;color:var(--dim,#96a0b0)">${label}</div>` +
+        `<div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;` +
+        `color:${accent ? 'var(--accent,#48bff5)' : 'inherit'}">${value}</div>`;
+      return d;
+    };
+    headline.append(
+      stat('file', mb(result.fileBytes)),
+      stat('transferred', mb(result.transferredBytes), true),
+      stat('of file', `${(result.transferredFraction * 100).toFixed(4)}%`, true),
+      stat('requests', String(result.requestCount)),
+    );
+
+    const table = document.createElement('table');
+    table.style.cssText =
+      "width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:11px;margin-top:4px";
+    const head = ['stop', 'converge', 'bytes', 'reqs', 'fetch p50/p95', 'decode p50/p95', 'upload p50/p95'];
+    table.innerHTML =
+      `<tr style="color:var(--dim,#96a0b0);text-align:left">${head
+        .map((h) => `<th style="padding:4px 8px 4px 0;font-weight:500">${h}</th>`)
+        .join('')}</tr>` +
+      result.stops
+        .map(
+          (s) =>
+            `<tr style="border-top:1px solid var(--border,rgba(255,255,255,.08))">` +
+            [
+              s.label + (s.timedOut ? ' ⚠' : ''),
+              `${s.convergeMs} ms`,
+              (s.bytesDelta / 1e6).toFixed(1) + ' MB',
+              String(s.requestsDelta),
+              `${s.fetchP50}/${s.fetchP95}`,
+              `${s.decodeP50}/${s.decodeP95}`,
+              `${s.uploadP50}/${s.uploadP95}`,
+            ]
+              .map((c) => `<td style="padding:4px 8px 4px 0">${c}</td>`)
+              .join('') +
+            `</tr>`,
+        )
+        .join('');
+
+    const copy = document.createElement('button');
+    copy.textContent = 'Copy JSON';
+    copy.style.cssText =
+      'margin-top:10px;padding:5px 11px;border-radius:6px;cursor:pointer;font:inherit;font-size:11.5px;' +
+      'background:var(--panel3,#1c222e);color:var(--text,#e7ebf2);border:1px solid var(--border2,rgba(255,255,255,.14))';
+    copy.onclick = () => {
+      void navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+      copy.textContent = 'Copied';
+    };
+
+    this.body.replaceChildren(headline, table, copy);
+  }
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 async function flyTo(viewer: Cesium.Viewer, sphere: Cesium.BoundingSphere, wp: Waypoint): Promise<void> {
@@ -120,10 +227,11 @@ async function flyTo(viewer: Cesium.Viewer, sphere: Cesium.BoundingSphere, wp: W
 }
 
 /** Resolves once nothing has been in flight for `SETTLE_MS`, or on timeout. */
-async function waitUntilSettled(ds: StatsCapable): Promise<boolean> {
+async function waitUntilSettled(ds: StatsCapable, onTick?: (pending: number) => void): Promise<boolean> {
   const deadline = performance.now() + CONVERGE_TIMEOUT_MS;
   let quietSince: number | null = null;
   for (;;) {
+    onTick?.(ds.stats.pendingNodes);
     if (ds.stats.pendingNodes === 0) {
       quietSince ??= performance.now();
       if (performance.now() - quietSince >= SETTLE_MS) return false;
@@ -157,15 +265,22 @@ export async function runBench(
     '0-0-0-0',
   );
 
+  const panel = new BenchPanel(url);
   const stops: StopResult[] = [];
   let prevBytes = ds.stats.transferredBytes;
   let prevRequests = ds.stats.requestCount;
 
-  for (const wp of WAYPOINTS) {
+  for (const [i, wp] of WAYPOINTS.entries()) {
+    panel.setStatus(`Stop ${i + 1}/${WAYPOINTS.length} — ${wp.label} · flying`);
     await flyTo(viewer, rootSphere, wp);
 
     const startedAt = performance.now();
-    const timedOut = await waitUntilSettled(ds);
+    const timedOut = await waitUntilSettled(ds, (pending) => {
+      panel.setStatus(
+        `Stop ${i + 1}/${WAYPOINTS.length} — ${wp.label} · ` +
+          (pending > 0 ? `loading ${pending} node${pending === 1 ? '' : 's'}` : 'settling'),
+      );
+    });
     const convergeMs = performance.now() - startedAt;
 
     const s = ds.stats;
@@ -206,6 +321,7 @@ export async function runBench(
       `  fraction        ${(result.transferredFraction * 100).toFixed(3)}% of the file`,
   );
   console.table(stops);
+  panel.finish(result);
   (window as unknown as { __copcesiumBench?: BenchResult }).__copcesiumBench = result;
   return result;
 }
