@@ -129,6 +129,10 @@ export interface CopcStats {
   /** Bytes actually received across every path: the Range-support probe, the
    *  header, hierarchy pages, and node point data. */
   transferredBytes: number;
+  /** Nodes currently in flight — fetching, decoding, or uploading. Zero means
+   *  the current view is fully resolved, which is the only externally visible
+   *  signal a benchmark can use to know when to stop the clock. */
+  pendingNodes: number;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */

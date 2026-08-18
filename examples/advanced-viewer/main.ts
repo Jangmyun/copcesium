@@ -9,6 +9,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
+import { benchRequested, runBench } from './bench';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -637,4 +638,10 @@ updateColorLegend(
 renderPresetList(null);
 setActivePreset('autzen');
 urlInput.value = PRESETS.autzen.url;
-void loadCopc(PRESETS.autzen.url, PRESETS.autzen.options ?? {}, PRESETS.autzen.label);
+void loadCopc(PRESETS.autzen.url, PRESETS.autzen.options ?? {}, PRESETS.autzen.label).then(() => {
+  // `?bench` drives a fixed camera walk and reports stats per stop, so an
+  // optimization can be compared against a baseline instead of a memory of
+  // how it felt. Append `?bench` to any dataset — including the deployed
+  // demo — and read the console.
+  if (benchRequested() && currentDs) void runBench(viewer, currentDs, currentUrl);
+});
