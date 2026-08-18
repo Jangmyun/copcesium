@@ -149,7 +149,11 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const selected: string[] = [];
   let pointsUsed = 0;
 
-  const sseOf = (key: string): number => computeScreenSpaceError(getSphere(key), camera.position, viewportHeight, fovy);
+  // `positionWC`, not `position` — the latter is relative to `camera.transform`
+  // and goes local the moment anything calls `camera.lookAt()`, which would
+  // measure every node's screen-space error against the wrong viewpoint.
+  const sseOf = (key: string): number =>
+    computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
 
   const heap = new MaxHeap<{ key: string; sse: number }>((entry) => entry.sse);
   // The root's priority never matters — it's the only entry until popped.

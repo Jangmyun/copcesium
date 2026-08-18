@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as Cesium from 'cesium';
-import { getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './boundingVolume';
+import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './boundingVolume';
 
 // Identity projection that passes coordinates straight through to Cartesian3 (verifies pure math, no CRS involved)
 const identityProject: ProjectToCartesian = (x, y, z) => new Cesium.Cartesian3(x, y, z);
@@ -65,5 +65,49 @@ describe('isInFrustum', () => {
     const sphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(20, 0, 0), 1);
 
     expect(isInFrustum(sphere, boxCullingVolume)).toBe(false);
+  });
+});
+
+describe('getCullingVolume', () => {
+  /** A camera whose `transform` is not the identity, as `Camera.lookAt()` leaves it.
+   *  The plain vectors are then local to that frame while the `WC` ones stay in
+   *  world coordinates — here the two disagree wildly on purpose. */
+  function cameraUnderLookAt(): Cesium.Camera {
+    const worldPosition = new Cesium.Cartesian3(0, 0, 500);
+    return {
+      // What `camera.position` reads as under a lookAt: a short offset in the
+      // target's local frame, nowhere near the world position.
+      position: new Cesium.Cartesian3(0, 0, 10),
+      direction: new Cesium.Cartesian3(0, 0, -1),
+      up: new Cesium.Cartesian3(0, 1, 0),
+      positionWC: worldPosition,
+      directionWC: new Cesium.Cartesian3(0, 0, -1),
+      upWC: new Cesium.Cartesian3(0, 1, 0),
+      frustum: new Cesium.PerspectiveFrustum({
+        fov: Cesium.Math.toRadians(60),
+        aspectRatio: 1,
+        near: 1,
+        far: 1e9,
+      }),
+    } as unknown as Cesium.Camera;
+  }
+
+  it('builds the volume from world coordinates, so a camera under lookAt() still sees the scene', () => {
+    // Regression: reading `camera.position` put the volume 10 units from the
+    // origin instead of 500, so everything fell outside the near plane and the
+    // whole point cloud blanked for as long as a lookAt transform was active
+    // — which is what orbiting a target with `camera.lookAt()` does.
+    const volume = getCullingVolume(cameraUnderLookAt());
+    const inView = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, 0), 50);
+
+    expect(isInFrustum(inView, volume)).toBe(true);
+  });
+
+  it('still culls what is genuinely outside the frustum', () => {
+    const volume = getCullingVolume(cameraUnderLookAt());
+    // Behind the camera, which looks down -z from z=500.
+    const behind = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, 5000), 10);
+
+    expect(isInFrustum(behind, volume)).toBe(false);
   });
 });
