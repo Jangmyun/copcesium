@@ -647,5 +647,14 @@ const startPreset = PRESETS[startKey]!;
 setActivePreset(startKey);
 urlInput.value = startPreset.url;
 void loadCopc(startPreset.url, startPreset.options ?? {}, startPreset.label).then(() => {
-  if (benchTarget !== null && currentDs) void runBench(viewer, currentDs, currentUrl);
+  if (benchTarget !== null && currentDs) {
+    void runBench(viewer, currentDs, currentUrl);
+  } else {
+    // Without this, the harness is invisible: nothing on the page hints that
+    // it exists, so the only way to find it is to already know.
+    console.info(
+      '[copcesium] benchmark available — reload with ?bench to run a fixed camera walk, ' +
+        `or ?bench=<preset> to pick a dataset (${Object.keys(PRESETS).join(', ')}).`,
+    );
+  }
 });

@@ -23,6 +23,29 @@ cp .env.example .env   # set VITE_CESIUM_TOKEN for Cesium Ion terrain/imagery â€
 npm run dev
 ```
 
+## Benchmark
+
+`?bench` runs a fixed six-stop camera walk and reports what it cost â€” file
+size, bytes actually transferred, the percentage of the file that crossed the
+wire, and per-stop fetch/decode/upload percentiles. Results render in a panel
+on the page (and go to the console and `window.__copcesiumBench`).
+
+```bash
+npm run dev:src          # `stats` only exists in this repo's src/ for now
+```
+
+Then open the printed URL with the query appended:
+
+```
+http://localhost:5173/?bench            # whatever dataset loads by default
+http://localhost:5173/?bench=nyc        # 26.5 GB New York City
+http://localhost:5173/?bench=montreal   # 51.9 GB Montreal
+```
+
+Waypoints are offsets from the dataset's own bounding sphere, so the same walk
+is comparable across datasets of very different extent. Hand-flying the camera
+gives a different number every run, which is what this exists to avoid.
+
 ## Build
 
 ```bash
