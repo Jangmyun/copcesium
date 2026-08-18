@@ -67,6 +67,7 @@ const DEFAULT_OPTIONS: Required<
   maxPoints: 5_000_000,
   pixelSize: 2,
   sseThreshold: 250,
+  lodHysteresis: 1.15,
   zFactor: 1,
   xyFactor: 1,
   autoFrame: true,
@@ -157,9 +158,12 @@ export class CopcDataSource {
   private _selectedKeys = new Set<string>();
   private _isUpdating = false;
   private _pendingUpdate = false;
+  /** True between the camera's `moveStart` and `moveEnd`; gates `lodHysteresis`. */
+  private _cameraMoving = false;
   private _lastUpdateTime = 0;
   private _removeUpdateListener: () => void = () => {};
   private _removeMoveEndListener: () => void = () => {};
+  private _removeMoveStartListener: () => void = () => {};
   private _destroyed = false;
 
   private constructor(
@@ -261,6 +265,9 @@ export class CopcDataSource {
   private _startListening(): void {
     this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
     this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
+    this._removeMoveStartListener = this._viewer.scene.camera.moveStart.addEventListener(() => {
+      this._cameraMoving = true;
+    });
   }
 
   /** Flies the camera to the loaded dataset's root bounding sphere. */
@@ -323,9 +330,12 @@ export class CopcDataSource {
   }
 
   /** Camera has come to rest — run the LoD pass immediately rather than
-   *  possibly losing the final refinement to debounce timing. */
+   *  possibly losing the final refinement to debounce timing. Clearing
+   *  `_cameraMoving` first drops the incumbency bonus, so the view the user
+   *  is left looking at is the one the unbiased ordering would have picked. */
   private _onMoveEnd(): void {
     if (this._destroyed) return;
+    this._cameraMoving = false;
     this._lastUpdateTime = performance.now();
     void this._updateLoD();
   }
@@ -378,6 +388,8 @@ export class CopcDataSource {
           sseThreshold: this._options.sseThreshold,
           maxVisibleNodes: this._options.maxVisibleNodes,
           maxPoints: this._options.maxPoints,
+          previouslySelected: this._selectedKeys,
+          hysteresis: this._cameraMoving ? this._options.lodHysteresis : 1,
         }),
       );
 
@@ -773,6 +785,7 @@ export class CopcDataSource {
     this._destroyed = true;
     this._removeUpdateListener();
     this._removeMoveEndListener();
+    this._removeMoveStartListener();
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();

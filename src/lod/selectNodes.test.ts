@@ -364,3 +364,114 @@ describe('selectNodes', () => {
     expect(selected).toHaveLength(9);
   });
 });
+
+// Two siblings that both fit in the frustum, with a budget that admits only
+// one of them. `1-0-0-1` sits marginally closer to the camera than `1-1-0-1`,
+// so an unbiased ordering always prefers it -- which is exactly the tie a
+// drifting camera keeps re-breaking in both directions (#192).
+const HYST_HALF_SIZE = 100;
+const SIBLINGS: Hierarchy.Node.Map = {
+  '0-0-0-0': { pointCount: 100, pointDataOffset: 0, pointDataLength: 1 },
+  '1-0-0-1': { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 },
+  '1-1-0-1': { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 },
+};
+
+describe('selectNodes hysteresis', () => {
+  const getSphere = makeGetSphere(rootCenter, HYST_HALF_SIZE);
+
+  it('drops an on-screen node for a marginally better newcomer when no bonus is set', () => {
+    const camera = makeCamera(
+      new Cesium.Cartesian3(-10, -50, 1000),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+
+    const selected = selectNodes({
+      nodes: SIBLINGS,
+      getSphere,
+      camera,
+      viewportHeight: 600,
+      sseThreshold: 20,
+      maxVisibleNodes: 2,
+      previouslySelected: new Set(['0-0-0-0', '1-1-0-1']),
+      // hysteresis omitted: defaults to 1, i.e. the pre-#192 behaviour.
+    });
+
+    expect(selected).toEqual(['0-0-0-0', '1-0-0-1']);
+  });
+
+  it('keeps the on-screen node instead when the bonus outweighs the margin', () => {
+    const camera = makeCamera(
+      new Cesium.Cartesian3(-10, -50, 1000),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+
+    const selected = selectNodes({
+      nodes: SIBLINGS,
+      getSphere,
+      camera,
+      viewportHeight: 600,
+      sseThreshold: 20,
+      maxVisibleNodes: 2,
+      previouslySelected: new Set(['0-0-0-0', '1-1-0-1']),
+      hysteresis: 1.15,
+    });
+
+    expect(selected).toEqual(['0-0-0-0', '1-1-0-1']);
+  });
+
+  // Without this the bonus would be a freeze, not a damper: whatever got on
+  // screen first would hold its slot however far the camera travelled.
+  it('still yields the slot once the newcomer beats the bonus outright', () => {
+    const camera = makeCamera(
+      new Cesium.Cartesian3(-50, -50, 200),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+
+    const selected = selectNodes({
+      nodes: SIBLINGS,
+      getSphere,
+      camera,
+      viewportHeight: 600,
+      sseThreshold: 20,
+      maxVisibleNodes: 2,
+      previouslySelected: new Set(['0-0-0-0', '1-1-0-1']),
+      hysteresis: 1.15,
+    });
+
+    expect(selected).toEqual(['0-0-0-0', '1-0-0-1']);
+  });
+
+  // The bonus reorders the budget queue; it must not also make an on-screen
+  // node subdivide at an effectively lower SSE threshold than a new one.
+  it('does not lower the subdivision threshold for a node that carries the bonus', () => {
+    const nodes: Hierarchy.Node.Map = {
+      '0-0-0-0': { pointCount: 100, pointDataOffset: 0, pointDataLength: 1 },
+      '1-0-0-1': { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 },
+      '2-0-0-3': { pointCount: 5, pointDataOffset: 0, pointDataLength: 1 },
+    };
+    const camera = makeCamera(
+      new Cesium.Cartesian3(-50, -50, 1000),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+
+    const selected = selectNodes({
+      nodes,
+      getSphere,
+      camera,
+      viewportHeight: 600,
+      // Above `1-0-0-1`'s own SSE, so it is a leaf of this pass no matter how
+      // its queue priority was scored.
+      sseThreshold: 60,
+      maxVisibleNodes: 100,
+      previouslySelected: new Set(['0-0-0-0', '1-0-0-1']),
+      hysteresis: 3,
+    });
+
+    expect(selected).toEqual(['0-0-0-0', '1-0-0-1']);
+    expect(selected).not.toContain('2-0-0-3');
+  });
+});

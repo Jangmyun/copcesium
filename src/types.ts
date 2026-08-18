@@ -35,6 +35,15 @@ export interface CopcDataSourceOptions {
   maxPoints?: number;
   pixelSize?: number;
   sseThreshold?: number;
+  /**
+   * Multiplier favouring nodes already on screen when `maxVisibleNodes` or
+   * `maxPoints` forces the traversal to stop mid-heap, so a visible node is
+   * only displaced by a clearly better candidate rather than by a tie that
+   * camera noise happened to break the other way. `1` disables it. Applies
+   * only while the camera is moving — the pass that runs once it settles
+   * always uses the unbiased ordering. Default `1.15`.
+   */
+  lodHysteresis?: number;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;
   /** Factor that converts the XY axis unit to meters. Auto-detected from the WKT when omitted. */

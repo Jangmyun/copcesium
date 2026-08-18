@@ -126,10 +126,12 @@ afterEach(() => vi.unstubAllGlobals());
 function makeFakeViewer() {
   let updateCallback: (() => void) | undefined;
   let moveEndCallback: (() => void) | undefined;
+  let moveStartCallback: (() => void) | undefined;
   const addPrimitive = vi.fn();
   const removePrimitive = vi.fn();
   const removeUpdateListener = vi.fn();
   const removeMoveEndListener = vi.fn();
+  const removeMoveStartListener = vi.fn();
   const requestRender = vi.fn();
   const viewer = {
     scene: {
@@ -147,6 +149,12 @@ function makeFakeViewer() {
             return removeMoveEndListener;
           }),
         },
+        moveStart: {
+          addEventListener: vi.fn((cb: () => void) => {
+            moveStartCallback = cb;
+            return removeMoveStartListener;
+          }),
+        },
         // Resolves zoomTo()'s promise immediately (real geometry isn't needed —
         // that's covered by dedicated zoomTo tests further down).
         flyToBoundingSphere: vi.fn((_sphere: unknown, opts: { complete?: () => void }) => opts.complete?.()),
@@ -161,9 +169,11 @@ function makeFakeViewer() {
     removePrimitive,
     removeUpdateListener,
     removeMoveEndListener,
+    removeMoveStartListener,
     requestRender,
     triggerUpdate: () => updateCallback!(),
     triggerMoveEnd: () => moveEndCallback!(),
+    triggerMoveStart: () => moveStartCallback!(),
   };
 }
 
@@ -972,11 +982,68 @@ describe('CopcDataSource update loop', () => {
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
   });
 
+  it('applies the LoD hysteresis only while the camera is moving', async () => {
+    mockCopc(undefined);
+    selectNodesMock.mockReturnValue([]);
+    const { viewer, triggerUpdate, triggerMoveStart, triggerMoveEnd } = makeFakeViewer();
+    const lastHysteresis = () =>
+      (selectNodesMock.mock.calls.at(-1)![0] as { hysteresis: number }).hysteresis;
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      debounceMs: 0,
+      lodHysteresis: 1.4,
+    });
+
+    // A drag in progress: incumbents get the bonus, so the budget cut stops
+    // reshuffling from pass to pass (#192).
+    selectNodesMock.mockClear();
+    triggerMoveStart();
+    triggerUpdate();
+    expect(lastHysteresis()).toBe(1.4);
+
+    // Camera at rest: the bonus is released so the view the user is left with
+    // is the one an unbiased ordering picks, not whatever it drifted into.
+    selectNodesMock.mockClear();
+    triggerMoveEnd();
+    expect(lastHysteresis()).toBe(1);
+
+    // ... and it stays released for the throttled passes that follow.
+    selectNodesMock.mockClear();
+    triggerUpdate();
+    expect(lastHysteresis()).toBe(1);
+  });
+
+  it('feeds the current on-screen set back into the next selection pass', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    selectNodesMock.mockClear();
+    triggerUpdate();
+
+    const { previouslySelected } = selectNodesMock.mock.calls.at(-1)![0] as {
+      previouslySelected: ReadonlySet<string>;
+    };
+    expect([...previouslySelected]).toEqual(['0-0-0-0']);
+  });
+
   it('destroy() tears down the worker pool and node cache, and removes both listeners', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);
-    const { viewer, addPrimitive, removePrimitive, removeUpdateListener, removeMoveEndListener, triggerUpdate } =
-      makeFakeViewer();
+    const {
+      viewer,
+      addPrimitive,
+      removePrimitive,
+      removeUpdateListener,
+      removeMoveEndListener,
+      removeMoveStartListener,
+      triggerUpdate,
+    } = makeFakeViewer();
 
     const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
     triggerUpdate();
@@ -988,6 +1055,7 @@ describe('CopcDataSource update loop', () => {
 
     expect(removeUpdateListener).toHaveBeenCalledTimes(1);
     expect(removeMoveEndListener).toHaveBeenCalledTimes(1);
+    expect(removeMoveStartListener).toHaveBeenCalledTimes(1);
     expect(workerPoolDestroy).toHaveBeenCalledTimes(1);
     expect(rangeFetcherDestroy).toHaveBeenCalledTimes(1);
     expect(removePrimitive).toHaveBeenCalledTimes(1);

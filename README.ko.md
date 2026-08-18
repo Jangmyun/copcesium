@@ -155,6 +155,7 @@ interface CopcDataSourceOptions {
   maxPoints?: number;
   pixelSize?: number;
   sseThreshold?: number;
+  lodHysteresis?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -179,6 +180,7 @@ interface CopcDataSourceOptions {
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
 | `sseThreshold` | `250` | 이 값을 넘으면 노드를 자식으로 세분화하는 화면 공간 오차(픽셀) 기준값. 낮을수록 디테일은 높아지고 로드되는 노드도 많아집니다. `dataSource.sseThreshold`로 실시간 조정 가능. |
+| `lodHysteresis` | `1.15` | `maxVisibleNodes`/`maxPoints`에 걸려 선택이 잘릴 때, 이미 화면에 있는 노드에 주는 가산점. 카메라가 움직이는 동안 컷 경계에서 노드가 계속 뒤바뀌는 것을 막습니다. 움직이는 동안에만 적용되고 멈춘 뒤의 패스는 가산점 없이 계산합니다. `1`이면 비활성화. |
 | `autoFrame` | `true` | `load()`가 resolve되기 전에 카메라를 데이터셋으로 비행시킬지 여부. 카메라를 직접 관리한다면 `false`로 설정하세요. |
 | `colorMode` | `'rgb'` | 포인트 색상 기준. `dataSource.colorMode`로 실시간 조정 가능. [스타일링](#스타일링) 참고. |
 | `classificationFilter` | 전체 | 그릴 LAS 분류 코드 목록. 나머지는 그리지 않습니다. `dataSource.classificationFilter`로 실시간 조정 가능. |

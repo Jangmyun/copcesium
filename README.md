@@ -156,6 +156,7 @@ interface CopcDataSourceOptions {
   maxPoints?: number;
   pixelSize?: number;
   sseThreshold?: number;
+  lodHysteresis?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -181,6 +182,7 @@ interface CopcDataSourceOptions {
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
 | `pixelSize` | `2` | Point size in pixels. Live-adjustable after load via `dataSource.pixelSize`. |
 | `sseThreshold` | `250` | Screen-space error (pixels) above which a node is subdivided into children. Lower = more detail, more nodes loaded. Live-adjustable via `dataSource.sseThreshold`. |
+| `lodHysteresis` | `1.15` | Bonus favouring nodes already on screen when `maxVisibleNodes`/`maxPoints` cuts the selection short, so a moving camera doesn't keep swapping nodes across that cut. Applies only while the camera moves; the pass that runs once it stops is unbiased. `1` disables it. |
 | `autoFrame` | `true` | Whether `load()` flies the camera to the dataset before resolving. Set `false` if you're managing the camera yourself. |
 | `colorMode` | `'rgb'` | How points are coloured. Live-adjustable via `dataSource.colorMode`. See [Styling](#styling). |
 | `opacity` | `1` | Alpha multiplier applied to every point's colour. Below `1`, points draw translucent with no per-point depth sort. Live-adjustable via `dataSource.opacity`. |

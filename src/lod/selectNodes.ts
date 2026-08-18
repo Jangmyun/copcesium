@@ -104,6 +104,18 @@ export interface SelectNodesOptions {
    * unlimited (`maxVisibleNodes` alone governs) when omitted.
    */
   maxPoints?: number;
+  /**
+   * Keys the previous pass selected, i.e. what is on screen right now. Used
+   * only to apply `hysteresis`; omitting it disables the bonus.
+   */
+  previouslySelected?: ReadonlySet<string>;
+  /**
+   * Multiplier applied to a previously-selected node's heap priority. Above
+   * `1`, a node already on screen outranks an equally-scoring newcomer, which
+   * keeps the budget cut from reshuffling as the camera moves. Defaults to
+   * `1` (no bonus).
+   */
+  hysteresis?: number;
 }
 
 /**
@@ -130,6 +142,14 @@ export interface SelectNodesOptions {
  * always popped before its children are pushed, the budget can only ever cut
  * depth off the bottom, never leave a descendant selected without the
  * ancestors it sits on top of.
+ *
+ * Where that cut lands is what `hysteresis` guards. A saturated budget stops
+ * the traversal mid-heap, and the nodes on either side of the stopping point
+ * are, by construction, the ones scoring closest together — so a camera edging
+ * along keeps swapping them, and the same patch of ground visibly changes
+ * detail several times a second. Giving `previouslySelected` keys a bonus
+ * makes displacing a visible node take a decisively better candidate instead
+ * of a coin toss. See #192.
  */
 export function selectNodes(options: SelectNodesOptions): string[] {
   const {
@@ -142,6 +162,8 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     sseThreshold,
     maxVisibleNodes,
     maxPoints = Infinity,
+    previouslySelected,
+    hysteresis = 1,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
@@ -155,9 +177,15 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const sseOf = (key: string): number =>
     computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
 
-  const heap = new MaxHeap<{ key: string; sse: number }>((entry) => entry.sse);
+  // Ordering only. The subdivision test below deliberately re-reads the raw
+  // SSE, so the bonus decides who survives the budget cut without also making
+  // an on-screen node subdivide at a lower threshold than a new one.
+  const priorityOf = (key: string): number =>
+    previouslySelected?.has(key) ? sseOf(key) * hysteresis : sseOf(key);
+
+  const heap = new MaxHeap<{ key: string; priority: number }>((entry) => entry.priority);
   // The root's priority never matters — it's the only entry until popped.
-  heap.push({ key: '0-0-0-0', sse: Infinity });
+  heap.push({ key: '0-0-0-0', priority: Infinity });
 
   while (heap.size > 0 && selected.length < maxVisibleNodes && pointsUsed < maxPoints) {
     const { key } = heap.pop()!;
@@ -179,7 +207,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
 
     for (const childKey of getChildKeys(key)) {
       if (nodes[childKey]) {
-        heap.push({ key: childKey, sse: sseOf(childKey) });
+        heap.push({ key: childKey, priority: priorityOf(childKey) });
       } else if (pages[childKey]) {
         onPageNeeded?.(childKey);
       }
