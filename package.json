@@ -34,11 +34,18 @@
   },
   "keywords": [
     "cesium",
+    "cesiumjs",
     "copc",
-    "point-cloud",
-    "las",
     "laz",
-    "webgl"
+    "las",
+    "lidar",
+    "point-cloud",
+    "pointcloud",
+    "3d-tiles",
+    "streaming",
+    "webgl",
+    "geospatial",
+    "gis"
   ],
   "contributors": [
     { "name": "Jangmyun", "email": "cndlsrb2739@gmail.com" },
