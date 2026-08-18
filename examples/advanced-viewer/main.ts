@@ -10,6 +10,7 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
 import { autoRunWalk, benchRequested, mountBenchTab } from './bench';
+import { CameraTour } from './tour';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -168,6 +169,7 @@ const chipPts = document.getElementById('chipPts')!;
 const errorBanner = document.getElementById('errorBanner')!;
 const themeBtn = document.getElementById('themeBtn')!;
 const homeBtn = document.getElementById('homeBtn')!;
+const tourBtn = document.getElementById('tourBtn')!;
 const zoomInBtn = document.getElementById('zoomInBtn')!;
 const zoomOutBtn = document.getElementById('zoomOutBtn')!;
 
@@ -245,6 +247,28 @@ themeBtn.addEventListener('click', () => applyTheme(theme === 'dark' ? 'light' :
 homeBtn.addEventListener('click', () => {
   if (currentDs) void currentDs.zoomTo();
   else viewer.camera.flyHome();
+});
+
+// A continuous descent for recording: unlike the benchmark's walk, it never
+// stops at a waypoint, so the octree is visibly refining under the camera the
+// whole way down. Any drag or scroll hands control back.
+const tour = new CameraTour(viewer);
+const TOUR_PLAY = tourBtn.innerHTML;
+const TOUR_STOP =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' +
+  '<rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+tourBtn.addEventListener('click', () => {
+  if (tour.running) {
+    tour.stop();
+    return;
+  }
+  if (!currentDs) return;
+  tourBtn.innerHTML = TOUR_STOP;
+  tourBtn.setAttribute('title', 'Stop tour');
+  tour.start(currentDs, () => {
+    tourBtn.innerHTML = TOUR_PLAY;
+    tourBtn.setAttribute('title', 'Cinematic tour — smooth descent for recording');
+  });
 });
 zoomInBtn.addEventListener('click', () => {
   const h = viewer.camera.positionCartographic.height;

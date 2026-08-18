@@ -23,6 +23,21 @@ cp .env.example .env   # set VITE_CESIUM_TOKEN for Cesium Ion terrain/imagery �
 npm run dev
 ```
 
+## Cinematic tour
+
+The ▶ button in the top-right controls flies a single unbroken 26-second
+descent — a slow orbit that drops from 3.2x the dataset radius to 0.18x —
+built for screen recording. The octree refines under the camera the whole way
+down, which is the behaviour that's hard to convey in a still.
+
+It is deliberately not the benchmark's walk: that one hops between waypoints
+and settles at each, which is what makes it measurable and also what makes it
+look like a slideshow. Range is interpolated geometrically, so halving the
+distance always takes the same time and the descent reads at constant speed
+instead of rushing at the end.
+
+Any drag or scroll cancels it and hands control back.
+
 ## Benchmark
 
 The sidebar's **Benchmark** tab measures what a session actually cost: file
