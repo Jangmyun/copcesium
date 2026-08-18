@@ -69,20 +69,46 @@ describe('isInFrustum', () => {
 });
 
 describe('getCullingVolume', () => {
-  /** A camera whose `transform` is not the identity, as `Camera.lookAt()` leaves it.
-   *  The plain vectors are then local to that frame while the `WC` ones stay in
-   *  world coordinates — here the two disagree wildly on purpose. */
+  // Node spheres live in ECEF, where the ellipsoid radius is ~6.378e6. A camera
+  // under `lookAt()` reads `position`/`direction`/`up` in a small local offset
+  // (tens to hundreds of units) from the target's east-north-up frame — the two
+  // are separated by six orders of magnitude, which is what makes reading the
+  // local vectors as if they were world ones result in "everything culled"
+  // rather than a small pointing error. `boxCullingVolume` above (a synthetic
+  // [-10,10]^3 box) can't exercise that gap; this camera is built the same way
+  // `Camera.lookAt()` builds a real one, at real scale.
+  const target = Cesium.Cartesian3.fromDegrees(0, 0, 0);
+  const transform = Cesium.Transforms.eastNorthUpToFixedFrame(target);
+
+  // What `camera.position/direction/up` read as under a lookAt: a short offset
+  // and orientation in the target's local ENU frame.
+  const localPosition = new Cesium.Cartesian3(0, -500, 300);
+  const localDirection = Cesium.Cartesian3.normalize(
+    Cesium.Cartesian3.negate(localPosition, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
+  );
+  const localUp = new Cesium.Cartesian3(0, 0, 1);
+
+  // The `WC` variants are what `Camera.js` actually computes: `transform` applied
+  // to the local vectors (translation for position, rotation-only for direction/up).
+  const worldPosition = Cesium.Matrix4.multiplyByPoint(transform, localPosition, new Cesium.Cartesian3());
+  const worldDirection = Cesium.Cartesian3.normalize(
+    Cesium.Matrix4.multiplyByPointAsVector(transform, localDirection, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
+  );
+  const worldUp = Cesium.Cartesian3.normalize(
+    Cesium.Matrix4.multiplyByPointAsVector(transform, localUp, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
+  );
+
   function cameraUnderLookAt(): Cesium.Camera {
-    const worldPosition = new Cesium.Cartesian3(0, 0, 500);
     return {
-      // What `camera.position` reads as under a lookAt: a short offset in the
-      // target's local frame, nowhere near the world position.
-      position: new Cesium.Cartesian3(0, 0, 10),
-      direction: new Cesium.Cartesian3(0, 0, -1),
-      up: new Cesium.Cartesian3(0, 1, 0),
+      position: localPosition,
+      direction: localDirection,
+      up: localUp,
       positionWC: worldPosition,
-      directionWC: new Cesium.Cartesian3(0, 0, -1),
-      upWC: new Cesium.Cartesian3(0, 1, 0),
+      directionWC: worldDirection,
+      upWC: worldUp,
       frustum: new Cesium.PerspectiveFrustum({
         fov: Cesium.Math.toRadians(60),
         aspectRatio: 1,
@@ -92,22 +118,26 @@ describe('getCullingVolume', () => {
     } as unknown as Cesium.Camera;
   }
 
-  it('builds the volume from world coordinates, so a camera under lookAt() still sees the scene', () => {
-    // Regression: reading `camera.position` put the volume 10 units from the
-    // origin instead of 500, so everything fell outside the near plane and the
-    // whole point cloud blanked for as long as a lookAt transform was active
-    // — which is what orbiting a target with `camera.lookAt()` does.
+  it('builds the volume from world coordinates, so a camera under lookAt() still sees a node near the target', () => {
+    // Regression: reading `position`/`direction`/`up` (local to the target's ENU
+    // frame, magnitude in the hundreds) put the culling volume near the world
+    // origin instead of near the target on the ellipsoid (magnitude ~6.378e6),
+    // pointed the wrong way besides — every ECEF node fell outside it, and the
+    // whole point cloud blanked for as long as a lookAt transform was active.
     const volume = getCullingVolume(cameraUnderLookAt());
-    const inView = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, 0), 50);
+    const nodeNearTarget = new Cesium.BoundingSphere(target, 50);
 
-    expect(isInFrustum(inView, volume)).toBe(true);
+    expect(isInFrustum(nodeNearTarget, volume)).toBe(true);
   });
 
-  it('still culls what is genuinely outside the frustum', () => {
+  it('still culls a node genuinely outside the frustum', () => {
     const volume = getCullingVolume(cameraUnderLookAt());
-    // Behind the camera, which looks down -z from z=500.
-    const behind = new Cesium.BoundingSphere(new Cesium.Cartesian3(0, 0, 5000), 10);
+    // On the opposite side of the ellipsoid from the target, well behind the camera.
+    const antipodalNode = new Cesium.BoundingSphere(
+      Cesium.Cartesian3.negate(target, new Cesium.Cartesian3()),
+      50,
+    );
 
-    expect(isInFrustum(behind, volume)).toBe(false);
+    expect(isInFrustum(antipodalNode, volume)).toBe(false);
   });
 });
