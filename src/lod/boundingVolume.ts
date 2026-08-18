@@ -24,7 +24,13 @@ export function getNodeBoundingSphere(
 }
 
 export function getCullingVolume(camera: Cesium.Camera): Cesium.CullingVolume {
-  return camera.frustum.computeCullingVolume(camera.position, camera.direction, camera.up);
+  // The `WC` variants, not `position`/`direction`/`up`: those are relative to
+  // `camera.transform`, which is the identity only until something calls
+  // `camera.lookAt()` — a routine way to orbit a target. Under a lookAt the
+  // unqualified vectors are local to the target's frame, so a volume built
+  // from them sits near the Earth's centre and culls every node, blanking the
+  // point cloud until the transform is released.
+  return camera.frustum.computeCullingVolume(camera.positionWC, camera.directionWC, camera.upWC);
 }
 
 export function isInFrustum(sphere: Cesium.BoundingSphere, cullingVolume: Cesium.CullingVolume): boolean {

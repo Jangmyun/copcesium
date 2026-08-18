@@ -30,8 +30,14 @@ function makeOneLevelOctree(): Hierarchy.Node.Map {
   return nodes;
 }
 
-// Only the fields selectNodes/boundingVolume actually read (position, frustum, direction, up)
-// are provided; a real Cesium.Camera needs a Scene and isn't constructible in a unit test.
+// Only the fields selectNodes/boundingVolume actually read are provided; a real
+// Cesium.Camera needs a Scene and isn't constructible in a unit test.
+//
+// Both the plain and `WC` vectors are set, and to the same values: on a real
+// camera they diverge only once `camera.transform` stops being the identity
+// (after `lookAt()`), and the library reads the `WC` ones precisely so that
+// case keeps working. Setting both keeps this fake honest about which names
+// exist rather than encoding the library's current choice.
 function makeCamera(
   position: Cesium.Cartesian3,
   direction: Cesium.Cartesian3,
@@ -42,6 +48,9 @@ function makeCamera(
     position,
     direction,
     up,
+    positionWC: position,
+    directionWC: direction,
+    upWC: up,
     frustum: new Cesium.PerspectiveFrustum({
       fov: Cesium.Math.toRadians(fovyDegrees),
       aspectRatio: 1,
