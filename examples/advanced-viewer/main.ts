@@ -9,7 +9,7 @@ import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
-import { autoRunWalk, benchRequested, mountBenchTab } from './bench';
+import { autoRunWalk, benchRequested, mountBenchTab, tuningOptions } from './bench';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -560,6 +560,11 @@ async function loadCopc(
       ?.dataset.mode ?? 'rgb') as ColorMode;
     const ds = await CopcDataSource.load(url, viewer, {
       ...options,
+      // Spread through a cast: these are plain numeric options, but a name
+      // added to CopcDataSourceOptions after the published version this
+      // example compiles against would not typecheck here yet — the same
+      // reason bench.ts describes `stats` structurally (#194).
+      ...(tuningOptions() as Partial<CopcDataSourceOptions>),
       pixelSize: parseFloat(pixelSizeSlider.value),
       sseThreshold: parseInt(sseSlider.value, 10),
       colorMode: activeMode,

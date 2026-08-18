@@ -106,7 +106,8 @@ export interface NodeRenderData {
 
 /** Latency distribution for one stage of the per-node load pipeline. */
 export interface StageTiming {
-  /** Nodes that completed this stage since load. */
+  /** Nodes that completed this stage since load. Unbounded — unlike the
+   *  window the percentiles below are drawn from. */
   count: number;
   /** Median and 95th percentile, in milliseconds, over a rolling window of
    *  recent nodes. Percentiles rather than a mean because the two failure
@@ -137,7 +138,12 @@ export interface CopcStats {
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */
   decode: StageTiming;
-  /** Building the Cesium primitive and uploading its buffers to the GPU. */
+  /** Creating the node's GPU vertex buffers and shader, measured on the first
+   *  frame it is drawn — that is when a rendering context exists. A node that
+   *  is decoded but never shown (the camera moved on, or it lost a budget cut)
+   *  never reaches the GPU, so `upload.count` trails `decode.count` by however
+   *  many of those the session accumulated. That gap is information, not a
+   *  dropped sample. */
   upload: StageTiming;
 }
 

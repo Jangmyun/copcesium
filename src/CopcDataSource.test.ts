@@ -972,6 +972,46 @@ describe('CopcDataSource update loop', () => {
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
   });
 
+  // `count` used to be the length of the percentile window, which stops at
+  // STAGE_SAMPLE_WINDOW — so every session past that point reported the same
+  // number and two different datasets looked identical (#194).
+  it('keeps counting nodes past the percentile window', async () => {
+    const many: Record<string, Hierarchy.Node> = {};
+    const keys: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      const key = `3-0-0-${i}`;
+      many[key] = { pointCount: 1, pointDataOffset: i, pointDataLength: 1 };
+      keys.push(key);
+    }
+    mockCopc(undefined, many);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockReturnValue(keys);
+    const { viewer, triggerUpdate } = makeFakeViewer();
+
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+
+    await vi.waitFor(() => expect(ds.stats.decode.count).toBe(300), { timeout: 20_000 });
+    expect(ds.stats.fetch.count).toBe(300);
+  }, 30_000);
+
+  // The GPU buffers are built on the first frame that draws the node, which
+  // this fake viewer never delivers — so a node can be fully decoded with
+  // nothing yet uploaded, and `upload.count` has to show that (#194).
+  it('does not count an upload for a node no frame has drawn', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    expect(ds.stats.decode.count).toBe(1);
+    expect(ds.stats.upload.count).toBe(0);
+  });
+
   it('destroy() tears down the worker pool and node cache, and removes both listeners', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);

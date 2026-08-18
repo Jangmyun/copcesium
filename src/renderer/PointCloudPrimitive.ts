@@ -82,8 +82,15 @@ export class PointCloudPrimitive {
   private _cmd: DrawCommandLike | null;
   private _va: { destroy(): void } | null;
   private _sp: { destroy(): void } | null;
+  /** Fired once, after the first successful `_initGpu()`, then dropped. */
+  private _onGpuInit: ((startedAt: number, endedAt: number) => void) | null;
 
-  constructor(renderData: NodeRenderData, boundingSphere: Cesium.BoundingSphere, style: PointStyle) {
+  constructor(
+    renderData: NodeRenderData,
+    boundingSphere: Cesium.BoundingSphere,
+    style: PointStyle,
+    onGpuInit?: (startedAt: number, endedAt: number) => void,
+  ) {
     this._positions = renderData.positions;
     this._origin = renderData.origin;
     this._up = Cesium.Cartesian3.normalize(
@@ -104,6 +111,7 @@ export class PointCloudPrimitive {
     this._cmd = null;
     this._va = null;
     this._sp = null;
+    this._onGpuInit = onGpuInit ?? null;
   }
 
   // Called by PrimitiveCollection every frame.
@@ -113,7 +121,13 @@ export class PointCloudPrimitive {
       // A GPU init failure (context loss, out of VRAM, ...) must not throw here:
       // that would abort Cesium's whole frame loop. Skip just this node instead.
       try {
+        const startedAt = performance.now();
         this._initGpu(frameState.context);
+        // Only on success: a node excluded below never reached the GPU, and
+        // counting its failed attempt as an upload would skew the percentiles
+        // with a number that measures an error path.
+        this._onGpuInit?.(startedAt, performance.now());
+        this._onGpuInit = null;
       } catch (err) {
         console.error('[PointCloudPrimitive] GPU initialization failed; excluding this node from rendering:', err);
         this._destroyed = true;

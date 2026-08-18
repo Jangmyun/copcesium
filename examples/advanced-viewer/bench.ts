@@ -22,6 +22,39 @@ interface StatsCapable {
   };
 }
 
+/**
+ * Tuning options the viewer accepts from the URL query, e.g.
+ * `?concurrency=12&maxCacheNodes=400`.
+ *
+ * These have no UI because they are not things an end user tunes; they exist
+ * so a sweep can vary one of them across runs without an edit and a dev-server
+ * restart, which is what made comparing configurations impractical before
+ * (#194). `sseThreshold` is deliberately absent — it already has a slider, and
+ * two sources for one value would fight.
+ */
+const TUNING_PARAMS = [
+  'concurrency',
+  'maxCacheNodes',
+  'maxCacheBytes',
+  'maxVisibleNodes',
+  'maxPoints',
+  'debounceMs',
+  'lodHysteresis',
+] as const;
+
+export function tuningOptions(): Record<string, number> {
+  const params = new URLSearchParams(window.location.search);
+  const out: Record<string, number> = {};
+  for (const key of TUNING_PARAMS) {
+    const raw = params.get(key);
+    if (raw === null) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) out[key] = value;
+    else console.warn(`[bench] ignoring ?${key}=${raw} — not a number`);
+  }
+  return out;
+}
+
 function asStatsCapable(ds: CopcDataSource): StatsCapable | null {
   const candidate = ds as unknown as Partial<StatsCapable>;
   return candidate.stats && typeof candidate.stats.pendingNodes === 'number'
@@ -95,24 +128,41 @@ export interface StopResult {
   label: string;
   /** Wall time from arrival at the waypoint to a settled view. */
   convergeMs: number;
-  /** Bytes and requests this stop alone added. */
+  /** Bytes, requests, and decoded nodes this stop alone added. */
   bytesDelta: number;
   requestsDelta: number;
+  nodesDelta: number;
+  /** `bytesDelta / convergeMs`. The only throughput figure here that is
+   *  genuinely scoped to this stop — see the `session*` fields below. */
+  bytesPerSec: number;
   /** Totals as of this stop. */
   transferredBytes: number;
   requestCount: number;
-  fetchP50: number;
-  fetchP95: number;
-  decodeP50: number;
-  decodeP95: number;
-  uploadP50: number;
-  uploadP95: number;
+  /**
+   * Percentiles as of this stop, over the data source's rolling window —
+   * **not** over this stop alone. A stop that transfers nothing still reports
+   * whatever the window held on arrival, so consecutive stops often repeat a
+   * value. Named for that scope rather than left looking per-stop (#194); use
+   * `bytesPerSec` and `nodesDelta` for per-stop cost.
+   */
+  sessionFetchP50: number;
+  sessionFetchP95: number;
+  sessionDecodeP50: number;
+  sessionDecodeP95: number;
+  sessionUploadP50: number;
+  sessionUploadP95: number;
   /** True when the stop hit `CONVERGE_TIMEOUT_MS` instead of settling. */
   timedOut: boolean;
 }
 
 export interface BenchResult {
   url: string;
+  /** Tuning options this run resolved to, so two pasted results can be told
+   *  apart. Populated from the URL query by the viewer (#194). */
+  options: Record<string, number>;
+  /** Sum of every stop's `convergeMs` — the headline for comparing two
+   *  configurations over the same walk. */
+  totalConvergeMs: number;
   fileBytes: number;
   transferredBytes: number;
   requestCount: number;
@@ -180,14 +230,15 @@ class BenchPanel {
       statBlock('transferred', formatSize(stats.transferredBytes), true) +
       statBlock('of file', pct, true) +
       statBlock('requests', String(stats.requestCount)) +
-      statBlock('nodes loaded', String(stats.upload.count)) +
+      statBlock('nodes decoded', String(stats.decode.count)) +
+      statBlock('nodes on GPU', String(stats.upload.count)) +
       `<div class="sec-label" style="margin:14px 0 8px">right now</div>` +
       statBlock('in flight', `${stats.pendingNodes} node${stats.pendingNodes === 1 ? '' : 's'}`) +
       statBlock('transfer rate', bytesPerSec > 0 ? `${formatSize(bytesPerSec)}/s` : 'idle') +
       `<div class="sec-label" style="margin:14px 0 6px">per-node latency</div>` +
       `<div style="font-size:10.5px;color:var(--dim);margin-bottom:6px;line-height:1.5">` +
       `p50 = half the nodes were faster than this. p95 = all but the slowest 5% were.<br>` +
-      `Over the last ${stats.upload.count > 0 ? Math.min(256, stats.upload.count) : 0} node(s).</div>` +
+      `Over the last ${Math.min(256, stats.decode.count)} node(s).</div>` +
       `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
       `<tr style="color:var(--dim);text-align:left">` +
       ['stage', 'p50', 'p95', 'n'].map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`).join('') +
@@ -216,7 +267,14 @@ class BenchPanel {
       .map(
         (s) =>
           `<tr style="border-top:1px solid var(--border)">` +
-          [s.label + (s.timedOut ? ' &#9888;' : ''), String(s.convergeMs), formatSize(s.bytesDelta), String(s.requestsDelta)]
+          [
+            s.label + (s.timedOut ? ' &#9888;' : ''),
+            String(s.convergeMs),
+            formatSize(s.bytesDelta),
+            String(s.requestsDelta),
+            String(s.nodesDelta),
+            s.bytesPerSec > 0 ? `${formatSize(s.bytesPerSec)}/s` : '—',
+          ]
             .map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`)
             .join('') +
           `</tr>`,
@@ -227,7 +285,9 @@ class BenchPanel {
       `<div class="sec-label" style="margin:14px 0 6px">fixed walk — per stop</div>` +
       `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
       `<tr style="color:var(--dim);text-align:left">` +
-      ['stop', 'ms', 'bytes', 'reqs'].map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`).join('') +
+      ['stop', 'ms', 'bytes', 'reqs', 'nodes', 'rate']
+        .map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`)
+        .join('') +
       `</tr>${rows}</table>`;
 
     const copy = document.createElement('button');
@@ -325,6 +385,7 @@ async function runWalk(
   const stops: StopResult[] = [];
   let prevBytes = ds.stats.transferredBytes;
   let prevRequests = ds.stats.requestCount;
+  let prevNodes = ds.stats.decode.count;
 
   let prevFactor = WAYPOINTS[0]!.rangeFactor;
   for (const [i, wp] of WAYPOINTS.entries()) {
@@ -348,23 +409,28 @@ async function runWalk(
       convergeMs: Math.round(convergeMs),
       bytesDelta: s.transferredBytes - prevBytes,
       requestsDelta: s.requestCount - prevRequests,
+      nodesDelta: s.decode.count - prevNodes,
+      bytesPerSec: convergeMs > 0 ? Math.round(((s.transferredBytes - prevBytes) * 1000) / convergeMs) : 0,
       transferredBytes: s.transferredBytes,
       requestCount: s.requestCount,
-      fetchP50: Math.round(s.fetch.p50),
-      fetchP95: Math.round(s.fetch.p95),
-      decodeP50: Math.round(s.decode.p50),
-      decodeP95: Math.round(s.decode.p95),
-      uploadP50: Math.round(s.upload.p50),
-      uploadP95: Math.round(s.upload.p95),
+      sessionFetchP50: Math.round(s.fetch.p50),
+      sessionFetchP95: Math.round(s.fetch.p95),
+      sessionDecodeP50: Math.round(s.decode.p50),
+      sessionDecodeP95: Math.round(s.decode.p95),
+      sessionUploadP50: Math.round(s.upload.p50),
+      sessionUploadP95: Math.round(s.upload.p95),
       timedOut,
     });
     prevBytes = s.transferredBytes;
     prevRequests = s.requestCount;
+    prevNodes = s.decode.count;
   }
 
   const final = ds.stats;
   const result: BenchResult = {
     url,
+    options: tuningOptions(),
+    totalConvergeMs: stops.reduce((sum, stop) => sum + stop.convergeMs, 0),
     fileBytes: final.fileBytes,
     transferredBytes: final.transferredBytes,
     requestCount: final.requestCount,

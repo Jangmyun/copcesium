@@ -58,6 +58,36 @@ http://localhost:5173/?bench=montreal   # 51.9 GB
 
 Results also go to the console and `window.__copcesiumBench`.
 
+### Tuning options
+
+Options with no UI can be set from the query string, so a sweep needs no edit
+and no dev-server restart:
+
+```
+http://localhost:5173/?bench=nyc&concurrency=12
+http://localhost:5173/?bench=nyc&maxVisibleNodes=400&maxPoints=20000000
+```
+
+`concurrency`, `maxCacheNodes`, `maxCacheBytes`, `maxVisibleNodes`,
+`maxPoints`, `debounceMs`, and `lodHysteresis` are accepted; anything
+non-numeric is ignored with a console warning. `sseThreshold` is deliberately
+not here — it has a slider, and two sources for one value would fight. The
+values in effect are recorded in the walk's JSON under `options`, so two
+pasted results can be told apart.
+
+### Reading the numbers
+
+`convergeMs`, `bytesDelta`, `requestsDelta`, `nodesDelta`, and `bytesPerSec`
+are scoped to a single stop. The `session*` percentiles are not: they are
+snapshots of the data source's rolling window taken on arrival, so a stop that
+transfers nothing still reports whatever the window held, and consecutive
+stops often repeat a value. Compare configurations with `totalConvergeMs` and
+`bytesPerSec`, not with the percentiles.
+
+`nodes decoded` and `nodes on GPU` differ by design. A node that is decoded
+but never drawn — the camera moved on, or it lost a budget cut — never builds
+its GPU buffers, so the second number trails the first.
+
 ## Build
 
 ```bash

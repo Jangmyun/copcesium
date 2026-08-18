@@ -138,6 +138,11 @@ export class CopcDataSource {
   private readonly _pageGetter: (begin: number, end: number) => Promise<Uint8Array>;
   /** Bounded rolling samples per pipeline stage; see `stats`. */
   private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
+  /** Monotonic completion counts. Kept apart from `_stageSamples` because that
+   *  window is capped at `STAGE_SAMPLE_WINDOW` for the percentiles' sake, and
+   *  reading its length back as a total silently pins every long session at
+   *  that cap (#194). */
+  private readonly _stageCounts: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
   /** Emitted `performance.measure` entries since the last clear; see `_recordStage`. */
   private readonly _measureCount: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
   private readonly _rootCenter: { x: number; y: number; z: number };
@@ -508,9 +513,13 @@ export class CopcDataSource {
 
       const boundingSphere = this._getSphere(key);
       this._growAutoIntensityRange(renderData.maxIntensity);
-      const uploadStart = performance.now();
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style);
-      this._recordStage('upload', uploadStart);
+      // Timed from inside the primitive rather than around this call: the GPU
+      // work happens on the first frame the node is drawn, because that is
+      // when `frameState.context` exists. Wrapping the constructor measured
+      // object allocation and duly reported 0 ms (#194).
+      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style, (start, end) => {
+        if (!this._destroyed) this._recordStage('upload', start, end);
+      });
       if (this._destroyed) {
         primitive.destroy();
         return;
@@ -714,8 +723,9 @@ export class CopcDataSource {
    *  the same breakdown appears on DevTools' Performance timeline without the
    *  caller wiring anything up. Measured from timestamps rather than paired
    *  marks, so there are no marks left to clean up. */
-  private _recordStage(stage: StageName, startedAt: number): void {
-    const end = performance.now();
+  private _recordStage(stage: StageName, startedAt: number, endedAt = performance.now()): void {
+    const end = endedAt;
+    this._stageCounts[stage]++;
     const samples = this._stageSamples[stage];
     samples.push(end - startedAt);
     if (samples.length > STAGE_SAMPLE_WINDOW) samples.shift();
@@ -741,7 +751,7 @@ export class CopcDataSource {
 
   private _stageTiming(stage: StageName): StageTiming {
     const sorted = [...this._stageSamples[stage]].sort((a, b) => a - b);
-    return { count: sorted.length, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+    return { count: this._stageCounts[stage], p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
   }
 
   /**
