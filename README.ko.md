@@ -2,17 +2,19 @@
   <img src="./assets/icon.png" width="120" alt="copcesium icon" />
 </p>
 
-# [copcesium](https://github.com/Jangmyun/copcesium) &middot; [![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues)
+# [copcesium](https://github.com/Jangmyun/copcesium)
+
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues)
 
 <table align="center">
   <tr>
     <td width="50%" align="center">
       <img src="./assets/demo-autzen.gif" width="100%" alt="CesiumJS 지구본 위에 Autzen Stadium COPC 데이터를 스트리밍하는 copcesium" />
-      <br /><sub><b>Autzen Stadium</b> — 미국 오리건 · 약 81 MB</sub>
+      <br /><sub><b>Autzen Stadium</b> — 미국 오리건 · 약 81 MB<br /><a href="https://github.com/PDAL/data/tree/main/autzen">PDAL/data</a> · CC-BY-4.0</sub>
     </td>
     <td width="50%" align="center">
       <img src="./assets/demo-niagara.gif" width="100%" alt="Niagara Region의 조밀한 도심 COPC 타일을 스트리밍하는 copcesium" />
-      <br /><sub><b>Niagara Region</b> — 캐나다 온타리오 · 약 140 MB</sub>
+      <br /><sub><b>Niagara Region</b> — 캐나다 온타리오 · 약 140 MB<br /><a href="https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947">Natural Resources Canada</a> · OGL-Canada</sub>
     </td>
   </tr>
 </table>
@@ -43,6 +45,7 @@
 - [요구사항: HTTP Range Request와 CORS](#요구사항-http-range-request와-cors)
 - [좌표계](#좌표계)
 - [예제](#예제)
+- [로드맵](#로드맵)
 - [Credits](#credits)
 - [라이선스](#라이선스)
 
@@ -51,6 +54,8 @@
 **[copcesium.vercel.app](https://copcesium.vercel.app/)** 은 [`examples/advanced-viewer`](./examples/advanced-viewer) 예제를 공개 COPC 데이터셋에 연결해 띄운 것입니다 — 약 81 MB의 Autzen Stadium 측량 데이터부터 뉴욕(26.5 GB, 47.6억 점), 몬트리올(51.9 GB, 97.2억 점)까지 있습니다. 미리 내려받는 것은 없습니다. 화면을 이동하고 확대해 보면 카메라에 보이는 옥트리 노드만 그때그때 요청되는 것을 확인할 수 있습니다.
 
 WGS84 타원체와 OpenStreetMap 배경지도로 시작하므로 Cesium Ion 토큰이 필요 없습니다. 토큰을 넣으면 Global 탭에서 Cesium World Terrain과 위성 영상을 선택할 수 있습니다.
+
+스트리밍하는 데이터셋은 모두 공개 데이터이며, 출처는 [`examples/DATA_SOURCES.md`](./examples/DATA_SOURCES.md) 에 개별적으로 밝혀 두었습니다.
 
 <!-- 설명 영상 자리. VIDEO_ID 를 유튜브 영상 id로 바꾸고 주석을 해제하세요:
 <p align="center">
@@ -160,6 +165,7 @@ interface CopcDataSourceOptions {
   xyFactor?: number;
   autoFrame?: boolean;
   colorMode?: 'rgb' | 'intensity' | 'classification' | 'elevation';
+  opacity?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
 }
@@ -183,6 +189,7 @@ interface CopcDataSourceOptions {
 | `sseThreshold` | `250` | 이 값을 넘으면 노드를 자식으로 세분화하는 화면 공간 오차(픽셀) 기준값. 낮을수록 디테일은 높아지고 로드되는 노드도 많아집니다. `dataSource.sseThreshold`로 실시간 조정 가능. |
 | `autoFrame` | `true` | `load()`가 resolve되기 전에 카메라를 데이터셋으로 비행시킬지 여부. 카메라를 직접 관리한다면 `false`로 설정하세요. |
 | `colorMode` | `'rgb'` | 포인트 색상 기준. `dataSource.colorMode`로 실시간 조정 가능. [스타일링](#스타일링) 참고. |
+| `opacity` | `1` | 모든 포인트 색상에 곱해지는 알파 값. `1` 미만이면 포인트당 깊이 정렬 없이 반투명하게 그립니다. `dataSource.opacity`로 실시간 조정 가능. |
 | `classificationFilter` | 전체 | 그릴 LAS 분류 코드 목록. 나머지는 그리지 않습니다. `dataSource.classificationFilter`로 실시간 조정 가능. |
 | `intensityRange` | 자동 | `'intensity'` 램프의 양 끝에 대응하는 원시 intensity 값. 생략하면 노드가 로드될 때마다 `[0, 지금까지 본 최댓값]`으로 넓어집니다. |
 
@@ -195,7 +202,7 @@ interface CopcDataSourceOptions {
 - `url: string` — `.copc.laz` 파일 URL. HTTP Range Request를 지원해야 합니다(아래 참고).
 - `viewer: Cesium.Viewer`
 - `options?: CopcDataSourceOptions` — [옵션](#옵션) 참고.
-- `workerPool?: WorkerPool` — 데이터소스 간 풀 재사용을 위한 예약 인자이지만, 아직 패키지 밖에서는 사용할 수 없습니다([이슈 #51](https://github.com/Jangmyun/copcesium/issues/51)). 넘기지 마세요 — `load()`마다 `concurrency` 크기의 자체 풀을 받습니다.
+- `workerPool?: WorkerPool` — `load()`가 자체 풀을 새로 만드는 대신 사용할 기존 풀. `WorkerPool`은 패키지에서 export됩니다. 워커마다 자체 `laz-perf` WASM 인스턴스를 들고 있으므로, 데이터소스 간 또는 재로드 간에 풀을 공유하면 워커를 다시 띄우는 비용을 아낄 수 있습니다. 풀을 넘기면 `concurrency`는 무시되고, `destroy()`도 외부에서 받은 풀은 건드리지 않습니다. 생략하면 `load()`마다 `concurrency` 크기의 전용 풀을 받습니다.
 
 ### 인스턴스 멤버
 
@@ -204,11 +211,14 @@ class CopcDataSource {
   pixelSize: number;
   sseThreshold: number;
   colorMode: ColorMode;
+  opacity: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
+  heightOffset: number;
   readonly maxDepth: number;
   readonly nodeCount: number;
   readonly cacheSize: number;
+  readonly stats: CopcStats;
   zoomTo(): Promise<void>;
   destroy(): void;
 }
@@ -219,13 +229,38 @@ class CopcDataSource {
 | `pixelSize` | get/set. 현재 렌더링 중인 모든 노드의 포인트 크기를 재로드 없이 즉시 갱신합니다. |
 | `sseThreshold` | get/set. 값을 설정하면 즉시 LoD 재선택 패스가 실행됩니다. |
 | `colorMode` | get/set. 다음 프레임에 로드된 모든 노드가 다시 칠해집니다 — 재요청도 재디코딩도 없습니다. |
+| `opacity` | get/set. 현재 렌더링 중인 모든 노드의 투명도를 재로드 없이 즉시 갱신합니다. 0-1 범위를 벗어나면 `RangeError`를 던집니다. |
 | `classificationFilter` | get/set. `undefined`를 넣으면 다시 전부 그립니다. 0-255 범위를 벗어난 값에는 `RangeError`를 던집니다. |
 | `intensityRange` | get/set. `undefined`를 넣으면 다시 자동 범위로 돌아갑니다. |
+| `heightOffset` | get/set. 로드된 모든 포인트에 적용되는 수직 오프셋(미터). 로드 후 지오이드/수직 기준면 불일치를 손으로 보정할 때 씁니다. 지오메트리가 아니라 모델 행렬을 옮기므로 재로드 없이 즉시 반영됩니다. 기본값 `0`. |
 | `maxDepth` | 읽기 전용. 로드된 계층 구조에 존재하는 가장 깊은 옥트리 레벨. |
 | `nodeCount` | 읽기 전용. 계층 구조 내 전체 노드 수(로드 여부 무관). |
 | `cacheSize` | 읽기 전용. LRU 캐시에 현재 남아있는 노드 수. |
+| `stats` | 읽기 전용. 이 데이터소스가 지금까지 얼마나 전송했고 각 단계가 얼마나 걸렸는지에 대한 스냅샷 — [전송량 측정](#전송량-측정) 참고. |
 | `zoomTo()` | 카메라를 데이터셋의 루트 bounding sphere로 비행시킵니다. `autoFrame`이 켜져 있으면 `load()`가 내부적으로 호출하며, 나중에 다시 프레이밍하고 싶으면 직접 호출하면 됩니다. |
 | `destroy()` | Worker 풀(외부에서 주입된 게 아니라면)과 노드 캐시, 로드된 모든 프리미티브를 정리합니다. 여러 번 호출해도 안전합니다. |
+
+### 전송량 측정
+
+`dataSource.stats`는 `CopcStats` 스냅샷을 돌려줍니다. 스트리밍한다는 주장을 믿는 대신 재어 볼 수 있게 하기 위한 것입니다.
+
+```ts
+const { fileBytes, transferredBytes, requestCount } = ds.stats;
+const pct = ((transferredBytes / fileBytes) * 100).toFixed(2);
+console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴`);
+```
+
+| 필드 | 설명 |
+| --- | --- |
+| `fileBytes` | COPC 파일 전체 크기. range 응답의 `Content-Range`에서 읽습니다. |
+| `transferredBytes` | 실제로 수신한 바이트 — Range 지원 확인 요청, 헤더, 계층 구조 페이지, 노드 포인트 데이터를 모두 포함합니다. |
+| `requestCount` | 수신한 range 응답 수. 병합된 요청은 한 번으로 셉니다. |
+| `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
+| `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
+
+`upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.
+
+[`examples/advanced-viewer`](./examples/advanced-viewer)의 Benchmark 탭이 이 API 위에 만들어져 있습니다.
 
 ## 스타일링
 
@@ -237,6 +272,7 @@ const ds = await CopcDataSource.load(url, viewer);
 ds.colorMode = 'classification';   // 'rgb' | 'intensity' | 'classification' | 'elevation'
 ds.classificationFilter = [2, 6];  // 지면과 건물만 그리기
 ds.classificationFilter = undefined; // ...다시 전부 그리기
+ds.opacity = 0.5;                  // 0..1, 1 미만이면 알파 블렌딩
 ```
 
 | 모드 | 색상 기준 |
@@ -294,16 +330,39 @@ npm run dev
 
 터미널에 출력되는 로컬 URL을 브라우저로 열면 됩니다. `examples/` 아래의 각 예제는 모두 같은 방식으로 실행합니다 — 각 디렉터리에서 `npm install && npm run dev`.
 
+## 로드맵
+
+- **대규모 포인트클라우드에서의 캐시 크기·동시성 파라미터 자동 튜닝과, 모바일/저사양 GPU 대응 최적화.** `maxCacheNodes`/`maxCacheBytes`, `concurrency`, `maxConcurrentRequests`는 지금은 데이터셋과 대상 기기마다 사용자가 직접 고르는 고정값입니다.
+- **여러 데이터 소스를 동시에 띄울 때의 워커 풀·요청 동시성 배분은 아직 사용자 몫입니다.** 필요한 수단은 열려 있습니다 — `load()`의 네 번째 인자로 `WorkerPool`을 주입할 수 있고 `concurrency`·`maxConcurrentRequests` 옵션도 제공합니다 — 다만 소스가 둘 이상 올라왔을 때 copcesium이 스스로 적용하는 배분 정책은 없습니다.
+- **번들러 설정 없이 바로 동작하는 단일 파일 npm 배포를 유지하는 것.** 배포 패키지는 이미 그렇습니다 — Worker와 `laz-perf` WASM이 빌드 시점에 하나의 `.mjs`로 인라인됩니다 — 그리고 라이브러리가 커져도 지킬 제약으로 두려 합니다.
+
 ## 기여하기
 
 기여를 환영합니다 — 빌드·테스트·PR 제출 방법은 [CONTRIBUTING.md](./.github/CONTRIBUTING.md)를 참고하세요. 이 프로젝트는 [행동 강령](./.github/CODE_OF_CONDUCT.md)을 따릅니다. 보안 취약점 신고는 [SECURITY.md](./.github/SECURITY.md)를 참고하세요.
 
 ## Credits
 
+### 라이브러리
+
 - [`copc`](https://github.com/connormanning/copc.js) — COPC 파싱(헤더/계층 구조/포인트 데이터, HTTP Range Request 기반)
 - [`laz-perf`](https://github.com/hobuinc/laz-perf) — WASM 기반 LAZ 압축 해제
 - [`proj4`](https://github.com/proj4js/proj4js) — 좌표계 변환
 - [CesiumJS](https://cesium.com/platform/cesiumjs/) — 3D 지구본 렌더링
+
+### 샘플 데이터
+
+라이브 데모와 네 개의 예제는 모두 다른 곳에서 촬영·가공·공개한 공개 라이다 데이터를 스트리밍합니다. 데이터셋별 출처와 라이선스, 각 출처를 어떤 방법으로 확인했는지는 **[`examples/DATA_SOURCES.md`](./examples/DATA_SOURCES.md)** 에 정리돼 있습니다. 원 촬영 주체를 확정하지 못한 데이터셋은 추측으로 채우지 않고 그렇다고 명시해 두었습니다.
+
+| 출처 | 여기서 사용한 데이터셋 |
+| --- | --- |
+| [Hobu, Inc.](https://hobu.co/) | 대부분의 파일을 COPC로 변환해 공개 `hobu-lidar` S3 버킷에서 호스팅. PDAL·COPC·Entwine 개발사 |
+| [PDAL/data](https://github.com/PDAL/data/tree/main/autzen) · CC-BY-4.0 | Autzen Stadium — Watershed Sciences, Inc. 촬영(2010), Hobu 재분류(2021) |
+| [Natural Resources Canada](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) · OGL-Canada | Niagara Region — CanElevation 시리즈, Hamilton–Niagara 2021 |
+| [USGS 3D Elevation Program (3DEP)](https://www.usgs.gov/3d-elevation-program) | Millsite Reservoir, Eastern Iowa, 그리고 Post-Sandy 뉴욕시 조사 |
+| [Ville de Montréal](https://donnees.montreal.ca/dataset/lidar-aerien-2015) · CC-BY-4.0 | Montréal — LiDAR aérien 2015, XEOS Imaging, Inc. 촬영 |
+| NGA · U.S. Army TPO-GEO | Trestle Bridge — Fort Leonard Wood, MO 실증 |
+
+이 데이터셋들은 데모 목적으로만 사용하며, copcesium의 MIT 라이선스는 데이터에는 적용되지 않습니다. 재사용 전에 각 출처의 이용 조건을 확인하세요.
 
 ## 라이선스
 

@@ -2,17 +2,19 @@
   <img src="./assets/icon.png" width="120" alt="copcesium icon" />
 </p>
 
-# [copcesium](https://github.com/Jangmyun/copcesium) &middot; [![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-92.51%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+# [copcesium](https://github.com/Jangmyun/copcesium)
+
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-96.09%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
     <td width="50%" align="center">
       <img src="./assets/demo-autzen.gif" width="100%" alt="copcesium streaming the Autzen Stadium COPC survey onto the CesiumJS globe" />
-      <br /><sub><b>Autzen Stadium</b> — Oregon, USA · ~81 MB</sub>
+      <br /><sub><b>Autzen Stadium</b> — Oregon, USA · ~81 MB<br /><a href="https://github.com/PDAL/data/tree/main/autzen">PDAL/data</a> · CC-BY-4.0</sub>
     </td>
     <td width="50%" align="center">
       <img src="./assets/demo-niagara.gif" width="100%" alt="copcesium streaming a dense urban COPC tile of the Niagara Region" />
-      <br /><sub><b>Niagara Region</b> — Ontario, Canada · ~140 MB</sub>
+      <br /><sub><b>Niagara Region</b> — Ontario, Canada · ~140 MB<br /><a href="https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947">Natural Resources Canada</a> · OGL-Canada</sub>
     </td>
   </tr>
 </table>
@@ -52,6 +54,8 @@ CesiumJS provider for real-time [COPC](https://copc.io/) (Cloud Optimized Point 
 **[copcesium.vercel.app](https://copcesium.vercel.app/)** runs the [`advanced-viewer`](./examples/advanced-viewer) example against public COPC datasets — from the ~81 MB Autzen Stadium survey up to New York City (26.5 GB, 4.76 B points) and Montréal (51.9 GB, 9.72 B points). Nothing is downloaded up front: pan and zoom, and watch only the octree nodes the camera can see get fetched.
 
 It opens on the WGS84 ellipsoid with OpenStreetMap imagery, so no Cesium Ion token is needed. Supply one and Cesium World Terrain and satellite imagery become selectable from the Global tab.
+
+Every dataset it streams is public, and credited individually in [`examples/DATA_SOURCES.md`](./examples/DATA_SOURCES.md).
 
 <!-- Walkthrough video slot. Replace VIDEO_ID with the YouTube id, then uncomment:
 <p align="center">
@@ -198,7 +202,7 @@ Static factory — `CopcDataSource` has no public constructor. Resolves once the
 - `url: string` — URL of the `.copc.laz` file. Must support HTTP Range Requests (see below).
 - `viewer: Cesium.Viewer`
 - `options?: CopcDataSourceOptions` — see [Options](#options).
-- `workerPool?: WorkerPool` — internal parameter, not part of the public API yet ([issue #51](https://github.com/Jangmyun/copcesium/issues/51) tracks exposing it for cross-data-source reuse). Omit it; each `load()` gets its own pool sized by `concurrency`.
+- `workerPool?: WorkerPool` — an existing pool to decode in, instead of `load()` spinning up its own. `WorkerPool` is exported from the package; share one across data sources or across reloads to avoid re-spawning workers, since each carries its own `laz-perf` WASM instance. When you pass one, `concurrency` is ignored and `destroy()` leaves the pool alone. Omit it and each `load()` gets a private pool sized by `concurrency`.
 
 ### Instance members
 
@@ -214,6 +218,7 @@ class CopcDataSource {
   readonly maxDepth: number;
   readonly nodeCount: number;
   readonly cacheSize: number;
+  readonly stats: CopcStats;
   zoomTo(): Promise<void>;
   destroy(): void;
 }
@@ -231,8 +236,31 @@ class CopcDataSource {
 | `maxDepth` | Read-only. Deepest octree level present in the loaded hierarchy. |
 | `nodeCount` | Read-only. Total nodes in the hierarchy (loaded or not). |
 | `cacheSize` | Read-only. Nodes currently retained in the LRU cache. |
+| `stats` | Read-only. Snapshot of what this data source has transferred and how long each pipeline stage took — see [Measuring transfer](#measuring-transfer). |
 | `zoomTo()` | Flies the camera to the dataset's root bounding sphere. Called internally by `load()` when `autoFrame` is enabled; call it again yourself to re-frame later. |
 | `destroy()` | Tears down the Worker pool (unless it was externally provided), the node cache, and every loaded primitive. Idempotent. |
+
+### Measuring transfer
+
+`dataSource.stats` returns a `CopcStats` snapshot, so the streaming claim can be measured rather than taken on trust:
+
+```ts
+const { fileBytes, transferredBytes, requestCount } = ds.stats;
+const pct = ((transferredBytes / fileBytes) * 100).toFixed(2);
+console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
+```
+
+| Field | Description |
+| --- | --- |
+| `fileBytes` | Total size of the COPC file, read from a range response's `Content-Range`. |
+| `transferredBytes` | Bytes actually received, across every path: the Range-support probe, the header, hierarchy pages, and node point data. |
+| `requestCount` | Range responses received. Fetches merged into one request count once. |
+| `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
+| `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
+
+`upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.
+
+The Benchmark tab in [`examples/advanced-viewer`](./examples/advanced-viewer) is built on this.
 
 ## Styling
 
@@ -309,9 +337,9 @@ Then open the printed local URL in a browser. Each example under `examples/` is 
 
 ## Roadmap
 
-Known limitation, not yet planned as a full feature:
-
-- Exposing `workerPool` as a public parameter so a `WorkerPool` can be reused across multiple `CopcDataSource` instances ([issue #51](https://github.com/Jangmyun/copcesium/issues/51)). Currently each `load()` creates its own pool.
+- **Auto-tuning cache size and concurrency for very large point clouds, and optimizing for mobile and low-end GPUs.** `maxCacheNodes`/`maxCacheBytes`, `concurrency`, and `maxConcurrentRequests` are static values you currently pick per dataset and per target device.
+- **Splitting workers and in-flight requests across several simultaneous data sources is still the caller's job.** The pieces are exposed — `load()` takes a `WorkerPool` as its fourth argument, and `concurrency`/`maxConcurrentRequests` are options — but copcesium applies no policy of its own when more than one source is on screen.
+- **Staying a single file that works with no bundler configuration.** Already true of the published package — the Worker and its `laz-perf` WASM are inlined into one `.mjs` at build time — and a constraint we intend to keep as the library grows.
 
 ## Contributing
 
@@ -321,10 +349,27 @@ a security vulnerability, see [SECURITY.md](./.github/SECURITY.md).
 
 ## Credits
 
+### Libraries
+
 - [`copc`](https://github.com/connormanning/copc.js) — COPC parsing (header/hierarchy/point data, over HTTP Range Requests)
 - [`laz-perf`](https://github.com/hobuinc/laz-perf) — WASM LAZ decompression
 - [`proj4`](https://github.com/proj4js/proj4js) — coordinate system transforms
 - [CesiumJS](https://cesium.com/platform/cesiumjs/) — 3D globe rendering
+
+### Sample data
+
+The live demo and all four examples stream public lidar surveys that other people flew, processed, and published. Per-dataset attribution, licences, and the method used to verify each origin are in **[`examples/DATA_SOURCES.md`](./examples/DATA_SOURCES.md)**. Where the original capturing organization could not be confirmed, that document says so explicitly rather than guessing.
+
+| Source | Datasets used here |
+| --- | --- |
+| [Hobu, Inc.](https://hobu.co/) | Rehosts most of these files as COPC in the public `hobu-lidar` S3 bucket, and develops PDAL, COPC, and Entwine |
+| [PDAL/data](https://github.com/PDAL/data/tree/main/autzen) · CC-BY-4.0 | Autzen Stadium — captured by Watershed Sciences, Inc. (2010), reclassified by Hobu (2021) |
+| [Natural Resources Canada](https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947) · OGL-Canada | Niagara Region — CanElevation Series, Hamilton–Niagara 2021 |
+| [USGS 3D Elevation Program (3DEP)](https://www.usgs.gov/3d-elevation-program) | Millsite Reservoir, Eastern Iowa, and the Post-Sandy New York City survey |
+| [Ville de Montréal](https://donnees.montreal.ca/dataset/lidar-aerien-2015) · CC-BY-4.0 | Montréal — LiDAR aérien 2015, flown by XEOS Imaging, Inc. |
+| NGA and U.S. Army TPO-GEO | Trestle Bridge — Fort Leonard Wood, MO demonstration |
+
+These datasets are used here for demonstration only; copcesium's own MIT licence does not cover them. Check each source's terms before reusing the data.
 
 ## License
 
