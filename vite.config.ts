@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 import { lazPerfWasmInlinePlugin } from './vite-plugins/lazPerfWasmInline';
 
@@ -32,6 +32,19 @@ export default defineConfig({
     },
     rollupOptions: {
       external: ['cesium'],
+    },
+  },
+  // Vitest reads its config from this file's `test` field, so the library
+  // build and the test run share one config rather than two that have to be
+  // kept in step.
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json-summary', 'html'],
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.test.ts'],
     },
   },
 });

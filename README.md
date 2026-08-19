@@ -315,9 +315,9 @@ Known limitation, not yet planned as a full feature:
 
 ## Contributing
 
-Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for how to build, test, and
-submit a pull request. This project follows a [Code of Conduct](./CODE_OF_CONDUCT.md). To report
-a security vulnerability, see [SECURITY.md](./SECURITY.md).
+Contributions are welcome — see [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for how to build, test, and
+submit a pull request. This project follows a [Code of Conduct](./.github/CODE_OF_CONDUCT.md). To report
+a security vulnerability, see [SECURITY.md](./.github/SECURITY.md).
 
 ## Credits
 

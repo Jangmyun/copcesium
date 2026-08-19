@@ -296,7 +296,7 @@ npm run dev
 
 ## 기여하기
 
-기여를 환영합니다 — 빌드·테스트·PR 제출 방법은 [CONTRIBUTING.md](./CONTRIBUTING.md)를 참고하세요. 이 프로젝트는 [행동 강령](./CODE_OF_CONDUCT.md)을 따릅니다. 보안 취약점 신고는 [SECURITY.md](./SECURITY.md)를 참고하세요.
+기여를 환영합니다 — 빌드·테스트·PR 제출 방법은 [CONTRIBUTING.md](./.github/CONTRIBUTING.md)를 참고하세요. 이 프로젝트는 [행동 강령](./.github/CODE_OF_CONDUCT.md)을 따릅니다. 보안 취약점 신고는 [SECURITY.md](./.github/SECURITY.md)를 참고하세요.
 
 ## Credits
 
