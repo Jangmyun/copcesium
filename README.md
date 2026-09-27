@@ -160,6 +160,10 @@ interface CopcDataSourceOptions {
   maxVisibleNodes?: number;
   maxPoints?: number;
   pixelSize?: number;
+  pointSizeMode?: 'fixed' | 'attenuated';
+  attenuationFactor?: number;
+  minPixelSize?: number;
+  maxPixelSize?: number;
   sseThreshold?: number;
   zFactor?: number;
   xyFactor?: number;
@@ -185,7 +189,11 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
-| `pixelSize` | `2` | Point size in pixels. Live-adjustable after load via `dataSource.pixelSize`. |
+| `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
+| `pointSizeMode` | `'fixed'` | `'fixed'` draws every point at `pixelSize`. `'attenuated'` scales size down with camera distance (`attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize, maxPixelSize]`) so close-up points don't show gaps. Live-adjustable via `dataSource.pointSizeMode`. |
+| `attenuationFactor` | `100` | Numerator of the attenuated-size formula, in pixel·√meters. Only used when `pointSizeMode` is `'attenuated'`. Tune per dataset density. Live-adjustable via `dataSource.attenuationFactor`. |
+| `minPixelSize` | `1` | Lower clamp (pixels) for attenuated point size. Live-adjustable via `dataSource.minPixelSize`. |
+| `maxPixelSize` | `6` | Upper clamp (pixels) for attenuated point size. Live-adjustable via `dataSource.maxPixelSize`. |
 | `sseThreshold` | `250` | Screen-space error (pixels) above which a node is subdivided into children. Lower = more detail, more nodes loaded. Live-adjustable via `dataSource.sseThreshold`. |
 | `autoFrame` | `true` | Whether `load()` flies the camera to the dataset before resolving. Set `false` if you're managing the camera yourself. |
 | `colorMode` | `'rgb'` | How points are coloured. Live-adjustable via `dataSource.colorMode`. See [Styling](#styling). |
@@ -209,6 +217,10 @@ Static factory — `CopcDataSource` has no public constructor. Resolves once the
 ```ts
 class CopcDataSource {
   pixelSize: number;
+  pointSizeMode: 'fixed' | 'attenuated';
+  attenuationFactor: number;
+  minPixelSize: number;
+  maxPixelSize: number;
   sseThreshold: number;
   colorMode: ColorMode;
   opacity: number;
@@ -227,6 +239,10 @@ class CopcDataSource {
 | Member | Description |
 | --- | --- |
 | `pixelSize` | Get/set. Updates every currently-rendered node's point size immediately, no reload. |
+| `pointSizeMode` | Get/set. Switches between fixed and distance-attenuated point sizing immediately, no reload. |
+| `attenuationFactor` | Get/set. Throws `RangeError` if not a positive finite number. |
+| `minPixelSize` | Get/set. Throws `RangeError` if negative, non-finite, or greater than the current `maxPixelSize`. |
+| `maxPixelSize` | Get/set. Throws `RangeError` if non-finite or less than the current `minPixelSize`. |
 | `sseThreshold` | Get/set. Triggers an immediate LoD re-selection pass when set. |
 | `colorMode` | Get/set. Repaints every loaded node on the next frame — no refetch, no re-decode. |
 | `opacity` | Get/set. Updates every currently-rendered node's translucency immediately, no reload. Throws `RangeError` outside 0-1. |

@@ -9,6 +9,12 @@ export const COLOR_MODE = {
   elevation: 3,
 } as const;
 
+/** Point size mode as the shader sees it. Kept in sync with `PointSizeMode` in types.ts. */
+export const SIZE_MODE = {
+  fixed: 0,
+  attenuated: 1,
+} as const;
+
 /**
  * Packs classification codes into the 8 signed 32-bit words `classAllowed()`
  * below reads. `undefined` means "no filter" and sets every bit.
@@ -53,6 +59,10 @@ in float classification;  // UNSIGNED_BYTE, normalized  -> code / 255
 in float elevation;       // UNSIGNED_SHORT, normalized -> already 0..1 over the file's Z range
 
 uniform float u_pixelSize;
+uniform int u_sizeMode;
+uniform float u_attenuationFactor;
+uniform float u_minPixelSize;
+uniform float u_maxPixelSize;
 uniform int u_colorMode;
 uniform vec2 u_intensityRange;  // raw LAS units, mapped to the ramp's 0..1
 uniform ivec4 u_classMask[2];   // 256-bit allow-list, one bit per classification code
@@ -107,12 +117,21 @@ void main() {
   }
 
   v_color = vec4(rgb, color.a * u_opacity);
-  gl_PointSize = u_pixelSize;
   // position is a node-relative offset (model coordinates); the node origin
   // rides in the model matrix. Reconstruct the eye-relative position the way
   // czm_translateRelativeToEye does, but from a single Float32 offset — the
   // precision comes from the double-precision origin baked into the matrix.
   vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
+
+  if (u_sizeMode == ${SIZE_MODE.attenuated}) {
+    // max(..., epsilon): a point essentially at the camera would otherwise
+    // divide by ~0 and blow up to a huge, GPU-hostile point size.
+    float distMeters = max(length(eyeRel), 1e-4);
+    gl_PointSize = clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize);
+  } else {
+    gl_PointSize = u_pixelSize;
+  }
+
   gl_Position = czm_modelViewProjectionRelativeToEye * vec4(eyeRel, 1.0);
 }`;
 

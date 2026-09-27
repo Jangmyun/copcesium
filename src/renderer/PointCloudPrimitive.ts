@@ -19,6 +19,14 @@ import type { NodeRenderData } from '../types';
  */
 export interface PointStyle {
   pixelSize: number;
+  /** One of `SIZE_MODE`'s values. */
+  sizeMode: number;
+  /** Numerator of `attenuationFactor / sqrt(dist_m)`; only read when `sizeMode` is `attenuated`. */
+  attenuationFactor: number;
+  /** Lower clamp (pixels) for attenuated point size. */
+  minPixelSize: number;
+  /** Upper clamp (pixels) for attenuated point size. */
+  maxPixelSize: number;
   /** One of `COLOR_MODE`'s values. */
   colorMode: number;
   /** Raw LAS intensity units at the two ends of the intensity ramp. */
@@ -271,6 +279,10 @@ export class PointCloudPrimitive {
         modelMatrix: this._modelMatrix(this._style.heightOffset),
         uniformMap: {
           u_pixelSize: () => style.pixelSize,
+          u_sizeMode: () => style.sizeMode,
+          u_attenuationFactor: () => style.attenuationFactor,
+          u_minPixelSize: () => style.minPixelSize,
+          u_maxPixelSize: () => style.maxPixelSize,
           u_colorMode: () => style.colorMode,
           u_intensityRange: () => style.intensityRange,
           u_classMask: () => style.classMask,
