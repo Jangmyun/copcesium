@@ -52,6 +52,22 @@ export interface CopcDataSourceOptions {
   maxPoints?: number;
   pixelSize?: number;
   sseThreshold?: number;
+  /**
+   * Widens the region considered for prefetching beyond the actual display
+   * frustum: candidate nodes here are loaded and cached, but not rendered,
+   * ahead of the camera panning over them. Multiplies the frustum's
+   * near-plane projected width and height by this factor (not the raw
+   * field-of-view angle — see `getExpandedCullingVolume`). Set to `1` (or
+   * less) to disable prefetching. Default `1.8`.
+   */
+  prefetchFrustumFactor?: number;
+  /**
+   * Caps how many prefetch-only candidates a single LoD pass may load,
+   * independent of `maxVisibleNodes`/`maxPoints` (which continue to bound
+   * only the render set). Ignored when `prefetchFrustumFactor` disables
+   * prefetching. Default `50`.
+   */
+  maxPrefetchNodes?: number;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;
   /** Factor that converts the XY axis unit to meters. Auto-detected from the WKT when omitted. */

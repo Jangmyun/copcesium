@@ -146,7 +146,8 @@ describe('selectNodes', () => {
     // A parent is popped (and selected) before its children are ever pushed,
     // so no descendant can appear without the ancestors it draws on top of.
     for (const key of selected) {
-      if (key !== '0-0-0-0') expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
+      if (key !== '0-0-0-0')
+        expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
     }
   });
 
@@ -362,5 +363,175 @@ describe('selectNodes', () => {
     });
 
     expect(selected).toHaveLength(9);
+  });
+
+  describe('prefetch', () => {
+    // A camera at the origin looking down -z, fovy=60° (half-angle 30°),
+    // aspect 1. At the fixture's fixed depth of 100, the actual frustum's
+    // half-width is 100*tan(30°)≈57.7, and a 1.8x-expanded one's is ≈103.9.
+    const prefetchCamera = makeCamera(
+      new Cesium.Cartesian3(0, 0, 0),
+      new Cesium.Cartesian3(0, 0, -1),
+      new Cesium.Cartesian3(0, 1, 0),
+      60,
+    );
+
+    // A synthetic octree whose node *positions* are picked directly (rather
+    // than derived from real octree math, whose sibling spheres overlap too
+    // much — see getNodeBoundingSphere's sqrt(3) radius — to cleanly separate
+    // "onscreen", "prefetch-only", and "outside even the expanded frustum" by
+    // position alone). `sseThreshold: 0` below forces every populated node to
+    // expand regardless of size, so the traversal always reaches these children.
+    const ONSCREEN_KEY = '1-0-0-0'; // x=0: well inside the actual frustum (57.7)
+    const PREFETCH_ONLY_KEY = '1-1-0-0'; // x=80: outside actual (57.7), inside expanded (103.9)
+    const FAR_OUTSIDE_KEY = '1-0-1-0'; // x=200: outside even the expanded frustum
+    const spherePositions: Record<string, number> = {
+      [ONSCREEN_KEY]: 0,
+      [PREFETCH_ONLY_KEY]: 80,
+      [FAR_OUTSIDE_KEY]: 200,
+    };
+
+    function makeFixture(): {
+      nodes: Hierarchy.Node.Map;
+      getSphere: (key: string) => Cesium.BoundingSphere;
+    } {
+      const nodes: Hierarchy.Node.Map = {
+        '0-0-0-0': { pointCount: 100, pointDataOffset: 0, pointDataLength: 1 },
+      };
+      for (const key of Object.keys(spherePositions)) {
+        nodes[key] = { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 };
+      }
+      const getSphere = (key: string): Cesium.BoundingSphere => {
+        // The root sits right on the camera's forward axis, tiny, so it's
+        // always onscreen and never competes for the same frustum edge as
+        // its children below.
+        const x = key === '0-0-0-0' ? 0 : (spherePositions[key] ?? 1000); // any other child: unused, keep well outside
+        return new Cesium.BoundingSphere(new Cesium.Cartesian3(x, 0, -100), 1);
+      };
+      return { nodes, getSphere };
+    }
+
+    it('reports no candidates when prefetchFrustumFactor is omitted', () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      expect(prefetched).toEqual([]);
+    });
+
+    it('reports no candidates when prefetchFrustumFactor is <= 1', () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        prefetchFrustumFactor: 1,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      expect(prefetched).toEqual([]);
+    });
+
+    it('reports a node outside the actual frustum but inside the expanded one, without selecting it', () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      const selected = selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        prefetchFrustumFactor: 1.8,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      expect(prefetched).toEqual([PREFETCH_ONLY_KEY]);
+      expect(selected).toContain(ONSCREEN_KEY);
+      expect(selected).not.toContain(PREFETCH_ONLY_KEY);
+      expect(selected).not.toContain(FAR_OUTSIDE_KEY);
+    });
+
+    it('never reports a node also outside the expanded frustum', () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        prefetchFrustumFactor: 1.8,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      expect(prefetched).not.toContain(FAR_OUTSIDE_KEY);
+    });
+
+    it('bounds the number of reported candidates by maxPrefetchNodes', () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        prefetchFrustumFactor: 1.8,
+        maxPrefetchNodes: 0,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      expect(prefetched).toEqual([]);
+    });
+
+    it("doesn't let a prefetch candidate count against maxVisibleNodes/maxPoints", () => {
+      const { nodes, getSphere } = makeFixture();
+      const prefetched: string[] = [];
+
+      const selected = selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        maxPoints: 100,
+        prefetchFrustumFactor: 1.8,
+        onPrefetchCandidate: (key) => prefetched.push(key),
+      });
+
+      const withoutPrefetch = selectNodes({
+        nodes,
+        getSphere,
+        camera: prefetchCamera,
+        viewportHeight: 1000,
+        sseThreshold: 0,
+        maxVisibleNodes: 100,
+        maxPoints: 100,
+      });
+
+      expect(prefetched).toEqual([PREFETCH_ONLY_KEY]);
+      expect(new Set(selected)).toEqual(new Set(withoutPrefetch));
+    });
   });
 });

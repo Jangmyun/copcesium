@@ -7,7 +7,7 @@
 import * as Cesium from 'cesium';
 import type { Hierarchy } from 'copc';
 import { getChildKeys } from '../copc/node';
-import { getCullingVolume, isInFrustum } from './boundingVolume';
+import { getCullingVolume, getExpandedCullingVolume, isInFrustum } from './boundingVolume';
 import { computeScreenSpaceError } from './screenSpaceError';
 
 // Camera.frustum is PerspectiveFrustum | PerspectiveOffCenterFrustum | OrthographicFrustum;
@@ -110,6 +110,29 @@ export interface SelectNodesOptions {
    * unlimited (`maxVisibleNodes` alone governs) when omitted.
    */
   maxPoints?: number;
+  /**
+   * Widens the region considered for prefetching beyond the actual display
+   * frustum, so nodes just off-screen are already cached by the time a pan
+   * reveals them (#212). Multiplies the frustum's near-plane projected width
+   * and height by this factor — see `getExpandedCullingVolume`. Omitted, or
+   * `<= 1`, disables prefetching: no expanded frustum is computed and
+   * `onPrefetchCandidate` is never called.
+   */
+  prefetchFrustumFactor?: number;
+  /**
+   * Caps how many prefetch-only candidates one pass reports through
+   * `onPrefetchCandidate`, independent of `maxVisibleNodes`/`maxPoints`
+   * (which continue to bound only the render set). Ignored when
+   * `prefetchFrustumFactor` is unset. Defaults to 50.
+   */
+  maxPrefetchNodes?: number;
+  /**
+   * Called once per prefetch-only candidate: a populated node inside the
+   * expanded prefetch region but outside the actual display frustum. Never
+   * added to the returned selection — the caller decides whether/how to load
+   * and cache it ahead of time.
+   */
+  onPrefetchCandidate?: (key: string) => void;
 }
 
 /**
@@ -129,7 +152,10 @@ export interface SelectNodesOptions {
  *
  * A node with zero points is never selected — it holds nothing to draw — but
  * is still expanded regardless of SSE so its populated children are reached.
- * Nodes outside the view frustum are dropped along with their whole subtree.
+ * Nodes outside the view frustum are dropped along with their whole subtree,
+ * unless `prefetchFrustumFactor` is set, in which case nodes outside the
+ * actual frustum but inside the wider prefetch region are reported through
+ * `onPrefetchCandidate` instead of being dropped or selected (#212).
  *
  * `maxVisibleNodes` and `maxPoints` both bound the whole render set, ancestors
  * included, terminating on whichever limit is hit first. Since a parent is
@@ -148,12 +174,25 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     sseThreshold,
     maxVisibleNodes,
     maxPoints = Infinity,
+    prefetchFrustumFactor,
+    maxPrefetchNodes = 50,
+    onPrefetchCandidate,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
+  const prefetchFactor = prefetchFrustumFactor ?? 1;
+  const prefetchEnabled = prefetchFactor > 1;
+  // Computed once per pass, up front, rather than lazily on first use: the
+  // camera is the same for every node this pass considers, so there's
+  // nothing to gain from deferring it, and doing so up front keeps the
+  // per-node branch below a plain frustum test.
+  const expandedCullingVolume = prefetchEnabled
+    ? getExpandedCullingVolume(camera, prefetchFactor)
+    : undefined;
   const fovy = getFovy(camera.frustum);
   const selected: string[] = [];
   let pointsUsed = 0;
+  let prefetchCount = 0;
 
   // `positionWC`, not `position` — the latter is relative to `camera.transform`
   // and goes local the moment anything calls `camera.lookAt()`, which would
@@ -165,13 +204,53 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   // The root's priority never matters — it's the only entry until popped.
   heap.push({ key: '0-0-0-0', sse: Infinity });
 
-  while (heap.size > 0 && selected.length < maxVisibleNodes && pointsUsed < maxPoints) {
+  const expandChildren = (key: string): void => {
+    for (const childKey of getChildKeys(key)) {
+      if (nodes[childKey]) {
+        heap.push({ key: childKey, sse: sseOf(childKey) });
+      } else if (pages[childKey]) {
+        onPageNeeded?.(childKey);
+      }
+    }
+  };
+
+  for (;;) {
+    const visibleBudgetLeft = selected.length < maxVisibleNodes && pointsUsed < maxPoints;
+    const prefetchBudgetLeft = prefetchEnabled && prefetchCount < maxPrefetchNodes;
+    // Once the visible render set is full, the traversal used to stop
+    // outright. Now it keeps going — bounded by its own budget — purely to
+    // discover prefetch candidates in the expanded region; an onscreen node
+    // popped after the visible budget is spent is still dropped below, same
+    // as before.
+    if (heap.size === 0 || (!visibleBudgetLeft && !prefetchBudgetLeft)) break;
+
     const { key } = heap.pop()!;
     const nodeInfo = nodes[key];
     if (!nodeInfo) continue;
 
     const sphere = getSphere(key);
-    if (!isInFrustum(sphere, cullingVolume)) continue;
+    const onscreen = isInFrustum(sphere, cullingVolume);
+
+    if (!onscreen) {
+      // Outside the actual frustum. Only worth descending into at all when
+      // it's still inside the wider prefetch region; otherwise this whole
+      // subtree is irrelevant, same as the original frustum cull.
+      if (!prefetchEnabled || !isInFrustum(sphere, expandedCullingVolume!)) continue;
+      if (!prefetchBudgetLeft) continue; // prefetch budget spent; prune the subtree
+
+      if (nodeInfo.pointCount > 0) {
+        onPrefetchCandidate?.(key);
+        prefetchCount++;
+      }
+      // Same empty-node/SSE expansion rule as the onscreen branch below, so a
+      // prefetched node ends up at roughly the LOD it would render at once
+      // panned into view, not an arbitrarily coarse one.
+      if (nodeInfo.pointCount > 0 && sseOf(key) <= sseThreshold) continue;
+      expandChildren(key);
+      continue;
+    }
+
+    if (!visibleBudgetLeft) continue; // visible budget spent; drop this (and its subtree)
 
     if (nodeInfo.pointCount > 0) {
       selected.push(key);
@@ -183,13 +262,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     // volume it covers.
     if (nodeInfo.pointCount > 0 && sseOf(key) <= sseThreshold) continue;
 
-    for (const childKey of getChildKeys(key)) {
-      if (nodes[childKey]) {
-        heap.push({ key: childKey, sse: sseOf(childKey) });
-      } else if (pages[childKey]) {
-        onPageNeeded?.(childKey);
-      }
-    }
+    expandChildren(key);
   }
 
   return selected;
