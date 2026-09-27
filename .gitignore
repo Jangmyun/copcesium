@@ -14,3 +14,6 @@ digest.txt
 # AI agent instruction files (local-only, not for repo tracking)
 AGENTS.md
 CLAUDE.md
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
