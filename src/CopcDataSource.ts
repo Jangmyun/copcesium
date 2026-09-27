@@ -15,6 +15,7 @@ import type {
   CopcStats,
   LoadedNode,
   NodeRenderData,
+  PickedPoint,
   PointSizeMode,
   StageTiming,
 } from './types';
@@ -28,10 +29,29 @@ import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCar
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
-import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
+import { COLOR_MODE, SIZE_MODE, buildClassMask, decodePickColor } from './renderer/shaders';
+import { PickFramebuffer } from './renderer/PickFramebuffer';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
+
+// `SceneTransforms.transformWindowToDrawingBuffer` and `Context.prototype.draw`
+// are Cesium renderer internals with no public type declarations — same
+// undeclared-but-present-at-runtime pattern as PointCloudPrimitive.ts's
+// CesiumInternal cast. `pickPoint()` is the only user.
+interface CesiumPickingInternal {
+  SceneTransforms: {
+    transformWindowToDrawingBuffer(scene: Cesium.Scene, windowPosition: Cesium.Cartesian2): Cesium.Cartesian2;
+  };
+}
+const CesiumPicking = Cesium as unknown as CesiumPickingInternal;
+interface CesiumContextDrawable {
+  draw(command: unknown, passState: unknown): void;
+}
+/** `Scene.context` (the renderer `Context`) has no public type declaration either. */
+interface CesiumSceneInternal {
+  context: unknown;
+}
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
 // instead of emitted as a separate chunk with a runtime-constructed URL — a
 // consumer's own bundler can't discover or copy an asset it never sees a
@@ -207,6 +227,10 @@ export class CopcDataSource {
   private _removeUpdateListener: () => void = () => {};
   private _removeMoveEndListener: () => void = () => {};
   private _destroyed = false;
+  /** Lazily built, resized to the canvas on demand — see `pickPoint()`. */
+  private readonly _pickFramebuffer = new PickFramebuffer();
+  /** So a WebGL1 session logs the pickPoint() limitation once, not on every click. */
+  private _warnedNoWebgl2 = false;
 
   private constructor(
     url: string,
@@ -899,6 +923,109 @@ export class CopcDataSource {
     return this._nodeCache.size;
   }
 
+  /**
+   * Finds the nearest currently-visible point under `windowPosition` (screen
+   * coordinates, e.g. from a `ScreenSpaceEventHandler`) and returns its
+   * position plus classification/intensity, or `undefined` if nothing is
+   * under the cursor. `tolerancePixels` widens the search around the exact
+   * pixel — points are near-zero-area dots, so an exact-pixel-only test
+   * misses far more often than it would against a filled shape.
+   *
+   * WebGL2-only: identifying which point was hit reads `gl_VertexID`, and
+   * fetching its attributes uses `gl.getBufferSubData`, both to avoid keeping
+   * a full CPU copy of every loaded node around just in case it's picked. On
+   * a WebGL1 fallback context (or a `Viewer` built with
+   * `contextOptions: { requestWebgl1: true }`), this logs one warning and
+   * always returns `undefined` — every other part of this library still
+   * renders fine there; only picking needs WebGL2.
+   *
+   * Respects the current render set: a node hidden by `classificationFilter`,
+   * culled by the view frustum, or not yet loaded can't be picked, matching
+   * what's actually on screen. `nodeKey`/`pointIndex` on the result are only
+   * meaningful while that node stays cached — see `PickedPoint`'s own doc
+   * comment.
+   */
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels = 4): PickedPoint | undefined {
+    if (this._destroyed) return undefined;
+    const scene = this._viewer.scene;
+    if (!Cesium.FeatureDetection.supportsWebgl2(scene)) {
+      if (!this._warnedNoWebgl2) {
+        this._warnedNoWebgl2 = true;
+        console.warn(
+          '[CopcDataSource] pickPoint() requires a WebGL2 context; this session is running WebGL1 ' +
+            '(either the browser lacks WebGL2, or the Viewer was created with contextOptions.requestWebgl1). ' +
+            'Returning undefined for every call.',
+        );
+      }
+      return undefined;
+    }
+
+    const context = (scene as unknown as CesiumSceneInternal).context as unknown as CesiumContextDrawable;
+    const width = scene.drawingBufferWidth;
+    const height = scene.drawingBufferHeight;
+    if (width === 0 || height === 0) return undefined;
+
+    const { framebuffer, passState } = this._pickFramebuffer.ensure(context, width, height);
+    this._pickFramebuffer.clear(context);
+
+    // 1-based: slotToKey[slot - 1] === key — see decodePickColor()'s doc for
+    // why node slot 0 is reserved as "no hit".
+    const slotToKey: string[] = [];
+    for (const key of this._selectedKeys) {
+      const node = this._nodeCache.peek(key);
+      if (!node || !node.primitive.show) continue; // not actually on screen
+      const cmd = node.primitive.preparePickCommand(context, slotToKey.length + 1, framebuffer);
+      if (!cmd) continue;
+      slotToKey.push(key);
+      context.draw(cmd, passState);
+    }
+    if (slotToKey.length === 0) return undefined;
+
+    const drawingBufferPos = CesiumPicking.SceneTransforms.transformWindowToDrawingBuffer(scene, windowPosition);
+    const glX = Math.round(drawingBufferPos.x);
+    // Window/drawing-buffer Y grows downward from the top; GL readback Y grows upward from the bottom.
+    const glY = Math.round(height - drawingBufferPos.y);
+
+    const rectX = Cesium.Math.clamp(glX - tolerancePixels, 0, width - 1);
+    const rectY = Cesium.Math.clamp(glY - tolerancePixels, 0, height - 1);
+    const rectRight = Cesium.Math.clamp(glX + tolerancePixels, 0, width - 1);
+    const rectTop = Cesium.Math.clamp(glY + tolerancePixels, 0, height - 1);
+    const rectW = rectRight - rectX + 1;
+    const rectH = rectTop - rectY + 1;
+    if (rectW <= 0 || rectH <= 0) return undefined;
+
+    const pixels = this._pickFramebuffer.readPixels(context, rectX, rectY, rectW, rectH);
+
+    // Among every hit in the tolerance window, the one closest to the exact
+    // click wins — each pixel already reflects the GPU depth test's own
+    // nearest-to-camera winner, so no depth comparison is needed here.
+    let best: { pointIndex: number; nodeSlot: number; distSq: number } | undefined;
+    for (let row = 0; row < rectH; row++) {
+      for (let col = 0; col < rectW; col++) {
+        const decoded = decodePickColor(pixels, (row * rectW + col) * 4);
+        if (!decoded) continue;
+        const dx = rectX + col - glX;
+        const dy = rectY + row - glY;
+        const distSq = dx * dx + dy * dy;
+        if (!best || distSq < best.distSq) best = { ...decoded, distSq };
+      }
+    }
+    if (!best) return undefined;
+
+    const nodeKey = slotToKey[best.nodeSlot - 1];
+    const node = nodeKey ? this._nodeCache.peek(nodeKey) : undefined;
+    if (!nodeKey || !node) return undefined;
+
+    const attrs = node.primitive.readPointAttributes(best.pointIndex, context);
+    return {
+      nodeKey,
+      pointIndex: best.pointIndex,
+      position: attrs.position,
+      classification: attrs.classification,
+      intensity: attrs.intensity,
+    };
+  }
+
   destroy(): void {
     if (this._destroyed) return;
     this._destroyed = true;
@@ -907,5 +1034,6 @@ export class CopcDataSource {
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
+    this._pickFramebuffer.destroy();
   }
 }

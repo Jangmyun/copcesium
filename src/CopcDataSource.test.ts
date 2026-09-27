@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as Cesium from 'cesium';
 import type { Viewer } from 'cesium';
 import type { Hierarchy } from 'copc';
 import type { NodeRenderData } from './types';
@@ -1101,6 +1102,38 @@ describe('CopcDataSource update loop', () => {
     expect(workerPoolDestroy).toHaveBeenCalledTimes(1);
     expect(rangeFetcherDestroy).toHaveBeenCalledTimes(1);
     expect(removePrimitive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CopcDataSource.pickPoint', () => {
+  beforeEach(() => {
+    selectNodesMock.mockReturnValue([]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns undefined and warns once on a WebGL1-only context, without repeating the warning', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(ds.pickPoint(new Cesium.Cartesian2(1, 1))).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('WebGL2');
+  });
+
+  it('returns undefined after destroy(), without touching FeatureDetection', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    const supportsWebgl2 = vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2');
+    ds.destroy();
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(supportsWebgl2).not.toHaveBeenCalled();
   });
 });
 
