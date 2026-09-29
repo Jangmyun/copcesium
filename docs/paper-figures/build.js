@@ -134,9 +134,78 @@ function axis(s, x, y, dx, dy, len, hide, o = {}) {
   if (hide > 0) line(s, x, y, x + dx * hide, y + dy * hide, { color: WH, width: o.width || 2 });
   arrow(s, x + dx * hide, y + dy * hide, x + dx * len, y + dy * len, { width: o.width || 2, color: o.color });
 }
-function camera(s, x, y, sc = 1) { // lens pointing up-right; (x,y) = optical centre
-  s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: x - 0.55 * sc, y: y - 0.05 * sc, w: 0.6 * sc, h: 0.42 * sc, rectRadius: 0.05, fill: { color: G1 }, line: { color: K } });
-  poly(s, [[x + 0.05 * sc, y + 0.05 * sc], [x + 0.25 * sc, y - 0.07 * sc], [x + 0.25 * sc, y + 0.39 * sc], [x + 0.05 * sc, y + 0.27 * sc]], { fill: G1, color: K });
+// 3D camera drawn as projected, shaded polygons (orthographic, painter's order).
+// Local frame: X right, Y up, Z = optical axis. (x,y) on slide = lens-tip centre.
+// yaw/pitch (deg) orient the camera relative to the viewer; defaults match Fig. 2.
+function camera(s, x, y, sc = 1, view = {}) {
+  const yaw = ((view.yaw ?? 50) * Math.PI) / 180, pit = ((view.pitch ?? -30) * Math.PI) / 180;
+  const lw = view.lw ?? (sc > 1.5 ? 1.25 : 0.75);
+  const rot = ([px, py, pz]) => {
+    const x1 = px * Math.cos(yaw) + pz * Math.sin(yaw), z1 = -px * Math.sin(yaw) + pz * Math.cos(yaw);
+    return [x1, py * Math.cos(pit) - z1 * Math.sin(pit), py * Math.sin(pit) + z1 * Math.cos(pit)];
+  };
+  const tip = rot([0, 0, 0.26]);
+  const scr = (p) => { const r = rot(p); return [x + sc * (r[0] - tip[0]), y - sc * (r[1] - tip[1])]; };
+  const L = [-0.45, 0.7, -0.55], Ln = Math.hypot(...L);
+  const gray = (n, base, span) => {
+    const r = rot(n), d = Math.max(0, (r[0] * L[0] + r[1] * L[1] + r[2] * L[2]) / Ln);
+    const g = Math.round(base + span * (0.3 + 0.7 * d));
+    return g.toString(16).padStart(2, "0").toUpperCase().repeat(3);
+  };
+  const facing = (n) => rot(n)[2] < -1e-6;
+  const face = (pts, n, base, span, outline = true) => {
+    if (!facing(n)) return;
+    const c = gray(n, base, span);
+    poly(s, pts.map(scr), { fill: c, color: outline ? K : c, width: outline ? lw : 0.5 });
+  };
+  const box = (x0, x1, y0, y1, z0, z1, base, span) => () => {
+    const P = (a, b, c) => [a ? x1 : x0, b ? y1 : y0, c ? z1 : z0];
+    face([P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 1, 0)], [0, 0, -1], base, span);
+    face([P(0, 0, 1), P(0, 1, 1), P(1, 1, 1), P(1, 0, 1)], [0, 0, 1], base, span);
+    face([P(0, 0, 0), P(0, 1, 0), P(0, 1, 1), P(0, 0, 1)], [-1, 0, 0], base, span);
+    face([P(1, 0, 0), P(1, 0, 1), P(1, 1, 1), P(1, 1, 0)], [1, 0, 0], base, span);
+    face([P(0, 1, 0), P(1, 1, 0), P(1, 1, 1), P(0, 1, 1)], [0, 1, 0], base, span);
+    face([P(0, 0, 0), P(0, 0, 1), P(1, 0, 1), P(1, 0, 0)], [0, -1, 0], base, span);
+  };
+  // cylinder along an axis ('z' = optical axis, 'y' = vertical button)
+  const cyl = (c, r, a0, a1, axis, base, span, glass) => () => {
+    const N = 28;
+    const pt = (t, a) => axis === "z" ? [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t), a] : [c[0] + r * Math.cos(t), a, c[2] + r * Math.sin(t)];
+    const nrm = (t) => axis === "z" ? [Math.cos(t), Math.sin(t), 0] : [Math.cos(t), 0, Math.sin(t)];
+    const ring = (a) => Array.from({ length: N }, (_, k) => pt((2 * Math.PI * k) / N, a));
+    const capN0 = axis === "z" ? [0, 0, -1] : [0, -1, 0], capN1 = axis === "z" ? [0, 0, 1] : [0, 1, 0];
+    for (let k = 0; k < N; k++) {
+      const t0 = (2 * Math.PI * k) / N, t1 = (2 * Math.PI * (k + 1)) / N;
+      face([pt(t0, a0), pt(t1, a0), pt(t1, a1), pt(t0, a1)], nrm((t0 + t1) / 2), base, span, false);
+    }
+    // silhouette outline = convex hull of both end rings
+    const hp = [...ring(a0), ...ring(a1)].map(scr).sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const p of hp) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+    for (const p of [...hp].reverse()) { while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+    poly(s, [...lo.slice(0, -1), ...up.slice(0, -1)], { color: K, width: lw });
+    [[a0, capN0], [a1, capN1]].forEach(([a, n]) => {
+      if (!facing(n)) return;
+      poly(s, ring(a).map(scr), { fill: gray(n, base, span), color: K, width: lw });
+      if (glass) {
+        const g = (rr, zz) => Array.from({ length: N }, (_, k) => { const t = (2 * Math.PI * k) / N; return scr([c[0] + rr * Math.cos(t), c[1] + rr * Math.sin(t), zz]); });
+        poly(s, g(r * 0.78, a), { fill: "1A1A1A", color: K, width: lw });
+        poly(s, g(r * 0.5, a), { fill: "4D4D4D", noLine: true });
+        const hl = Array.from({ length: 10 }, (_, k) => { const t = Math.PI * 0.55 + (k / 9) * Math.PI * 0.5; return scr([c[0] + r * 0.62 * Math.cos(t), c[1] + r * 0.62 * Math.sin(t), a]); });
+        poly(s, hl, { fill: "D9D9D9", noLine: true });
+      }
+    });
+  };
+  const parts = [
+    { c: [0, 0, -0.16], draw: box(-0.31, 0.31, -0.21, 0.21, -0.32, 0, 40, 140) },          // body
+    { c: [-0.08, 0.25, -0.16], draw: box(-0.22, 0.06, 0.21, 0.29, -0.27, -0.05, 40, 140) }, // viewfinder hump
+    { c: [0.2, 0.24, -0.13], draw: cyl([0.2, 0, -0.13], 0.045, 0.21, 0.27, "y", 90, 150) },   // shutter button
+    { c: [0, 0, 0.08], draw: cyl([0, 0], 0.15, 0, 0.17, "z", 55, 150) },                     // lens barrel
+    { c: [0, 0, 0.215], draw: cyl([0, 0], 0.175, 0.17, 0.26, "z", 30, 130, true) },           // lens hood
+  ];
+  parts.sort((a, b) => rot(b.c)[2] - rot(a.c)[2]).forEach((p) => p.draw());
+  return (v) => { const r = rot(v); return [r[0], -r[1]]; }; // screen direction of a local axis
 }
 
 // ---------- shared device layout (plane units ~ cm, v up) ----------
@@ -271,14 +340,14 @@ execSync("python3 crops.py");
     Tc(s, `\\b{p}_{i,\\r{${names[k]}}}^{\\r{cam}}`, x + offs[k][0], y + offs[k][1], 0.9, 0.32, { size: 14 });
   });
   // camera + axes
-  camera(s, O[0], O[1], 1);
-  arrow(s, O[0], O[1], O[0] + 0.85, O[1], { width: 1.5 });
-  arrow(s, O[0], O[1], O[0], O[1] + 0.75, { width: 1.5 });
-  arrow(s, O[0], O[1], O[0] + 0.55, O[1] - 0.55, { width: 1.5 });
-  Tc(s, "X_{\\r{c}}", O[0] + 1.05, O[1], 0.4, 0.3, { size: 14 });
-  Tc(s, "Y_{\\r{c}}", O[0] + 0.25, O[1] + 0.8, 0.4, 0.3, { size: 14 });
-  Tc(s, "Z_{\\r{c}}", O[0] + 0.55, O[1] - 0.75, 0.4, 0.3, { size: 14 });
-  Tc(s, "카메라", O[0] - 0.35, O[1] + 0.6, 0.8, 0.3, { size: 12 });
+  // camera axes follow the 3D camera's projected frame (OpenCV: X right, Y down, Z optical axis)
+  const cdir = camera(s, O[0], O[1], 1.45, { yaw: 58, pitch: -25 });
+  [["X_{\\r{c}}", [1, 0, 0], 0.95], ["Y_{\\r{c}}", [0, -1, 0], 0.8], ["Z_{\\r{c}}", [0, 0, 1], 1.1]].forEach(([lab, v, len]) => {
+    const [dx, dy] = cdir(v), n = Math.hypot(dx, dy), ux = dx / n, uy = dy / n;
+    arrow(s, O[0], O[1], O[0] + ux * len, O[1] + uy * len, { width: 1.5 });
+    Tc(s, lab, O[0] + ux * (len + 0.22), O[1] + uy * (len + 0.22) + (v[2] ? 0.28 : 0), 0.4, 0.3, { size: 14 });
+  });
+  Tc(s, "카메라", O[0] - 0.95, O[1] + 1.0, 0.8, 0.3, { size: 12 });
   // equation
   s.addShape(pres.shapes.RECTANGLE, { x: 7.0, y: 5.6, w: 5.8, h: 0.95, fill: { color: G5 }, line: { color: K, width: 1 } });
   T(s, [{ s: "\\b{p}_{i,k}^{\\r{cam}} = \\b{R}_{i} \\b{p}_{i,k}^{\\r{device}} + \\b{t}_{i} ,   k ∈ {\\r{TL, TR, BR, BL}}", size: 20 }], 7.0, 5.6, 5.8, 0.95);
@@ -291,7 +360,7 @@ execSync("python3 crops.py");
 {
   const s = pres.addSlide(); s.background = { color: WH };
   panelTitle(s, "(a) 위에서 본 단면 (카메라 → 디바이스 배치)", 0.6, 0.3, 7);
-  const cam = [4.1, 5.75];
+  const cam = [4.1, 5.35];
   const pl = (x) => 2.35 - 0.1 * (x - 0.9);
   const devs = [
     { x: [1.2, 2.8], e: [0.32, -0.02], shape: "ci", fill: K },
@@ -299,7 +368,7 @@ execSync("python3 crops.py");
     { x: [5.6, 7.2], e: [0.12, -0.3], shape: "tri", fill: G2 },
   ];
   // sight rays
-  devs.forEach((d) => d.x.forEach((x, j) => line(s, cam[0] + 0.1, cam[1] - 0.1, x, pl(x) + d.e[j], { color: G3, width: 0.75, dash: "sysDash" })));
+  devs.forEach((d) => d.x.forEach((x, j) => line(s, cam[0], cam[1], x, pl(x) + d.e[j], { color: G3, width: 0.75, dash: "sysDash" })));
   // fitted plane
   line(s, 0.7, pl(0.7), 7.6, pl(7.6), { width: 2.5 });
   Tc(s, "공통 평면   z = ax + by + d", 2.3, pl(2.2) - 0.85, 3.2, 0.35, { size: 15 });
@@ -317,7 +386,7 @@ execSync("python3 crops.py");
   const ax = devs[1].x[0], ay = pl(ax) + devs[1].e[0];
   Tc(s, "e_{i,k}", ax - 0.42, ay - 0.08, 0.5, 0.3, { size: 15 });
   // axes & camera
-  camera(s, cam[0], cam[1], 0.9);
+  camera(s, cam[0], cam[1], 1.1, { yaw: 25, pitch: -62 });
   arrow(s, 0.8, 6.25, 1.6, 6.25, { width: 1.5 });
   arrow(s, 0.8, 6.25, 0.8, 5.45, { width: 1.5 });
   Tc(s, "x", 1.75, 6.25, 0.25, 0.3, { size: 15 });
@@ -531,6 +600,24 @@ execSync("python3 crops.py");
     s.addImage({ path: `crop${d.id}.png`, x: cx - w / 2, y: cy - h / 2, w, h, rotate: -d.th });
   });
   caption(s, "그림 6. 계산된 좌표의 전달과 각 디바이스의 할당 영역 출력");
+}
+
+// ===================================================================
+// Camera 3D asset slide (for copy & reuse)
+// ===================================================================
+{
+  const s = pres.addSlide(); s.background = { color: WH };
+  panelTitle(s, "카메라 3D 도형 (편집 가능한 도형 · 복사하여 재사용)", 0.6, 0.3, 9);
+  const views = [
+    ["\\r{(a)} 그림 2 시점 (뒤·위에서)", { yaw: 58, pitch: -25 }, 2.9, 3.4],
+    ["\\r{(b)} 그림 3 시점 (위를 향함)", { yaw: 25, pitch: -62 }, 6.45, 3.55],
+    ["\\r{(c)} 정면 사선 시점 (렌즈 방향)", { yaw: 145, pitch: -22 }, 10.75, 4.2],
+  ];
+  views.forEach(([t, v, x, y], i) => {
+    camera(s, x, y, 3.2, v);
+    T(s, [{ s: t, size: 13 }], 0.6 + i * 4.15, 5.9, 3.9, 0.35);
+  });
+  caption(s, "그림 \\r{A}. 피규어에 사용한 3차원 카메라 도형");
 }
 
 pres.writeFile({ fileName: "videowall_figures.pptx" }).then(() => console.log("written"));
