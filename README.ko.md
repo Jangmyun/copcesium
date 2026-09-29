@@ -77,6 +77,8 @@ npm install copcesium cesium
 
 copcesium 자체는 셋업이 필요 없습니다 — Worker와 WASM이 배포되는 `.mjs`에 인라인되어 있어서 따로 연결할 부수 에셋이 없습니다. **하지만 CesiumJS는 필요합니다.** Cesium은 런타임에 `Workers/`, `Assets/`, `Widgets/`, `ThirdParty/`를 가져오는데, 번들러가 이를 알아서 찾아주지는 않습니다. 이 단계를 건너뛰면 **빈 화면과 콘솔의 404**만 남습니다.
 
+아래 예시는 이미 Vite 프로젝트가 있다고 가정합니다. 빈 폴더에서 시작한다면 먼저 프로젝트를 만드세요(`npm create vite@latest my-app -- --template vanilla-ts`). 현재 폴더에 `package.json`이 없으면 `npm install`은 상위 폴더를 거슬러 올라가 `package.json`이 있는 가장 가까운 폴더에 설치합니다. 그래서 에러 없이 끝나지만 프로젝트 폴더는 비어 있게 됩니다.
+
 Vite를 쓴다면 [`vite-plugin-cesium`](https://www.npmjs.com/package/vite-plugin-cesium)이 처리해줍니다:
 
 ```bash

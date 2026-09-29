@@ -77,6 +77,8 @@ npm install copcesium cesium
 
 copcesium itself needs no setup — its Worker and WASM are inlined into the published `.mjs`, so there's no side asset to wire up. **CesiumJS does**: it fetches `Workers/`, `Assets/`, `Widgets/`, and `ThirdParty/` at runtime, and a bundler won't find those on its own. Skipping this step leaves a blank page and 404s in the console.
 
+These snippets assume an existing Vite project. From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor that has one, leaving your project folder empty and reporting no error.
+
 With Vite, [`vite-plugin-cesium`](https://www.npmjs.com/package/vite-plugin-cesium) handles it:
 
 ```bash
