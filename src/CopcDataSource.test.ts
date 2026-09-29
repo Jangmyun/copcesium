@@ -1090,6 +1090,87 @@ describe('CopcDataSource runtime API', () => {
     expect(requestRender).toHaveBeenCalled();
   });
 
+  it('pointSizeMode get/set writes the shared ref and requests a render', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.pointSizeMode).toBe('fixed');
+    ds.pointSizeMode = 'attenuated';
+    expect(ds.pointSizeMode).toBe('attenuated');
+    expect(requestRender).toHaveBeenCalled();
+  });
+
+  it('attenuationFactor/minPixelSize/maxPixelSize get/set write the shared ref and request a render', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.attenuationFactor).toBe(100);
+    expect(ds.minPixelSize).toBe(1);
+    expect(ds.maxPixelSize).toBe(6);
+
+    ds.attenuationFactor = 80;
+    ds.minPixelSize = 2;
+    ds.maxPixelSize = 8;
+
+    expect(ds.attenuationFactor).toBe(80);
+    expect(ds.minPixelSize).toBe(2);
+    expect(ds.maxPixelSize).toBe(8);
+    expect(requestRender).toHaveBeenCalled();
+  });
+
+  it('attenuationFactor set throws RangeError for a non-positive or non-finite value', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+
+    expect(() => {
+      ds.attenuationFactor = 0;
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.attenuationFactor = -10;
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.attenuationFactor = NaN;
+    }).toThrow(RangeError);
+  });
+
+  it('minPixelSize/maxPixelSize setters reject a bound that would invert the pair', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      minPixelSize: 1,
+      maxPixelSize: 6,
+    });
+
+    expect(() => {
+      ds.minPixelSize = 10; // above the current max (6)
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.maxPixelSize = 0.5; // below the current min (1)
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.minPixelSize = -1;
+    }).toThrow(RangeError);
+  });
+
+  it('load() rejects a non-positive attenuationFactor or an inverted min/max pixel size', async () => {
+    const { viewer } = makeFakeViewer();
+
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { attenuationFactor: -5 }),
+    ).rejects.toThrow(RangeError);
+
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { minPixelSize: 8, maxPixelSize: 2 }),
+    ).rejects.toThrow(RangeError);
+  });
+
   it('opacity get/set writes the shared ref and requests a render', async () => {
     mockCopc(undefined);
     const { viewer, requestRender } = makeFakeViewer();

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as Cesium from 'cesium';
 import { createNodePrimitive } from './loadNode';
 import { PointCloudPrimitive, type PointStyle } from '../renderer/PointCloudPrimitive';
-import { COLOR_MODE, buildClassMask } from '../renderer/shaders';
+import { COLOR_MODE, SIZE_MODE, buildClassMask } from '../renderer/shaders';
 import type { NodeRenderData } from '../types';
 
 // Mock render data, standing in for what a Worker will eventually produce.
@@ -20,6 +20,10 @@ const renderData: NodeRenderData = {
 function makeStyle(pixelSize = 2): PointStyle {
   return {
     pixelSize,
+    sizeMode: SIZE_MODE.fixed,
+    attenuationFactor: 100,
+    minPixelSize: 1,
+    maxPixelSize: 6,
     colorMode: COLOR_MODE.rgb,
     intensityRange: new Cesium.Cartesian2(0, 1),
     classMask: buildClassMask(undefined),

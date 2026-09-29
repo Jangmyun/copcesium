@@ -160,6 +160,10 @@ interface CopcDataSourceOptions {
   maxVisibleNodes?: number;
   maxPoints?: number;
   pixelSize?: number;
+  pointSizeMode?: 'fixed' | 'attenuated';
+  attenuationFactor?: number;
+  minPixelSize?: number;
+  maxPixelSize?: number;
   sseThreshold?: number;
   zFactor?: number;
   xyFactor?: number;
@@ -185,7 +189,11 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
 | `maxVisibleNodes` | `100` | 한 번의 LoD 패스에서 렌더링용으로 선택하는 최대 노드 수. |
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
-| `pixelSize` | `2` | 포인트 크기(픽셀). 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
+| `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
+| `pointSizeMode` | `'fixed'` | `'fixed'`는 모든 포인트를 `pixelSize`로 그립니다. `'attenuated'`는 카메라 거리에 따라 크기를 줄입니다(`attenuationFactor / sqrt(dist_m)`, `[minPixelSize, maxPixelSize]`로 클램프) — 가까이 갈 때 포인트 사이 빈틈이 보이지 않도록 합니다. `dataSource.pointSizeMode`로 실시간 조정 가능. |
+| `attenuationFactor` | `100` | 거리 감쇠 크기 공식의 분자값(pixel·√meters 단위). `pointSizeMode`가 `'attenuated'`일 때만 사용됩니다. 데이터셋 밀도에 맞게 조정하세요. `dataSource.attenuationFactor`로 실시간 조정 가능. |
+| `minPixelSize` | `1` | 감쇠된 포인트 크기의 하한(픽셀). `dataSource.minPixelSize`로 실시간 조정 가능. |
+| `maxPixelSize` | `6` | 감쇠된 포인트 크기의 상한(픽셀). `dataSource.maxPixelSize`로 실시간 조정 가능. |
 | `sseThreshold` | `250` | 이 값을 넘으면 노드를 자식으로 세분화하는 화면 공간 오차(픽셀) 기준값. 낮을수록 디테일은 높아지고 로드되는 노드도 많아집니다. `dataSource.sseThreshold`로 실시간 조정 가능. |
 | `autoFrame` | `true` | `load()`가 resolve되기 전에 카메라를 데이터셋으로 비행시킬지 여부. 카메라를 직접 관리한다면 `false`로 설정하세요. |
 | `colorMode` | `'rgb'` | 포인트 색상 기준. `dataSource.colorMode`로 실시간 조정 가능. [스타일링](#스타일링) 참고. |
@@ -209,6 +217,10 @@ interface CopcDataSourceOptions {
 ```ts
 class CopcDataSource {
   pixelSize: number;
+  pointSizeMode: 'fixed' | 'attenuated';
+  attenuationFactor: number;
+  minPixelSize: number;
+  maxPixelSize: number;
   sseThreshold: number;
   colorMode: ColorMode;
   opacity: number;
@@ -227,6 +239,10 @@ class CopcDataSource {
 | 멤버 | 설명 |
 | --- | --- |
 | `pixelSize` | get/set. 현재 렌더링 중인 모든 노드의 포인트 크기를 재로드 없이 즉시 갱신합니다. |
+| `pointSizeMode` | get/set. 고정 크기와 거리 감쇠 크기 사이를 재로드 없이 즉시 전환합니다. |
+| `attenuationFactor` | get/set. 양의 유한수가 아니면 `RangeError`를 던집니다. |
+| `minPixelSize` | get/set. 음수이거나 유한하지 않거나 현재 `maxPixelSize`보다 크면 `RangeError`를 던집니다. |
+| `maxPixelSize` | get/set. 유한하지 않거나 현재 `minPixelSize`보다 작으면 `RangeError`를 던집니다. |
 | `sseThreshold` | get/set. 값을 설정하면 즉시 LoD 재선택 패스가 실행됩니다. |
 | `colorMode` | get/set. 다음 프레임에 로드된 모든 노드가 다시 칠해집니다 — 재요청도 재디코딩도 없습니다. |
 | `opacity` | get/set. 현재 렌더링 중인 모든 노드의 투명도를 재로드 없이 즉시 갱신합니다. 0-1 범위를 벗어나면 `RangeError`를 던집니다. |

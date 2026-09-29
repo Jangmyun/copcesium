@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COLOR_MODE, buildClassMask, vertexShaderSource } from './shaders';
+import { COLOR_MODE, SIZE_MODE, buildClassMask, vertexShaderSource } from './shaders';
 import { CLASSIFICATION_COLORS, DEFAULT_CLASS_COLOR } from '../style/classificationColors';
 
 /** Mirrors `classAllowed()` in the vertex shader, so the two encodings stay tied together. */
@@ -82,8 +82,30 @@ describe('vertexShaderSource', () => {
       'uniform vec2 u_intensityRange;',
       'uniform ivec4 u_classMask[2];',
       'uniform float u_opacity;',
+      'uniform int u_sizeMode;',
+      'uniform float u_attenuationFactor;',
+      'uniform float u_minPixelSize;',
+      'uniform float u_maxPixelSize;',
     ]) {
       expect(vertexShaderSource).toContain(decl);
     }
+  });
+
+  it('branches point size on the same size mode numbers the TypeScript side sends', () => {
+    expect(vertexShaderSource).toContain(`u_sizeMode == ${SIZE_MODE.attenuated}`);
+    // 'fixed' is the else branch, so gl_PointSize = u_pixelSize must still be reachable.
+    expect(vertexShaderSource).toContain('gl_PointSize = u_pixelSize;');
+  });
+
+  it('clamps the attenuated size formula to the min/max uniforms', () => {
+    expect(vertexShaderSource).toContain(
+      'clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize)',
+    );
+  });
+
+  it('guards the attenuated formula against a zero/near-zero distance', () => {
+    // A point at (or touching) the camera must not divide by ~0 and blow up
+    // to a huge, GPU-hostile point size.
+    expect(vertexShaderSource).toContain('max(length(eyeRel), 1e-4)');
   });
 });

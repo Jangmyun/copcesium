@@ -11,6 +11,15 @@ import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
  */
 export type ColorMode = 'rgb' | 'intensity' | 'classification' | 'elevation';
 
+/**
+ * How `gl_PointSize` is computed. `'fixed'` (the historical default) draws
+ * every point at `pixelSize` regardless of distance. `'attenuated'` scales
+ * size down with camera distance — `attenuationFactor / sqrt(dist_m)`,
+ * clamped to `[minPixelSize, maxPixelSize]` — so points stay dense near the
+ * camera without inflating (and overdrawing) distant, already-dense nodes.
+ */
+export type PointSizeMode = 'fixed' | 'attenuated';
+
 /** Public options for CopcDataSource */
 export interface CopcDataSourceOptions {
   proj?: string;
@@ -51,6 +60,18 @@ export interface CopcDataSourceOptions {
    */
   maxPoints?: number;
   pixelSize?: number;
+  /** How `gl_PointSize` is computed. Default `'fixed'`. */
+  pointSizeMode?: PointSizeMode;
+  /**
+   * Numerator of the attenuated-size formula (`attenuationFactor / sqrt(dist_m)`),
+   * in pixel*sqrt(meters). Only used when `pointSizeMode` is `'attenuated'`.
+   * Default `100`; tune per dataset density.
+   */
+  attenuationFactor?: number;
+  /** Lower clamp (pixels) for attenuated point size. Default `1`. */
+  minPixelSize?: number;
+  /** Upper clamp (pixels) for attenuated point size. Default `6`. */
+  maxPixelSize?: number;
   sseThreshold?: number;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;

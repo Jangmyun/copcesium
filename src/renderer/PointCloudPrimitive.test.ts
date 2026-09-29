@@ -44,6 +44,10 @@ const renderData: NodeRenderData = {
 
 const style = {
   pixelSize: 2,
+  sizeMode: 0,
+  attenuationFactor: 100,
+  minPixelSize: 1,
+  maxPixelSize: 6,
   colorMode: 0,
   intensityRange: new Cesium.Cartesian2(0, 65535),
   classMask: [new Cesium.Cartesian4(-1, -1, -1, -1), new Cesium.Cartesian4(-1, -1, -1, -1)],

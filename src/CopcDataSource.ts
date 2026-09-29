@@ -15,6 +15,7 @@ import type {
   CopcStats,
   LoadedNode,
   NodeRenderData,
+  PointSizeMode,
   StageTiming,
 } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
@@ -27,7 +28,7 @@ import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCar
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
-import { COLOR_MODE, buildClassMask } from './renderer/shaders';
+import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
@@ -49,6 +50,27 @@ function validateOpacity(value: number): number {
     throw new RangeError(`opacity must be between 0 and 1, got ${value}`);
   }
   return value;
+}
+
+/** Shared by the constructor and the live setter; a zero/negative factor would
+ *  make every attenuated point collapse to (or below) `minPixelSize`. */
+function validateAttenuationFactor(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`attenuationFactor must be a positive finite number, got ${value}`);
+  }
+  return value;
+}
+
+/** Shared by the constructor and both min/max live setters — checked together
+ *  because either one alone can't tell whether the *pair* still makes sense
+ *  (e.g. raising min past the current max). */
+function validateSizeBounds(min: number, max: number): void {
+  if (!Number.isFinite(min) || min < 0) {
+    throw new RangeError(`minPixelSize must be a non-negative finite number, got ${min}`);
+  }
+  if (!Number.isFinite(max) || max < min) {
+    throw new RangeError(`maxPixelSize must be a finite number >= minPixelSize (${min}), got ${max}`);
+  }
 }
 
 /**
@@ -79,6 +101,10 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   maxVisibleNodes: 100,
   maxPoints: 5_000_000,
   pixelSize: 2,
+  pointSizeMode: 'fixed',
+  attenuationFactor: 100,
+  minPixelSize: 1,
+  maxPixelSize: 6,
   sseThreshold: 250,
   zFactor: 1,
   xyFactor: 1,
@@ -199,8 +225,13 @@ export class CopcDataSource {
     this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
     this._project = project;
+    validateSizeBounds(options.minPixelSize, options.maxPixelSize);
     this._style = {
       pixelSize: options.pixelSize,
+      sizeMode: SIZE_MODE[options.pointSizeMode],
+      attenuationFactor: validateAttenuationFactor(options.attenuationFactor),
+      minPixelSize: options.minPixelSize,
+      maxPixelSize: options.maxPixelSize,
       colorMode: COLOR_MODE[options.colorMode],
       intensityRange: new Cesium.Cartesian2(options.intensityRange?.[0] ?? 0, options.intensityRange?.[1] ?? 1),
       classMask: buildClassMask(options.classificationFilter),
@@ -640,6 +671,49 @@ export class CopcDataSource {
   }
   set pixelSize(value: number) {
     this._style.pixelSize = value;
+    this._viewer.scene.requestRender();
+  }
+
+  /** How `gl_PointSize` is computed. Shared live by every loaded primitive (no reload needed). */
+  get pointSizeMode(): PointSizeMode {
+    return this._options.pointSizeMode;
+  }
+  set pointSizeMode(value: PointSizeMode) {
+    this._options.pointSizeMode = value;
+    this._style.sizeMode = SIZE_MODE[value];
+    this._viewer.scene.requestRender();
+  }
+
+  /**
+   * Numerator of the attenuated-size formula (`attenuationFactor / sqrt(dist_m)`).
+   * Only affects rendering when `pointSizeMode` is `'attenuated'`. Shared live
+   * by every loaded primitive (no reload needed).
+   */
+  get attenuationFactor(): number {
+    return this._style.attenuationFactor;
+  }
+  set attenuationFactor(value: number) {
+    this._style.attenuationFactor = validateAttenuationFactor(value);
+    this._viewer.scene.requestRender();
+  }
+
+  /** Lower clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
+  get minPixelSize(): number {
+    return this._style.minPixelSize;
+  }
+  set minPixelSize(value: number) {
+    validateSizeBounds(value, this._style.maxPixelSize);
+    this._style.minPixelSize = value;
+    this._viewer.scene.requestRender();
+  }
+
+  /** Upper clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
+  get maxPixelSize(): number {
+    return this._style.maxPixelSize;
+  }
+  set maxPixelSize(value: number) {
+    validateSizeBounds(this._style.minPixelSize, value);
+    this._style.maxPixelSize = value;
     this._viewer.scene.requestRender();
   }
 
