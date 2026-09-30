@@ -67,7 +67,7 @@ WGS84 타원체와 OpenStreetMap 배경지도로 시작하므로 Cesium Ion 토�
 
 ## 설치
 
-이미 있는 프로젝트에 설치한다고 가정합니다(아래 예시는 Vite 기준). 빈 폴더에서 시작한다면 먼저 프로젝트를 만드세요(`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`). 현재 폴더에 `package.json`이 없으면 `npm install`은 상위 폴더를 거슬러 올라가 `package.json`이나 `node_modules`가 있는 가장 가까운 폴더에 설치합니다. 그래서 에러 없이 끝나지만 프로젝트 폴더는 비어 있게 됩니다.
+이미 있는 프로젝트에 설치한다고 가정합니다(아래 예시는 Vite 기준). 빈 폴더에서 시작한다면 먼저 프로젝트를 만드세요(`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`). 현재 폴더에 `package.json`이 없으면 `npm install`은 상위 폴더를 거슬러 올라가 `package.json`이나 `node_modules`가 있는 가장 가까운 폴더에 설치합니다. 그래서 에러 없이 끝나지만 프로젝트 폴더는 비어 있게 됩니다. 번들러 없이 쓴다면 `npm install` 없이 import map으로 두 패키지를 CDN에서 불러올 수 있습니다. [셋업](#셋업) 끝부분을 참고하세요.
 
 ```bash
 npm install copcesium cesium

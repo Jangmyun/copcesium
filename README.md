@@ -67,7 +67,7 @@ Every dataset it streams is public, and credited individually in [`examples/DATA
 
 ## Installation
 
-Install into an existing project (the examples below use Vite). From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor with a `package.json` or `node_modules`, leaving your project folder empty and reporting no error.
+Install into an existing project (the examples below use Vite). From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor with a `package.json` or `node_modules`, leaving your project folder empty and reporting no error. Without a bundler you can skip `npm install` entirely and load both packages from a CDN through an import map — see the end of [Setup](#setup).
 
 ```bash
 npm install copcesium cesium
