@@ -245,6 +245,31 @@ describe('selectNodes', () => {
     expect(selected).toHaveLength(4);
   });
 
+  it('keeps an incumbent that loses the budget cut by less than incumbentBonus', () => {
+    const nodes = makeOneLevelOctree();
+    const camera = makeCamera(
+      new Cesium.Cartesian3(0, 0, 30),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+    const options = {
+      nodes,
+      getSphere: makeGetSphere(rootCenter, rootHalfSize),
+      camera,
+      viewportHeight: 1000,
+      sseThreshold: 16,
+      maxVisibleNodes: 4,
+      incumbents: new Set(['1-0-0-0']),
+    };
+
+    // Same setup as above: '1-0-0-0' (a far, zi=0 child) loses to the near
+    // half. On screen already and given enough of a bonus, it holds its slot
+    // against them; a bonus smaller than the gap leaves the cut unchanged, so
+    // a clearly better candidate still displaces it.
+    expect(selectNodes({ ...options, incumbentBonus: 3 })).toContain('1-0-0-0');
+    expect(selectNodes({ ...options, incumbentBonus: 1.15 })).not.toContain('1-0-0-0');
+  });
+
   it('stops the traversal once maxVisibleNodes is reached', () => {
     const nodes = makeOneLevelOctree();
     const camera = makeCamera(

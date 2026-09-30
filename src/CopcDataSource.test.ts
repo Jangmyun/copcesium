@@ -137,6 +137,7 @@ afterEach(() => vi.unstubAllGlobals());
 function makeFakeViewer() {
   let updateCallback: (() => void) | undefined;
   let moveEndCallback: (() => void) | undefined;
+  let moveStartCallback: (() => void) | undefined;
   const addPrimitive = vi.fn();
   const removePrimitive = vi.fn();
   const removeUpdateListener = vi.fn();
@@ -158,6 +159,12 @@ function makeFakeViewer() {
             return removeMoveEndListener;
           }),
         },
+        moveStart: {
+          addEventListener: vi.fn((cb: () => void) => {
+            moveStartCallback = cb;
+            return () => {};
+          }),
+        },
         // Resolves zoomTo()'s promise immediately (real geometry isn't needed —
         // that's covered by dedicated zoomTo tests further down).
         flyToBoundingSphere: vi.fn((_sphere: unknown, opts: { complete?: () => void }) => opts.complete?.()),
@@ -175,6 +182,7 @@ function makeFakeViewer() {
     requestRender,
     triggerUpdate: () => updateCallback!(),
     triggerMoveEnd: () => moveEndCallback!(),
+    triggerMoveStart: () => moveStartCallback!(),
   };
 }
 
@@ -981,6 +989,31 @@ describe('CopcDataSource update loop', () => {
     triggerMoveEnd();
 
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+  });
+
+  // Nodes straddling the budget cut used to trade places on every pass while
+  // the camera moved (#192). The bonus that holds them steady must be
+  // released once the camera settles, or the view settles on whatever drifted
+  // in during the move instead of the exact selection.
+  it('gives on-screen nodes an incumbent bonus only while the camera is moving', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, triggerUpdate, triggerMoveStart, triggerMoveEnd } = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    const lastOptions = () =>
+      selectNodesMock.mock.lastCall![0] as { incumbents: Set<string>; incumbentBonus: number };
+
+    triggerUpdate();
+    expect(lastOptions().incumbentBonus).toBe(1);
+
+    triggerMoveStart();
+    triggerUpdate();
+    expect(lastOptions().incumbentBonus).toBeGreaterThan(1);
+    expect(lastOptions().incumbents).toEqual(new Set(['0-0-0-0']));
+
+    triggerMoveEnd();
+    expect(lastOptions().incumbentBonus).toBe(1);
   });
 
   // `count` used to be the length of the percentile window, which stops at
