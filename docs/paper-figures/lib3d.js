@@ -92,11 +92,11 @@ function makeView(yaw = YAW, pitch = PITCH) {
 }
 
 // ---------------- 3D camera model (box camera, lens front = optical centre at origin) ----------------
-function cameraModel(s, O2, sc, rot) { // rot: model(render frame, Y up) -> view
+function cameraModel(s, O2, sc, rot, scrFn) { // rot: model(render frame, Y up) -> view; scrFn: optional model->slide projection
   const hex = (g) => Math.max(0, Math.min(255, Math.round(g))).toString(16).padStart(2, "0").toUpperCase().repeat(3);
   const L = [-0.45, 0.7, -0.55], Ln = Math.hypot(...L);
   const R = rot;
-  const scr = (p) => { const r = R(p); return [O2[0] + sc * r[0], O2[1] - sc * r[1]]; };
+  const scr = scrFn || ((p) => { const r = R(p); return [O2[0] + sc * r[0], O2[1] - sc * r[1]]; });
   const lit = (n) => { const r = R(n); return Math.max(0, (r[0] * L[0] + r[1] * L[1] + r[2] * L[2]) / Ln); };
   const facing = (n) => R(n)[2] < -1e-6;
   const shade = (n, base, span) => hex(base + span * (0.3 + 0.7 * lit(n)));
