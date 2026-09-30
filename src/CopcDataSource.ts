@@ -100,6 +100,8 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   maxCacheNodes: 150,
   maxVisibleNodes: 100,
   maxPoints: 5_000_000,
+  prefetchFrustumFactor: 1.8,
+  maxPrefetchNodes: 50,
   pixelSize: 2,
   pointSizeMode: 'fixed',
   attenuationFactor: 100,
@@ -424,6 +426,7 @@ export class CopcDataSource {
     this._isUpdating = true;
     try {
       const neededPages = new Set<string>();
+      const newPrefetchKeys = new Set<string>();
       const newSelectedKeys = new Set(
         selectNodes({
           nodes: this._nodes,
@@ -435,11 +438,14 @@ export class CopcDataSource {
           sseThreshold: this._options.sseThreshold,
           maxVisibleNodes: this._options.maxVisibleNodes,
           maxPoints: this._options.maxPoints,
+          prefetchFrustumFactor: this._options.prefetchFrustumFactor,
+          maxPrefetchNodes: this._options.maxPrefetchNodes,
+          onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
         }),
       );
 
       this._dispatchPageLoads(neededPages);
-      this._cancelStaleLoads(newSelectedKeys);
+      this._cancelStaleLoads(newSelectedKeys, newPrefetchKeys);
 
       let sceneChanged = false;
 
@@ -455,6 +461,18 @@ export class CopcDataSource {
           }
           continue;
         }
+        if (this._pendingKeys.has(key)) continue;
+        void this._loadNode(key);
+      }
+
+      // Prefetch candidates never set `show` — they're outside the actual
+      // frustum — and only get a request once the visible loads above have
+      // already claimed their slots, so a pan never waits on prefetch traffic
+      // for the detail it needs right now (#212).
+      const concurrency = this._workerPool.concurrency;
+      for (const key of newPrefetchKeys) {
+        if (this._pendingKeys.size >= concurrency) break;
+        if (this._nodeCache.peek(key)) continue;
         if (this._pendingKeys.has(key)) continue;
         void this._loadNode(key);
       }
@@ -479,6 +497,12 @@ export class CopcDataSource {
         }
       }
 
+      // Prefetched-but-not-shown nodes only get their recency bumped, not a
+      // pin: pinned keys are skipped by eviction, so pinning up to
+      // maxVisibleNodes + maxPrefetchNodes keys could leave nothing evictable
+      // and let the cache outgrow maxCacheNodes/maxCacheBytes. Bumped before
+      // pin() so the shown set still ends up most recent (#212).
+      for (const key of newPrefetchKeys) this._nodeCache.get(key);
       this._nodeCache.pin(stillShown);
       this._selectedKeys = stillShown;
       if (sceneChanged) this._viewer.scene.requestRender();
@@ -501,10 +525,12 @@ export class CopcDataSource {
 
   /** A load still in flight for a key the camera has since moved past is
    *  decoding data nobody will show; cancel it so its worker slot frees up
-   *  for the current selection instead (#86). */
-  private _cancelStaleLoads(newSelectedKeys: Set<string>): void {
+   *  for the current selection instead (#86). `newPrefetchKeys` is included
+   *  so a pending prefetch load isn't cancelled just for being outside the
+   *  actual frustum — that's exactly what makes it a prefetch candidate. */
+  private _cancelStaleLoads(newSelectedKeys: Set<string>, newPrefetchKeys: Set<string>): void {
     for (const key of this._pendingKeys) {
-      if (!newSelectedKeys.has(key)) this._cancels.get(key)?.();
+      if (!newSelectedKeys.has(key) && !newPrefetchKeys.has(key)) this._cancels.get(key)?.();
     }
   }
 

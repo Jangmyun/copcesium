@@ -111,6 +111,37 @@ export default defineConfig({ plugins: [cesium()] });
 window.CESIUM_BASE_URL = '/cesium/';
 ```
 
+번들러 없이 쓴다면 [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)만으로 충분합니다. 배포된 `.mjs`의 외부 import는 `cesium` 하나뿐이라, import map이 이를 Cesium 자체 ESM 빌드로 연결하면 페이지와 copcesium이 같은 모듈 인스턴스를 공유합니다. 세 URL의 Cesium 버전은 모두 같게 맞춥니다:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "cesium": "https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/index.js",
+      "copcesium": "https://cdn.jsdelivr.net/npm/copcesium@1.4.0/dist/copc-cesium.mjs"
+    }
+  }
+</script>
+<script>
+  window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/';
+</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" />
+<style>
+  html, body, #cesiumContainer { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+</style>
+
+<div id="cesiumContainer"></div>
+<script type="module">
+  import * as Cesium from 'cesium';
+  import { CopcDataSource } from 'copcesium';
+
+  const viewer = new Cesium.Viewer('cesiumContainer');
+  await CopcDataSource.load('https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz', viewer);
+</script>
+```
+
+두 패키지 모두 패키지를 다시 빌드하는 CDN 말고, 배포된 npm 파일 그대로(위의 jsDelivr `/npm/` 경로) 불러옵니다. 예를 들어 esm.sh는 Cesium의 `@cesium/engine` 의존성을 최신 릴리스로 풀기 때문에, 최신이 아닌 Cesium 버전은 없는 export에 대한 `SyntaxError`로 로드에 실패할 수 있습니다 — 1.145.0이 최신이던 시점에 `cesium@1.144.0`이 그랬습니다.
+
 ## 빠른 시작
 
 ```ts

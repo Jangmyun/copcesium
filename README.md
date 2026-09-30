@@ -4,7 +4,7 @@
 
 # [copcesium](https://github.com/Jangmyun/copcesium)
 
-[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-96.09%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.98%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
@@ -110,6 +110,37 @@ On another bundler, do the same two things by hand: copy `node_modules/cesium/Bu
 ```js
 window.CESIUM_BASE_URL = '/cesium/';
 ```
+
+Without a bundler, an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) is enough. The published `.mjs` has exactly one external import, `cesium`, so the map resolves it to Cesium's own ESM build and both the page and copcesium share that one module instance. Keep the Cesium version identical in all three URLs:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "cesium": "https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/index.js",
+      "copcesium": "https://cdn.jsdelivr.net/npm/copcesium@1.4.0/dist/copc-cesium.mjs"
+    }
+  }
+</script>
+<script>
+  window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/';
+</script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" />
+<style>
+  html, body, #cesiumContainer { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+</style>
+
+<div id="cesiumContainer"></div>
+<script type="module">
+  import * as Cesium from 'cesium';
+  import { CopcDataSource } from 'copcesium';
+
+  const viewer = new Cesium.Viewer('cesiumContainer');
+  await CopcDataSource.load('https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz', viewer);
+</script>
+```
+
+Load both from the npm files as published (jsDelivr's `/npm/` paths above) rather than a CDN that rebuilds packages. esm.sh, for one, resolves Cesium's `@cesium/engine` dependency to the latest release, so an older Cesium version can fail to load with a `SyntaxError` about a missing export — `cesium@1.144.0` did when 1.145.0 was current.
 
 ## Quick start
 
