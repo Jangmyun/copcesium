@@ -1125,6 +1125,42 @@ describe('CopcDataSource.pickPoint', () => {
     expect(warn.mock.calls[0]?.[0]).toContain('WebGL2');
   });
 
+  // Cesium leaves czm_* view/projection uniforms at whatever the last draw set
+  // — e.g. the Viewer's own scene.pick() off-center frustum — so pickPoint()
+  // must re-sync them to the live camera before its own draws.
+  it('re-syncs the uniform state to the current camera before drawing the pick pass', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    const { PickFramebuffer } = await import('./renderer/PickFramebuffer');
+    const { PointCloudPrimitive } = await import('./renderer/PointCloudPrimitive');
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(true);
+    vi.spyOn(PickFramebuffer.prototype, 'ensure').mockReturnValue({ framebuffer: {}, passState: {} } as never);
+    vi.spyOn(PickFramebuffer.prototype, 'clear').mockImplementation(() => {});
+    vi.spyOn(PickFramebuffer.prototype, 'readPixels').mockImplementation(() => new Uint8Array(9 * 9 * 4));
+    vi.spyOn(PointCloudPrimitive.prototype, 'preparePickCommand').mockReturnValue({} as never);
+    const calls: string[] = [];
+    const scene = viewer.scene as unknown as Record<string, unknown>;
+    scene.drawingBufferWidth = 100;
+    scene.drawingBufferHeight = 100;
+    scene.context = {
+      uniformState: { updateCamera: vi.fn(() => calls.push('updateCamera')) },
+      draw: vi.fn(() => calls.push('draw')),
+    };
+    vi.spyOn(Cesium.SceneTransforms as unknown as Record<string, () => unknown>, 'transformWindowToDrawingBuffer').mockReturnValue(
+      new Cesium.Cartesian2(50, 50),
+    );
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    expect(calls).toEqual(['updateCamera', 'draw']);
+  });
+
   it('returns undefined after destroy(), without touching FeatureDetection', async () => {
     mockCopc(undefined);
     const { viewer } = makeFakeViewer();

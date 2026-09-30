@@ -309,6 +309,8 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 
 `pickPoint()`는 현재 렌더링 상태를 그대로 따릅니다 — `classificationFilter`로 숨겨졌거나, 뷰 프러스텀에 잘렸거나, 아직 로드되지 않은 노드에 속한 점은 선택할 수 없습니다. 반환된 `nodeKey`/`pointIndex`는 해당 노드가 캐시에 남아있는 동안에만 그 점을 식별합니다 — 재로드나 축출 이후에는 유효하지 않으므로 별도로 저장해두지 마세요.
 
+pick 패스는 이 데이터소스의 점끼리만 깊이 테스트를 하므로, 지형이나 3D Tiles 뒤에 가려진 점도 선택될 수 있습니다. 이것이 문제라면 같은 화면 위치의 `scene.pickPosition()`(또는 `scene.pick()`) 결과와 비교해 걸러내세요.
+
 ### 전송량 측정
 
 `dataSource.stats`는 `CopcStats` 스냅샷을 돌려줍니다. 스트리밍한다는 주장을 믿는 대신 재어 볼 수 있게 하기 위한 것입니다.

@@ -29,7 +29,14 @@ import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCar
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
-import { COLOR_MODE, SIZE_MODE, buildClassMask, decodePickColor } from './renderer/shaders';
+import {
+  COLOR_MODE,
+  SIZE_MODE,
+  MAX_PICKABLE_NODE_SLOTS,
+  MAX_PICKABLE_POINT_INDEX,
+  buildClassMask,
+  decodePickColor,
+} from './renderer/shaders';
 import { PickFramebuffer } from './renderer/PickFramebuffer';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
@@ -47,6 +54,7 @@ interface CesiumPickingInternal {
 const CesiumPicking = Cesium as unknown as CesiumPickingInternal;
 interface CesiumContextDrawable {
   draw(command: unknown, passState: unknown): void;
+  uniformState: { updateCamera(camera: Cesium.Camera): void };
 }
 /** `Scene.context` (the renderer `Context`) has no public type declaration either. */
 interface CesiumSceneInternal {
@@ -967,13 +975,23 @@ export class CopcDataSource {
 
     const { framebuffer, passState } = this._pickFramebuffer.ensure(context, width, height);
     this._pickFramebuffer.clear(context);
+    // The czm_* view/projection uniforms still hold whatever the last draw
+    // left there — e.g. the narrow off-center frustum of a scene.pick() the
+    // Viewer's own click handler ran just before this, or the nearest slice
+    // of a multi-frustum render. Re-sync them to the full current camera,
+    // as Cesium's Picking.js does before its own pick pass.
+    context.uniformState.updateCamera(scene.camera);
 
     // 1-based: slotToKey[slot - 1] === key — see decodePickColor()'s doc for
     // why node slot 0 is reserved as "no hit".
     const slotToKey: string[] = [];
     for (const key of this._selectedKeys) {
+      // Past these limits the pick encoding wraps and would silently report a
+      // different point — see MAX_PICKABLE_NODE_SLOTS's doc comment.
+      if (slotToKey.length >= MAX_PICKABLE_NODE_SLOTS) break;
       const node = this._nodeCache.peek(key);
       if (!node || !node.primitive.show) continue; // not actually on screen
+      if (node.pointCount > MAX_PICKABLE_POINT_INDEX + 1) continue;
       const cmd = node.primitive.preparePickCommand(context, slotToKey.length + 1, framebuffer);
       if (!cmd) continue;
       slotToKey.push(key);

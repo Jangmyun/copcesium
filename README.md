@@ -309,6 +309,8 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 
 `pickPoint()` respects the current render set: a point hidden by `classificationFilter`, culled by the view frustum, or belonging to a not-yet-loaded node can't be picked. The returned `nodeKey`/`pointIndex` identify the point only while its node stays cached — they aren't stable across a reload or eviction, so don't persist them.
 
+The pick pass depth-tests only this data source's own points, so a point hidden behind terrain or 3D Tiles can still be picked. If that matters, compare the result against `scene.pickPosition()` (or `scene.pick()`) at the same screen position.
+
 ### Measuring transfer
 
 `dataSource.stats` returns a `CopcStats` snapshot, so the streaming claim can be measured rather than taken on trust:

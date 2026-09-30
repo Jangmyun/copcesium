@@ -484,6 +484,9 @@ export class PointCloudPrimitive {
       throw new Error('readPointAttributes() called before this node reached the GPU');
     }
     const gl = (context as CesiumContextLike)._gl;
+    // Restored below: Cesium caches its own GL bindings, and a binding changed
+    // behind its back could otherwise leak into its next draw.
+    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
 
     const positionBytes = new Float32Array(3);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._positionBuffer._buffer);
@@ -496,6 +499,7 @@ export class PointCloudPrimitive {
     const classificationBytes = new Uint8Array(1);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._classificationBuffer._buffer);
     gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex, classificationBytes);
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer);
 
     const offset = new Cesium.Cartesian3(positionBytes[0], positionBytes[1], positionBytes[2]);
     const position = Cesium.Matrix4.multiplyByPoint(

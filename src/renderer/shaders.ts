@@ -163,11 +163,15 @@ void main() {
 /**
  * Highest node slot / point index the pick encoding below can represent.
  * `decodePickColor()`'s caller must keep concurrently-picked nodes at or
- * under this count, and a node with more points than this can alias (two
- * different points reporting the same picked index) past it.
+ * under this count, and must not pick a node with more points than this —
+ * past it the index wraps and reports a different point's data.
+ *
+ * Split 24/8 rather than 16/16: a COPC node commonly holds more than 65,535
+ * points, while the slot count is bounded by the visible node set (default
+ * `maxVisibleNodes` 100).
  */
-export const MAX_PICKABLE_NODE_SLOTS = 0xffff;
-export const MAX_PICKABLE_POINT_INDEX = 0xffff;
+export const MAX_PICKABLE_NODE_SLOTS = 0xff;
+export const MAX_PICKABLE_POINT_INDEX = 0xffffff;
 
 // Reads gl_VertexID (WebGL2/GLSL ES 300 only), so point-level picking is a
 // WebGL2-only feature — see CopcDataSource.pickPoint()'s
@@ -211,15 +215,15 @@ flat in int v_pointIndex;
 flat in int v_nodeSlot;
 
 void main() {
-  // Packs (pointIndex, nodeSlot) as two 16-bit values across the four RGBA8
-  // channels — decoded by decodePickColor() below.
+  // Packs pointIndex (24-bit, RGB) and nodeSlot (8-bit, A) across the four
+  // RGBA8 channels — decoded by decodePickColor() below.
   int idx = v_pointIndex;
   int slot = v_nodeSlot;
   out_FragColor = vec4(
     float(idx & 255) / 255.0,
     float((idx >> 8) & 255) / 255.0,
-    float(slot & 255) / 255.0,
-    float((slot >> 8) & 255) / 255.0
+    float((idx >> 16) & 255) / 255.0,
+    float(slot & 255) / 255.0
   );
 }`;
 
@@ -229,8 +233,8 @@ export function decodePickColor(
   rgba: Uint8Array | Uint8ClampedArray,
   offset = 0,
 ): { pointIndex: number; nodeSlot: number } | undefined {
-  const nodeSlot = rgba[offset + 2]! | (rgba[offset + 3]! << 8);
+  const nodeSlot = rgba[offset + 3]!;
   if (nodeSlot === 0) return undefined;
-  const pointIndex = rgba[offset]! | (rgba[offset + 1]! << 8);
+  const pointIndex = rgba[offset]! | (rgba[offset + 1]! << 8) | (rgba[offset + 2]! << 16);
   return { pointIndex, nodeSlot };
 }

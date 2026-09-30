@@ -154,9 +154,12 @@ describe('PointCloudPrimitive.preparePickCommand', () => {
 });
 
 describe('PointCloudPrimitive.readPointAttributes', () => {
+  const PREVIOUS_BUFFER = { previous: true };
   function fakeGpuContext() {
     const gl = {
       ARRAY_BUFFER: 'ARRAY_BUFFER',
+      ARRAY_BUFFER_BINDING: 'ARRAY_BUFFER_BINDING',
+      getParameter: vi.fn(() => PREVIOUS_BUFFER),
       bindBuffer: vi.fn(),
       getBufferSubData: vi.fn((_target: unknown, _offset: number, dst: ArrayBufferView) => {
         if (dst instanceof Float32Array) {
@@ -199,5 +202,15 @@ describe('PointCloudPrimitive.readPointAttributes', () => {
     expect(attrs.position.z).toBeCloseTo(3);
     expect(attrs.classification).toBe(6);
     expect(attrs.intensity).toBe(500);
+  });
+
+  it('restores the ARRAY_BUFFER binding it found, so Cesium\'s cached GL state stays accurate', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+    const context = fakeGpuContext();
+
+    primitive.readPointAttributes(0, context);
+
+    expect(context._gl.bindBuffer).toHaveBeenLastCalledWith('ARRAY_BUFFER', PREVIOUS_BUFFER);
   });
 });

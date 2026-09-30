@@ -4,6 +4,8 @@ import {
   SIZE_MODE,
   buildClassMask,
   decodePickColor,
+  MAX_PICKABLE_NODE_SLOTS,
+  MAX_PICKABLE_POINT_INDEX,
   pickFragmentShaderSource,
   pickVertexShaderSource,
   vertexShaderSource,
@@ -121,7 +123,7 @@ describe('vertexShaderSource', () => {
 /** Mirrors pickFragmentShaderSource's encoding, so a test can construct a
  *  known pixel without invoking decodePickColor() (the thing under test). */
 function encodePickColor(pointIndex: number, nodeSlot: number): Uint8Array {
-  return new Uint8Array([pointIndex & 255, (pointIndex >> 8) & 255, nodeSlot & 255, (nodeSlot >> 8) & 255]);
+  return new Uint8Array([pointIndex & 255, (pointIndex >> 8) & 255, (pointIndex >> 16) & 255, nodeSlot & 255]);
 }
 
 describe('pick shaders', () => {
@@ -159,7 +161,9 @@ describe('decodePickColor', () => {
       [1, 1],
       [255, 1],
       [256, 1],
-      [65535, 65535],
+      // Past 16 bits: a COPC node commonly holds more than 65,535 points.
+      [65536, 2],
+      [MAX_PICKABLE_POINT_INDEX, MAX_PICKABLE_NODE_SLOTS],
     ]) {
       const rgba = encodePickColor(pointIndex, nodeSlot);
       expect(decodePickColor(rgba)).toEqual({ pointIndex, nodeSlot });
