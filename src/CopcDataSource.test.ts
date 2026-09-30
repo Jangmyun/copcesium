@@ -1051,6 +1051,37 @@ describe('CopcDataSource update loop', () => {
     expect(workerPoolSizes.at(-1)).toBe(5);
   });
 
+  // Pinned keys are skipped by eviction, so pinning prefetch candidates on top
+  // of the shown set could leave nothing evictable and let the cache grow past
+  // maxCacheNodes (#212).
+  it('keeps the cache within maxCacheNodes when prefetch candidates outnumber it', async () => {
+    const prefetchNodes: Record<string, Hierarchy.Node> = {};
+    for (let i = 0; i < 6; i++) {
+      prefetchNodes[`3-0-0-${i}`] = { pointCount: 1, pointDataOffset: 10 + i, pointDataLength: 1 };
+    }
+    mockCopc(undefined, prefetchNodes);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockImplementation((opts: unknown) => {
+      const { onPrefetchCandidate } = opts as { onPrefetchCandidate: (key: string) => void };
+      for (const key of Object.keys(prefetchNodes)) onPrefetchCandidate(key);
+      return ['0-0-0-0'];
+    });
+    const { viewer, addPrimitive, removePrimitive, triggerUpdate } = makeFakeViewer();
+
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      debounceMs: 0,
+      concurrency: 8,
+      maxCacheNodes: 3,
+    });
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(7));
+
+    expect(ds.cacheSize).toBeLessThanOrEqual(3);
+    // The shown node itself is still pinned and survives the evictions.
+    const rootPrimitive = addPrimitive.mock.calls.find((call) => call[0].show)![0];
+    expect(removePrimitive).not.toHaveBeenCalledWith(rootPrimitive);
+  });
+
   it('destroy() tears down the worker pool and node cache, and removes both listeners', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);

@@ -97,11 +97,7 @@ describe('getCullingVolume', () => {
 
   // The `WC` variants are what `Camera.js` actually computes: `transform` applied
   // to the local vectors (translation for position, rotation-only for direction/up).
-  const worldPosition = Cesium.Matrix4.multiplyByPoint(
-    transform,
-    localPosition,
-    new Cesium.Cartesian3(),
-  );
+  const worldPosition = Cesium.Matrix4.multiplyByPoint(transform, localPosition, new Cesium.Cartesian3());
   const worldDirection = Cesium.Cartesian3.normalize(
     Cesium.Matrix4.multiplyByPointAsVector(transform, localDirection, new Cesium.Cartesian3()),
     new Cesium.Cartesian3(),

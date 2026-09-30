@@ -146,8 +146,7 @@ describe('selectNodes', () => {
     // A parent is popped (and selected) before its children are ever pushed,
     // so no descendant can appear without the ancestors it draws on top of.
     for (const key of selected) {
-      if (key !== '0-0-0-0')
-        expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
+      if (key !== '0-0-0-0') expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
     }
   });
 

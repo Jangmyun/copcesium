@@ -33,10 +33,7 @@ export function getCullingVolume(camera: Cesium.Camera): Cesium.CullingVolume {
   return camera.frustum.computeCullingVolume(camera.positionWC, camera.directionWC, camera.upWC);
 }
 
-export function isInFrustum(
-  sphere: Cesium.BoundingSphere,
-  cullingVolume: Cesium.CullingVolume,
-): boolean {
+export function isInFrustum(sphere: Cesium.BoundingSphere, cullingVolume: Cesium.CullingVolume): boolean {
   return cullingVolume.computeVisibility(sphere) !== Cesium.Intersect.OUTSIDE;
 }
 

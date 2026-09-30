@@ -23,12 +23,7 @@ import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
-import {
-  getCullingVolume,
-  getNodeBoundingSphere,
-  isInFrustum,
-  type ProjectToCartesian,
-} from './lod/boundingVolume';
+import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
@@ -66,7 +61,10 @@ function validateOpacity(value: number): number {
  * externally-supplied `WorkerPool` overrides even that.
  */
 type OpenEndedOption =
-  'classificationFilter' | 'intensityRange' | 'maxCacheBytes' | 'maxConcurrentRequests';
+  | 'classificationFilter'
+  | 'intensityRange'
+  | 'maxCacheBytes'
+  | 'maxConcurrentRequests';
 
 type ResolvedOptions = Required<Omit<CopcDataSourceOptions, OpenEndedOption>> &
   Pick<CopcDataSourceOptions, OpenEndedOption>;
@@ -154,11 +152,7 @@ export class CopcDataSource {
    *  backoff — this getter makes exactly one attempt (#139). */
   private readonly _pageGetter: (begin: number, end: number) => Promise<Uint8Array>;
   /** Bounded rolling samples per pipeline stage; see `stats`. */
-  private readonly _stageSamples: Record<StageName, number[]> = {
-    fetch: [],
-    decode: [],
-    upload: [],
-  };
+  private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
   /** Monotonic completion counts. Kept apart from `_stageSamples` because that
    *  window is capped at `STAGE_SAMPLE_WINDOW` for the percentiles' sake, and
    *  reading its length back as a total silently pins every long session at
@@ -210,10 +204,7 @@ export class CopcDataSource {
     this._style = {
       pixelSize: options.pixelSize,
       colorMode: COLOR_MODE[options.colorMode],
-      intensityRange: new Cesium.Cartesian2(
-        options.intensityRange?.[0] ?? 0,
-        options.intensityRange?.[1] ?? 1,
-      ),
+      intensityRange: new Cesium.Cartesian2(options.intensityRange?.[0] ?? 0, options.intensityRange?.[1] ?? 1),
       classMask: buildClassMask(options.classificationFilter),
       heightOffset: 0,
       opacity: validateOpacity(options.opacity),
@@ -281,15 +272,7 @@ export class CopcDataSource {
 
     const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolved.concurrency);
 
-    const dataSource = new CopcDataSource(
-      url,
-      viewer,
-      hierarchy,
-      resolved,
-      project,
-      pool,
-      !workerPool,
-    );
+    const dataSource = new CopcDataSource(url, viewer, hierarchy, resolved, project, pool, !workerPool);
 
     // Deferred until after the initial camera framing (if any) so the fly-to
     // doesn't spend a debounce cycle computing LoD for wherever the camera
@@ -303,12 +286,8 @@ export class CopcDataSource {
   }
 
   private _startListening(): void {
-    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() =>
-      this._onPreRender(),
-    );
-    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() =>
-      this._onMoveEnd(),
-    );
+    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
+    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
   }
 
   /** Flies the camera to the loaded dataset's root bounding sphere. */
@@ -487,12 +466,13 @@ export class CopcDataSource {
         }
       }
 
-      // Prefetched-but-not-shown nodes are pinned too, so the cache retains
-      // them for the pan that's expected to need them (#212) instead of
-      // evicting them on the very next pass that touches something else.
-      this._nodeCache.pin(
-        newPrefetchKeys.size === 0 ? stillShown : new Set([...stillShown, ...newPrefetchKeys]),
-      );
+      // Prefetched-but-not-shown nodes only get their recency bumped, not a
+      // pin: pinned keys are skipped by eviction, so pinning up to
+      // maxVisibleNodes + maxPrefetchNodes keys could leave nothing evictable
+      // and let the cache outgrow maxCacheNodes/maxCacheBytes. Bumped before
+      // pin() so the shown set still ends up most recent (#212).
+      for (const key of newPrefetchKeys) this._nodeCache.get(key);
+      this._nodeCache.pin(stillShown);
       this._selectedKeys = stillShown;
       if (sceneChanged) this._viewer.scene.requestRender();
     } finally {
@@ -553,10 +533,7 @@ export class CopcDataSource {
       // Queued alongside every other node this same _updateLoD() pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._rangeFetcher.fetch(
-        node.pointDataOffset,
-        node.pointDataOffset + node.pointDataLength,
-      );
+      const rangeTask = this._rangeFetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
       this._cancels.set(key, rangeTask.cancel);
       const fetchStart = performance.now();
       const compressedBytes = await rangeTask;
@@ -587,14 +564,9 @@ export class CopcDataSource {
       // work happens on the first frame the node is drawn, because that is
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(
-        renderData,
-        boundingSphere,
-        this._style,
-        (start, end) => {
-          if (!this._destroyed) this._recordStage('upload', start, end);
-        },
-      );
+      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style, (start, end) => {
+        if (!this._destroyed) this._recordStage('upload', start, end);
+      });
       if (this._destroyed) {
         primitive.destroy();
         return;
@@ -825,11 +797,7 @@ export class CopcDataSource {
 
   private _stageTiming(stage: StageName): StageTiming {
     const sorted = [...this._stageSamples[stage]].sort((a, b) => a - b);
-    return {
-      count: this._stageCounts[stage],
-      p50: percentile(sorted, 0.5),
-      p95: percentile(sorted, 0.95),
-    };
+    return { count: this._stageCounts[stage], p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
   }
 
   /**
