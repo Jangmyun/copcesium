@@ -102,7 +102,7 @@ Cesium also renders into an element you provide, which needs an explicit height 
 </style>
 
 <div id="cesiumContainer"></div>
-<script type="module" src="/main.ts"></script>
+<script type="module" src="/src/main.ts"></script>
 ```
 
 On another bundler, do the same two things by hand: copy `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}` into your static output, and point Cesium at them before the first `import`:
@@ -114,6 +114,7 @@ window.CESIUM_BASE_URL = '/cesium/';
 ## Quick start
 
 ```ts
+// src/main.ts
 import * as Cesium from 'cesium';
 import { CopcDataSource } from 'copcesium';
 

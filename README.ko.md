@@ -102,7 +102,7 @@ export default defineConfig({ plugins: [cesium()] });
 </style>
 
 <div id="cesiumContainer"></div>
-<script type="module" src="/main.ts"></script>
+<script type="module" src="/src/main.ts"></script>
 ```
 
 다른 번들러를 쓴다면 같은 두 가지를 직접 해주면 됩니다. `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}`를 정적 출력 경로로 복사하고, 첫 `import` 전에 Cesium이 그곳을 보도록 지정합니다:
@@ -114,6 +114,7 @@ window.CESIUM_BASE_URL = '/cesium/';
 ## 빠른 시작
 
 ```ts
+// src/main.ts
 import * as Cesium from 'cesium';
 import { CopcDataSource } from 'copcesium';
 
