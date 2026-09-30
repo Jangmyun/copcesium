@@ -67,6 +67,8 @@ Every dataset it streams is public, and credited individually in [`examples/DATA
 
 ## Installation
 
+Install into an existing project (the examples below use Vite). From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor with a `package.json` or `node_modules`, leaving your project folder empty and reporting no error.
+
 ```bash
 npm install copcesium cesium
 ```
@@ -76,8 +78,6 @@ npm install copcesium cesium
 ## Setup
 
 copcesium itself needs no setup — its Worker and WASM are inlined into the published `.mjs`, so there's no side asset to wire up. **CesiumJS does**: it fetches `Workers/`, `Assets/`, `Widgets/`, and `ThirdParty/` at runtime, and a bundler won't find those on its own. Skipping this step leaves a blank page and 404s in the console.
-
-These snippets assume an existing Vite project. From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor that has one, leaving your project folder empty and reporting no error.
 
 With Vite, [`vite-plugin-cesium`](https://www.npmjs.com/package/vite-plugin-cesium) handles it:
 
@@ -124,6 +124,8 @@ const dataSource = await CopcDataSource.load(
   viewer,
 );
 ```
+
+Run it with `npm run dev` (the script a Vite scaffold creates) and open the printed local URL.
 
 That's it — `load()` fetches the COPC hierarchy, auto-detects the source coordinate system from the file's WKT (when present), flies the camera to the dataset, and starts streaming nodes as the camera moves. See [`examples/basic-viewer/main.ts`](./examples/basic-viewer/main.ts) for a slightly larger example with a URL input, live `pixelSize`/`sseThreshold` sliders, and error handling.
 
