@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { CLASSIFICATION_COLORS, DEFAULT_CLASS_COLOR } from '../style/classificationColors';
+import { CLIP_MODE, MAX_CLIP_BOXES, MAX_CLIP_PLANES } from './clipping';
 
 /** Colour mode as the shader sees it. Kept in sync with `ColorMode` in types.ts. */
 export const COLOR_MODE = {
@@ -51,6 +52,40 @@ const classificationBranches = Object.entries(CLASSIFICATION_COLORS)
   .map(([code, rgb]) => `  if (c == ${code}) return ${toVec3(rgb)};`)
   .join('\n');
 
+/**
+ * Clip test over node-local positions; uniforms come from
+ * `writeLocalClipUniforms()`. Kept as its own chunk so every shader that
+ * draws or picks points can include it and apply the exact same cut.
+ *
+ * Inside = on the kept side of every plane AND (when any box is set) within
+ * at least one box. Boundaries count as inside.
+ */
+export const clipShaderChunk = `
+uniform int u_clipMode;
+uniform int u_clipPlaneCount;
+uniform vec4 u_clipPlanes[${MAX_CLIP_PLANES}];   // xyz = normal, w = node-local distance
+uniform int u_clipBoxCount;
+uniform mat4 u_clipBoxes[${MAX_CLIP_BOXES}];     // node-local -> unit-cube [-0.5, 0.5]^3
+
+bool clipKeeps(vec3 p) {
+  if (u_clipMode == ${CLIP_MODE.none}) return true;
+  bool inside = true;
+  for (int i = 0; i < ${MAX_CLIP_PLANES}; i++) {
+    if (i >= u_clipPlaneCount) break;
+    if (dot(u_clipPlanes[i].xyz, p) + u_clipPlanes[i].w < 0.0) inside = false;
+  }
+  if (inside && u_clipBoxCount > 0) {
+    bool inAnyBox = false;
+    for (int i = 0; i < ${MAX_CLIP_BOXES}; i++) {
+      if (i >= u_clipBoxCount) break;
+      vec3 q = (u_clipBoxes[i] * vec4(p, 1.0)).xyz;
+      if (all(lessThanEqual(abs(q), vec3(0.5)))) inAnyBox = true;
+    }
+    inside = inAnyBox;
+  }
+  return u_clipMode == ${CLIP_MODE.inside} ? inside : !inside;
+}`;
+
 export const vertexShaderSource = `
 in vec3 position;
 in vec4 color;
@@ -69,6 +104,7 @@ uniform ivec4 u_classMask[2];   // 256-bit allow-list, one bit per classificatio
 uniform float u_opacity;
 
 out vec4 v_color;
+${clipShaderChunk}
 
 vec3 classificationColor(int c) {
 ${classificationBranches}
@@ -95,7 +131,7 @@ bool classAllowed(int c) {
 void main() {
   int c = int(classification * 255.0 + 0.5);
 
-  if (!classAllowed(c)) {
+  if (!classAllowed(c) || !clipKeeps(position)) {
     // Outside clip space, so the point is culled before it ever rasterizes.
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     gl_PointSize = 0.0;
