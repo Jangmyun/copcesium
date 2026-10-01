@@ -1,3 +1,4 @@
+import type * as Cesium from 'cesium';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
 
 /**
@@ -19,6 +20,13 @@ export type ColorMode = 'rgb' | 'intensity' | 'classification' | 'elevation';
  * camera without inflating (and overdrawing) distant, already-dense nodes.
  */
 export type PointSizeMode = 'fixed' | 'attenuated';
+
+/**
+ * Which side of the clip regions is drawn. `'inside'` keeps points that are
+ * on the kept side of every `clipPlanes` plane and inside at least one
+ * `clipBoxes` box; `'outside'` keeps everything else.
+ */
+export type ClipMode = 'inside' | 'outside';
 
 /** Public options for CopcDataSource */
 export interface CopcDataSourceOptions {
@@ -115,6 +123,24 @@ export interface CopcDataSourceOptions {
    * 0-65535 mapping would render most files nearly black.
    */
   intensityRange?: [number, number];
+  /**
+   * Clipping planes in world (ECEF) coordinates, at most 6. A point is on a
+   * plane's kept side when `Cesium.Plane.getPointDistance(plane, point) >= 0`
+   * — i.e. the side the normal points to; `Cesium.Plane.fromPointNormal`
+   * builds one from a point on it. Tested against the drawn position, after
+   * `heightOffset`.
+   */
+  clipPlanes?: Cesium.Plane[];
+  /**
+   * Clipping boxes, at most 4. Each matrix maps the unit cube
+   * `[-0.5, 0.5]^3` to world (ECEF) coordinates — e.g.
+   * `Matrix4.multiplyByScale(Transforms.eastNorthUpToFixedFrame(center),
+   * dimensions, new Matrix4())` for an axis-aligned local box. Boundaries
+   * count as inside.
+   */
+  clipBoxes?: Cesium.Matrix4[];
+  /** Which side of `clipPlanes`/`clipBoxes` to draw. Default `'inside'`. */
+  clipMode?: ClipMode;
 }
 
 /** Result of auto-detecting a CRS from a WKT VLR */

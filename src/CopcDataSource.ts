@@ -10,6 +10,7 @@ import * as Cesium from 'cesium';
 import proj4 from 'proj4';
 import { Copc, type Hierarchy } from 'copc';
 import type {
+  ClipMode,
   ColorMode,
   CopcDataSourceOptions,
   CopcStats,
@@ -29,6 +30,7 @@ import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
 import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
+import { CLIP_MODE, createClipState, setClipBoxes, validateClipPlanes } from './renderer/clipping';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
@@ -41,7 +43,7 @@ import { NodeCache } from './cache/NodeCache';
 // consumer builds.
 import CopcWorker from './worker/worker.ts?worker&inline';
 
-export type { ColorMode, CopcDataSourceOptions };
+export type { ClipMode, ColorMode, CopcDataSourceOptions };
 
 /** Shared by the constructor and the live setter so an out-of-range or non-finite
  *  value can never slip in through either path. */
@@ -86,7 +88,9 @@ type OpenEndedOption =
   | 'classificationFilter'
   | 'intensityRange'
   | 'maxCacheBytes'
-  | 'maxConcurrentRequests';
+  | 'maxConcurrentRequests'
+  | 'clipPlanes'
+  | 'clipBoxes';
 
 type ResolvedOptions = Required<Omit<CopcDataSourceOptions, OpenEndedOption>> &
   Pick<CopcDataSourceOptions, OpenEndedOption>;
@@ -113,6 +117,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   autoFrame: true,
   colorMode: 'rgb',
   opacity: 1,
+  clipMode: 'inside',
 };
 
 // Total attempts per hierarchy sub-page before giving up, mirroring
@@ -239,6 +244,7 @@ export class CopcDataSource {
       classMask: buildClassMask(options.classificationFilter),
       heightOffset: 0,
       opacity: validateOpacity(options.opacity),
+      clip: createClipState(options.clipPlanes, options.clipBoxes, options.clipMode),
     };
     this._autoIntensityRange = options.intensityRange === undefined;
     this._nodeCache = new NodeCache(
@@ -815,6 +821,48 @@ export class CopcDataSource {
   }
   set heightOffset(value: number) {
     this._style.heightOffset = value;
+    this._viewer.scene.requestRender();
+  }
+
+  /**
+   * Clipping planes in world (ECEF) coordinates; see
+   * `CopcDataSourceOptions.clipPlanes`. Assign `undefined` or `[]` to clear.
+   * The planes are copied on assignment, so mutating them afterwards has no
+   * effect until they're assigned again.
+   */
+  get clipPlanes(): Cesium.Plane[] {
+    return this._style.clip.planes.map((plane) => Cesium.Plane.clone(plane));
+  }
+  set clipPlanes(value: Cesium.Plane[] | undefined) {
+    this._style.clip.planes = validateClipPlanes(value);
+    this._clipChanged();
+  }
+
+  /**
+   * Clipping boxes, each mapping the unit cube `[-0.5, 0.5]^3` to world
+   * (ECEF); see `CopcDataSourceOptions.clipBoxes`. Assign `undefined` or
+   * `[]` to clear. Copied on assignment, like `clipPlanes`.
+   */
+  get clipBoxes(): Cesium.Matrix4[] {
+    return this._style.clip.boxes.map((box) => Cesium.Matrix4.clone(box));
+  }
+  set clipBoxes(value: Cesium.Matrix4[] | undefined) {
+    setClipBoxes(this._style.clip, value);
+    this._clipChanged();
+  }
+
+  /** Which side of the clip regions is drawn. */
+  get clipMode(): ClipMode {
+    return this._options.clipMode;
+  }
+  set clipMode(value: ClipMode) {
+    this._options.clipMode = value;
+    this._style.clip.mode = CLIP_MODE[value];
+    this._clipChanged();
+  }
+
+  private _clipChanged(): void {
+    this._style.clip.version++;
     this._viewer.scene.requestRender();
   }
 

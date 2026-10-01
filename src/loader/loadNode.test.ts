@@ -3,6 +3,7 @@ import * as Cesium from 'cesium';
 import { createNodePrimitive } from './loadNode';
 import { PointCloudPrimitive, type PointStyle } from '../renderer/PointCloudPrimitive';
 import { COLOR_MODE, SIZE_MODE, buildClassMask } from '../renderer/shaders';
+import { createClipState } from '../renderer/clipping';
 import type { NodeRenderData } from '../types';
 
 // Mock render data, standing in for what a Worker will eventually produce.
@@ -29,6 +30,7 @@ function makeStyle(pixelSize = 2): PointStyle {
     classMask: buildClassMask(undefined),
     heightOffset: 0,
     opacity: 1,
+    clip: createClipState(undefined, undefined, 'inside'),
   };
 }
 
