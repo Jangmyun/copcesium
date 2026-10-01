@@ -9,6 +9,7 @@
  */
 import * as Cesium from 'cesium';
 import { vertexShaderSource, fragmentShaderSource } from './shaders';
+import type { EyeDomeLighting } from './EyeDomeLighting';
 import type { NodeRenderData } from '../types';
 
 /**
@@ -94,6 +95,7 @@ export class PointCloudPrimitive {
   private _pointCount: number;
   private _boundingSphere: Cesium.BoundingSphere;
   private _style: PointStyle;
+  private _edl: EyeDomeLighting | null;
   public show: boolean;
   private _destroyed: boolean;
   private _cmd: DrawCommandLike | null;
@@ -107,6 +109,7 @@ export class PointCloudPrimitive {
     boundingSphere: Cesium.BoundingSphere,
     style: PointStyle,
     onGpuInit?: (startedAt: number, endedAt: number) => void,
+    edl?: EyeDomeLighting,
   ) {
     this._positions = renderData.positions;
     this._origin = renderData.origin;
@@ -123,6 +126,7 @@ export class PointCloudPrimitive {
     this._pointCount = renderData.pointCount;
     this._boundingSphere = boundingSphere;
     this._style = style;
+    this._edl = edl ?? null;
     this.show = true;
     this._destroyed = false;
     this._cmd = null;
@@ -164,7 +168,9 @@ export class PointCloudPrimitive {
         this._appliedOpaque = opaque;
       }
     }
-    frameState.commandList.push(this._cmd);
+    frameState.commandList.push(
+      this._edl && this._appliedOpaque ? this._edl.apply(frameState, this._cmd!) : this._cmd,
+    );
   }
 
   // RenderState.fromCache memoizes by contents, so this is cheap to call on

@@ -148,3 +148,63 @@ in vec4 v_color;
 void main() {
   out_FragColor = v_color;
 }`;
+
+// Eye-Dome Lighting composite, adapted from CesiumJS's
+// Shaders/PostProcessStages/PointCloudEyeDomeLighting.glsl (Apache-2.0, see
+// THIRD_PARTY_LICENSES.md). Runs as a viewport quad over the offscreen
+// colour/depth pair EyeDomeLighting renders the points into: darkens each
+// point by how far its 4 neighbours (at u_radiusAndStrength.x pixels) sit in
+// front of it in log2 eye depth, then writes the point's own depth back so
+// terrain and other scene objects still occlude it.
+export const edlCompositeShaderSource = `
+uniform sampler2D u_colorTexture;
+uniform sampler2D u_depthTexture;
+uniform vec2 u_radiusAndStrength;
+in vec2 v_textureCoordinates;
+
+vec2 neighborContribution(float log2Depth, vec2 offset) {
+  float dist = u_radiusAndStrength.x;
+  vec2 texCoordOrig = v_textureCoordinates + offset * dist;
+  vec2 texCoord0 = v_textureCoordinates + offset * floor(dist);
+  vec2 texCoord1 = v_textureCoordinates + offset * ceil(dist);
+
+  float depth0 = czm_unpackDepth(texture(u_depthTexture, texCoord0));
+  float depth1 = czm_unpackDepth(texture(u_depthTexture, texCoord1));
+
+  // 0.0 is the cleared value: no point there to compare against.
+  if (depth0 == 0.0 || depth1 == 0.0) {
+    return vec2(0.0);
+  }
+
+  float depthMix = mix(depth0, depth1, fract(dist));
+  vec4 eyeCoordinate = czm_windowToEyeCoordinates(texCoordOrig, depthMix);
+  return vec2(max(0.0, log2Depth - log2(-eyeCoordinate.z / eyeCoordinate.w)), 1.0);
+}
+
+void main() {
+  float depth = czm_unpackDepth(texture(u_depthTexture, v_textureCoordinates));
+  if (depth == 0.0) {
+    discard;
+  }
+
+  vec4 eyeCoordinate = czm_windowToEyeCoordinates(gl_FragCoord.xy, depth);
+  eyeCoordinate /= eyeCoordinate.w;
+  float log2Depth = log2(-eyeCoordinate.z);
+
+  vec4 color = texture(u_colorTexture, v_textureCoordinates);
+
+  vec2 texelSize = 1.0 / czm_viewport.zw;
+  vec2 responseAndCount = vec2(0.0);
+  responseAndCount += neighborContribution(log2Depth, vec2(-texelSize.x, 0.0));
+  responseAndCount += neighborContribution(log2Depth, vec2(+texelSize.x, 0.0));
+  responseAndCount += neighborContribution(log2Depth, vec2(0.0, -texelSize.y));
+  responseAndCount += neighborContribution(log2Depth, vec2(0.0, +texelSize.y));
+
+  // max(): an isolated point has no neighbours to count, and 0.0 / 0.0 is
+  // undefined in GLSL — leave it unshaded instead.
+  float response = responseAndCount.x / max(responseAndCount.y, 1.0);
+  float shade = exp(-response * 300.0 * u_radiusAndStrength.y);
+  color.rgb *= shade;
+  out_FragColor = color;
+  gl_FragDepth = depth;
+}`;
