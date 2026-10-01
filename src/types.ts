@@ -1,3 +1,4 @@
+import type * as Cesium from 'cesium';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
 
 /**
@@ -206,4 +207,24 @@ export interface LoadedNode {
   key: string;
   primitive: PointCloudPrimitive;
   pointCount: number;
+}
+
+/**
+ * Result of `CopcDataSource.pickPoint()`. `nodeKey`/`pointIndex` identify the
+ * point within the currently-loaded hierarchy — they are only meaningful
+ * while that node stays resident; once evicted from the cache (or replaced by
+ * a LoD transition), the same indices may point at different data or nothing
+ * at all, so don't persist them across a reload or a long idle period.
+ */
+export interface PickedPoint {
+  /** Octree key of the node the point belongs to, e.g. `"2-1-0-3"`. */
+  nodeKey: string;
+  /** Index of the point within its node's buffers (`gl_VertexID` at draw time). */
+  pointIndex: number;
+  /** World-space (ECEF) position, including the live `heightOffset` shift. */
+  position: Cesium.Cartesian3;
+  /** Raw LAS classification code (0-255). */
+  classification: number;
+  /** Raw LAS intensity, or 0 for a file with no such dimension. */
+  intensity: number;
 }
