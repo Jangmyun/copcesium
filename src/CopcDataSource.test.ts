@@ -1238,6 +1238,56 @@ describe('CopcDataSource runtime API', () => {
     ).rejects.toThrow(RangeError);
   });
 
+  it('eyeDomeLighting options default off and are live-settable with a render request', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.eyeDomeLighting).toBe(false);
+    expect(ds.eyeDomeLightingStrength).toBe(1);
+    expect(ds.eyeDomeLightingRadius).toBe(1);
+    ds.eyeDomeLighting = true;
+    ds.eyeDomeLightingStrength = 0;
+    ds.eyeDomeLightingRadius = 2.5;
+    expect(ds.eyeDomeLighting).toBe(true);
+    expect(ds.eyeDomeLightingStrength).toBe(0);
+    expect(ds.eyeDomeLightingRadius).toBe(2.5);
+    expect(requestRender).toHaveBeenCalledTimes(3);
+  });
+
+  it('eyeDomeLighting strength/radius setters throw RangeError on invalid values', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+
+    expect(() => {
+      ds.eyeDomeLightingStrength = -1;
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.eyeDomeLightingStrength = NaN;
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.eyeDomeLightingRadius = 0;
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.eyeDomeLightingRadius = Infinity;
+    }).toThrow(RangeError);
+  });
+
+  it('load() rejects invalid eyeDomeLighting strength/radius options', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { eyeDomeLightingStrength: -1 }),
+    ).rejects.toThrow(RangeError);
+
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { eyeDomeLightingRadius: 0 }),
+    ).rejects.toThrow(RangeError);
+  });
+
   it('heightOffset get/set writes the shared ref and requests a render', async () => {
     mockCopc(undefined);
     const { viewer, requestRender } = makeFakeViewer();

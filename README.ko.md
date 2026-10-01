@@ -201,6 +201,9 @@ interface CopcDataSourceOptions {
   autoFrame?: boolean;
   colorMode?: 'rgb' | 'intensity' | 'classification' | 'elevation';
   opacity?: number;
+  eyeDomeLighting?: boolean;
+  eyeDomeLightingStrength?: number;
+  eyeDomeLightingRadius?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
 }
@@ -229,6 +232,9 @@ interface CopcDataSourceOptions {
 | `autoFrame` | `true` | `load()`가 resolve되기 전에 카메라를 데이터셋으로 비행시킬지 여부. 카메라를 직접 관리한다면 `false`로 설정하세요. |
 | `colorMode` | `'rgb'` | 포인트 색상 기준. `dataSource.colorMode`로 실시간 조정 가능. [스타일링](#스타일링) 참고. |
 | `opacity` | `1` | 모든 포인트 색상에 곱해지는 알파 값. `1` 미만이면 포인트당 깊이 정렬 없이 반투명하게 그립니다. `dataSource.opacity`로 실시간 조정 가능. |
+| `eyeDomeLighting` | `false` | 이 점군에만 Eye-Dome Lighting을 적용합니다. [Eye-Dome Lighting](#eye-dome-lighting) 참고. `dataSource.eyeDomeLighting`으로 실시간 조정 가능. |
+| `eyeDomeLightingStrength` | `1` | EDL 음영 강도, `0` 이상. `dataSource.eyeDomeLightingStrength`로 실시간 조정 가능. |
+| `eyeDomeLightingRadius` | `1` | EDL이 주변 포인트를 샘플링하는 거리(CSS 픽셀), `0`보다 커야 함. `dataSource.eyeDomeLightingRadius`로 실시간 조정 가능. |
 | `classificationFilter` | 전체 | 그릴 LAS 분류 코드 목록. 나머지는 그리지 않습니다. `dataSource.classificationFilter`로 실시간 조정 가능. |
 | `intensityRange` | 자동 | `'intensity'` 램프의 양 끝에 대응하는 원시 intensity 값. 생략하면 노드가 로드될 때마다 `[0, 지금까지 본 최댓값]`으로 넓어집니다. |
 
@@ -255,6 +261,9 @@ class CopcDataSource {
   sseThreshold: number;
   colorMode: ColorMode;
   opacity: number;
+  eyeDomeLighting: boolean;
+  eyeDomeLightingStrength: number;
+  eyeDomeLightingRadius: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
   heightOffset: number;
@@ -277,6 +286,9 @@ class CopcDataSource {
 | `sseThreshold` | get/set. 값을 설정하면 즉시 LoD 재선택 패스가 실행됩니다. |
 | `colorMode` | get/set. 다음 프레임에 로드된 모든 노드가 다시 칠해집니다 — 재요청도 재디코딩도 없습니다. |
 | `opacity` | get/set. 현재 렌더링 중인 모든 노드의 투명도를 재로드 없이 즉시 갱신합니다. 0-1 범위를 벗어나면 `RangeError`를 던집니다. |
+| `eyeDomeLighting` | get/set. 재로드 없이 다음 프레임부터 EDL을 켜거나 끕니다. |
+| `eyeDomeLightingStrength` | get/set. 음수이거나 유한한 값이 아니면 `RangeError`를 던집니다. |
+| `eyeDomeLightingRadius` | get/set. 유한한 양수가 아니면 `RangeError`를 던집니다. |
 | `classificationFilter` | get/set. `undefined`를 넣으면 다시 전부 그립니다. 0-255 범위를 벗어난 값에는 `RangeError`를 던집니다. |
 | `intensityRange` | get/set. `undefined`를 넣으면 다시 자동 범위로 돌아갑니다. |
 | `heightOffset` | get/set. 로드된 모든 포인트에 적용되는 수직 오프셋(미터). 로드 후 지오이드/수직 기준면 불일치를 손으로 보정할 때 씁니다. 지오메트리가 아니라 모델 행렬을 옮기므로 재로드 없이 즉시 반영됩니다. 기본값 `0`. |
@@ -340,6 +352,21 @@ ds.opacity = 0.5;                  // 0..1, 1 미만이면 알파 블렌딩
 | 6 | Building | | |
 
 필터로 걸러진 포인트는 vertex 셰이더에서 버려집니다. 즉 필터링은 포인트를 **숨기는** 것이지 GPU 메모리를 회수하는 게 아닙니다.
+
+### Eye-Dome Lighting
+
+Eye-Dome Lighting(EDL)은 화면상 주변 포인트가 얼마나 앞에 있는지에 따라 각 포인트를 어둡게 칠해 윤곽과 형태를 드러냅니다. 색상이 없는 점군이나 `'intensity'`/`'classification'` 모드에서 효과가 가장 잘 보입니다.
+
+```ts
+ds.eyeDomeLighting = true;
+ds.eyeDomeLightingStrength = 1.5; // 0 이상, 기본값 1
+ds.eyeDomeLightingRadius = 2;     // CSS 픽셀, 기본값 1
+```
+
+- 이 데이터 소스의 포인트에만 적용됩니다. 지형·영상·다른 장면 객체에는 음영이 들어가지 않으며, 이들이 포인트를 가리는 관계도 그대로 유지됩니다.
+- `opacity < 1`로 그리는 포인트에는 EDL이 적용되지 않고 평소대로 렌더링됩니다.
+- WebGL2(또는 `WEBGL_draw_buffers`, `EXT_frag_depth` 확장)가 필요합니다. 없으면 음영 없이 그리고 경고를 한 번 출력합니다.
+- EDL을 켠 데이터 소스마다 화면 크기의 오프스크린 버퍼를 하나씩 따로 둡니다.
 
 ## 요구사항: HTTP Range Request와 CORS
 
