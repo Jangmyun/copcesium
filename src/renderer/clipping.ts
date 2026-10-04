@@ -34,6 +34,18 @@ export interface ClipState {
   version: number;
 }
 
+/**
+ * Maps a `ClipMode` to its shader value, throwing on anything else. Untyped
+ * JS could otherwise pass e.g. `'foo'`, which would index to `undefined`, reach
+ * the shader as 0 (`none`), and silently turn clipping off.
+ */
+export function validateClipMode(mode: ClipMode): number {
+  if (mode !== 'inside' && mode !== 'outside') {
+    throw new RangeError(`clipMode must be 'inside' or 'outside', got ${String(mode)}`);
+  }
+  return CLIP_MODE[mode];
+}
+
 export function createClipState(
   planes: Cesium.Plane[] | undefined,
   boxes: Cesium.Matrix4[] | undefined,
@@ -43,7 +55,7 @@ export function createClipState(
     planes: validateClipPlanes(planes),
     boxes: [],
     inverseBoxes: [],
-    mode: CLIP_MODE[mode],
+    mode: validateClipMode(mode),
     version: 0,
   };
   setClipBoxes(clip, boxes);

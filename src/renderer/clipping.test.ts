@@ -170,6 +170,12 @@ describe('clip state', () => {
     ).toThrow(RangeError);
   });
 
+  it('rejects an unknown clip mode', () => {
+    for (const mode of ['foo', 'none', 'toString', undefined, 1]) {
+      expect(() => createClipState(undefined, undefined, mode as never)).toThrow(RangeError);
+    }
+  });
+
   it('rejects a non-finite plane', () => {
     const bad = new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0);
     bad.distance = NaN;
