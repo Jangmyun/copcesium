@@ -54,8 +54,20 @@ interface CesiumPickingInternal {
 const CesiumPicking = Cesium as unknown as CesiumPickingInternal;
 interface CesiumContextDrawable {
   draw(command: unknown, passState: unknown): void;
-  uniformState: { updateCamera(camera: Cesium.Camera): void };
+  uniformState: {
+    updateCamera(camera: Cesium.Camera): void;
+    updateFrustum(frustum: PickFrustum): void;
+  };
 }
+/** The near/far-bearing subset of every Cesium frustum type (perspective,
+ *  orthographic, and their off-center variants) that `pickPoint()` tightens. */
+interface PickFrustum {
+  near: number;
+  far: number;
+  clone(): PickFrustum;
+}
+/** Floor for the pick pass's tightened near plane — see `pickPoint()`. */
+const MIN_PICK_NEAR = 1;
 /** `Scene.context` (the renderer `Context`) has no public type declaration either. */
 interface CesiumSceneInternal {
   context: unknown;
@@ -983,8 +995,10 @@ export class CopcDataSource {
     context.uniformState.updateCamera(scene.camera);
 
     // 1-based: slotToKey[slot - 1] === key — see decodePickColor()'s doc for
-    // why node slot 0 is reserved as "no hit".
+    // why node slot 0 is reserved as "no hit". Commands are collected first
+    // and drawn only after the frustum is tightened to exactly these nodes.
     const slotToKey: string[] = [];
+    const commands: unknown[] = [];
     for (const key of this._selectedKeys) {
       // Past these limits the pick encoding wraps and would silently report a
       // different point — see MAX_PICKABLE_NODE_SLOTS's doc comment.
@@ -995,9 +1009,12 @@ export class CopcDataSource {
       const cmd = node.primitive.preparePickCommand(context, slotToKey.length + 1, framebuffer);
       if (!cmd) continue;
       slotToKey.push(key);
-      context.draw(cmd, passState);
+      commands.push(cmd);
     }
     if (slotToKey.length === 0) return undefined;
+
+    this._tightenPickFrustum(scene, context, slotToKey);
+    for (const cmd of commands) context.draw(cmd, passState);
 
     const drawingBufferPos = CesiumPicking.SceneTransforms.transformWindowToDrawingBuffer(scene, windowPosition);
     const glX = Math.round(drawingBufferPos.x);
@@ -1042,6 +1059,45 @@ export class CopcDataSource {
       classification: attrs.classification,
       intensity: attrs.intensity,
     };
+  }
+
+  /**
+   * Narrows the pick pass's near/far to the depth range the drawn nodes
+   * actually span. The camera's own frustum runs 0.1 m–1e10 m, which leaves
+   * even a 24-bit pick depth buffer unable to order points kilometres away —
+   * the GPU depth test then keeps an arbitrary point instead of the front-most
+   * one. Depth is measured along the view direction (not Euclidean distance)
+   * so off-axis points near the screen edge are never clipped, and each
+   * sphere is widened by `|heightOffset|`, which shifts drawn positions but
+   * not the cached spheres. Leaves the uniforms untouched in a non-3D scene
+   * mode or for a frustum without plain near/far.
+   */
+  private _tightenPickFrustum(scene: Cesium.Scene, context: CesiumContextDrawable, keys: string[]): void {
+    if (scene.mode !== Cesium.SceneMode.SCENE3D) return;
+    const original = scene.camera.frustum as unknown as Partial<PickFrustum>;
+    if (typeof original.near !== 'number' || typeof original.far !== 'number' || typeof original.clone !== 'function') {
+      return;
+    }
+    const camPos = scene.camera.positionWC;
+    const camDir = scene.camera.directionWC;
+    const extra = Math.abs(this._style.heightOffset);
+    const toCenter = new Cesium.Cartesian3();
+    let near = Infinity;
+    let far = -Infinity;
+    for (const key of keys) {
+      const sphere = this._getSphere(key);
+      const depth = Cesium.Cartesian3.dot(Cesium.Cartesian3.subtract(sphere.center, camPos, toCenter), camDir);
+      const radius = sphere.radius + extra;
+      near = Math.min(near, depth - radius);
+      far = Math.max(far, depth + radius);
+    }
+    const frustum = (original as PickFrustum).clone();
+    // Camera inside (or right next to) a node drives `depth - radius` to zero
+    // or below; floor it rather than letting near collapse and squander the
+    // depth precision this exists to recover.
+    frustum.near = Math.max(near, MIN_PICK_NEAR, original.near);
+    frustum.far = Math.max(Math.min(far, original.far), frustum.near + 1);
+    context.uniformState.updateFrustum(frustum);
   }
 
   destroy(): void {
