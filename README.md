@@ -263,6 +263,7 @@ class CopcDataSource {
   readonly cacheSize: number;
   readonly stats: CopcStats;
   zoomTo(): Promise<void>;
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels?: number): PickedPoint | undefined;
   destroy(): void;
 }
 ```
@@ -285,7 +286,30 @@ class CopcDataSource {
 | `cacheSize` | Read-only. Nodes currently retained in the LRU cache. |
 | `stats` | Read-only. Snapshot of what this data source has transferred and how long each pipeline stage took — see [Measuring transfer](#measuring-transfer). |
 | `zoomTo()` | Flies the camera to the dataset's root bounding sphere. Called internally by `load()` when `autoFrame` is enabled; call it again yourself to re-frame later. |
+| `pickPoint()` | Finds the nearest currently-visible point under `windowPosition` (screen coordinates, e.g. from a `ScreenSpaceEventHandler`); see [Picking](#picking). |
 | `destroy()` | Tears down the Worker pool (unless it was externally provided), the node cache, and every loaded primitive. Idempotent. |
+
+### Picking
+
+`pickPoint()` identifies the nearest on-screen point under a screen position and returns its position and attributes:
+
+```ts
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+  const picked = ds.pickPoint(click.position);
+  if (picked) {
+    console.log(picked.position, picked.classification, picked.intensity);
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+```
+
+`tolerancePixels` (default `4`) widens the search around the exact pixel — points are near-zero-area dots, so an exact-pixel-only test misses far more often than it would against a filled shape.
+
+**Requires WebGL2.** Identifying which point was hit reads `gl_VertexID`, and fetching its position/classification/intensity reads a few bytes directly off the GPU buffers (`gl.getBufferSubData`) rather than keeping a full CPU copy of every loaded node around just in case it's picked. On a WebGL1 fallback context — an older browser, or a `Viewer` built with `contextOptions: { requestWebgl1: true }` — `pickPoint()` logs one warning and always returns `undefined`; every other part of this library (including rendering) still works fine there.
+
+`pickPoint()` respects the current render set: a point hidden by `classificationFilter`, culled by the view frustum, or belonging to a not-yet-loaded node can't be picked. The returned `nodeKey`/`pointIndex` identify the point only while its node stays cached — they aren't stable across a reload or eviction, so don't persist them.
+
+The pick pass depth-tests only this data source's own points, so a point hidden behind terrain or 3D Tiles can still be picked. If that matters, compare the result against `scene.pickPosition()` (or `scene.pick()`) at the same screen position.
 
 ### Measuring transfer
 

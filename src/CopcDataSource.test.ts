@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as Cesium from 'cesium';
 import type { Viewer } from 'cesium';
 import type { Hierarchy } from 'copc';
 import type { NodeRenderData } from './types';
@@ -1101,6 +1102,147 @@ describe('CopcDataSource update loop', () => {
     expect(workerPoolDestroy).toHaveBeenCalledTimes(1);
     expect(rangeFetcherDestroy).toHaveBeenCalledTimes(1);
     expect(removePrimitive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CopcDataSource.pickPoint', () => {
+  beforeEach(() => {
+    selectNodesMock.mockReturnValue([]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns undefined and warns once on a WebGL1-only context, without repeating the warning', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(ds.pickPoint(new Cesium.Cartesian2(1, 1))).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('WebGL2');
+  });
+
+  /** Loads one visible root node and stubs every GPU-touching piece of the
+   *  pick pass, leaving a real camera pose/frustum for the near/far math. The
+   *  camera sits `distance` m before the root sphere's center along its view
+   *  direction (0 = camera at the center, i.e. inside the node). */
+  async function setupPick(opts: { distance: number; heightOffset?: number; mode?: Cesium.SceneMode }) {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    if (opts.heightOffset !== undefined) ds.heightOffset = opts.heightOffset;
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    const { PickFramebuffer } = await import('./renderer/PickFramebuffer');
+    const { PointCloudPrimitive } = await import('./renderer/PointCloudPrimitive');
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(true);
+    vi.spyOn(PickFramebuffer.prototype, 'ensure').mockReturnValue({ framebuffer: {}, passState: {} } as never);
+    vi.spyOn(PickFramebuffer.prototype, 'clear').mockImplementation(() => {});
+    vi.spyOn(PickFramebuffer.prototype, 'readPixels').mockImplementation(() => new Uint8Array(9 * 9 * 4));
+    vi.spyOn(PointCloudPrimitive.prototype, 'preparePickCommand').mockReturnValue({} as never);
+    vi.spyOn(Cesium.SceneTransforms as unknown as Record<string, () => unknown>, 'transformWindowToDrawingBuffer').mockReturnValue(
+      new Cesium.Cartesian2(50, 50),
+    );
+
+    const sphere = (ds as unknown as { _getSphere(key: string): Cesium.BoundingSphere })._getSphere('0-0-0-0');
+    // Looking straight down at the node from above (Earth-center-inward).
+    const direction = Cesium.Cartesian3.negate(
+      Cesium.Cartesian3.normalize(sphere.center, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    const position = Cesium.Cartesian3.subtract(
+      sphere.center,
+      Cesium.Cartesian3.multiplyByScalar(direction, opts.distance, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    const frustum = new Cesium.PerspectiveFrustum({ fov: 1, aspectRatio: 1, near: 0.1, far: 1e10 });
+
+    const calls: string[] = [];
+    const updateFrustum = vi.fn((_f: Cesium.PerspectiveFrustum) => calls.push('updateFrustum'));
+    const scene = viewer.scene as unknown as Record<string, unknown>;
+    scene.drawingBufferWidth = 100;
+    scene.drawingBufferHeight = 100;
+    scene.mode = opts.mode ?? Cesium.SceneMode.SCENE3D;
+    Object.assign(scene.camera as object, { positionWC: position, directionWC: direction, frustum });
+    scene.context = {
+      uniformState: { updateCamera: vi.fn(() => calls.push('updateCamera')), updateFrustum },
+      draw: vi.fn(() => calls.push('draw')),
+    };
+    return { ds, sphere, frustum, calls, updateFrustum };
+  }
+
+  // Cesium leaves czm_* view/projection uniforms at whatever the last draw set
+  // — e.g. the Viewer's own scene.pick() off-center frustum — so pickPoint()
+  // must re-sync them to the live camera (then tighten near/far) before its
+  // own draws.
+  it('re-syncs the uniform state to the current camera before drawing the pick pass', async () => {
+    const { ds, calls } = await setupPick({ distance: 5000 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    expect(calls).toEqual(['updateCamera', 'updateFrustum', 'draw']);
+  });
+
+  // The pick target's depth can't order points across the camera's full
+  // 0.1 m–1e10 m range, so near/far are narrowed to the drawn nodes' spheres.
+  it("tightens the pick frustum's near/far to the drawn nodes' bounding spheres", async () => {
+    const { ds, sphere, frustum, updateFrustum } = await setupPick({ distance: 5000 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened).not.toBe(frustum); // cloned — the camera's own frustum is untouched
+    expect(frustum.near).toBe(0.1);
+    expect(frustum.far).toBe(1e10);
+    expect(tightened.near).toBeCloseTo(5000 - sphere.radius, 3);
+    expect(tightened.far).toBeCloseTo(5000 + sphere.radius, 3);
+  });
+
+  it('clamps near to 1 m when the camera is inside a drawn node', async () => {
+    const { ds, sphere, updateFrustum } = await setupPick({ distance: 0 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened.near).toBe(1);
+    expect(tightened.far).toBeCloseTo(sphere.radius, 3);
+  });
+
+  // heightOffset shifts drawn positions but not the cached spheres.
+  it('widens the depth range by |heightOffset|', async () => {
+    const { ds, sphere, updateFrustum } = await setupPick({ distance: 5000, heightOffset: -50 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened.near).toBeCloseTo(5000 - sphere.radius - 50, 3);
+    expect(tightened.far).toBeCloseTo(5000 + sphere.radius + 50, 3);
+  });
+
+  it('leaves the frustum alone outside 3D scene mode', async () => {
+    const { ds, calls, updateFrustum } = await setupPick({ distance: 5000, mode: Cesium.SceneMode.SCENE2D });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    expect(updateFrustum).not.toHaveBeenCalled();
+    expect(calls).toEqual(['updateCamera', 'draw']);
+  });
+
+  it('returns undefined after destroy(), without touching FeatureDetection', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    const supportsWebgl2 = vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2');
+    ds.destroy();
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(supportsWebgl2).not.toHaveBeenCalled();
   });
 });
 

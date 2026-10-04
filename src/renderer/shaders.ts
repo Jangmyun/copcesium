@@ -51,6 +51,34 @@ const classificationBranches = Object.entries(CLASSIFICATION_COLORS)
   .map(([code, rgb]) => `  if (c == ${code}) return ${toVec3(rgb)};`)
   .join('\n');
 
+// Shared by the main and pick vertex shaders so the two can't drift apart —
+// a point the pick pass would let through that the main pass culls (or vice
+// versa) would make picking silently disagree with what's on screen.
+const classAllowedSource = `
+// 256 codes packed into 8 int32 words: word = c / 32, bit = c % 32. Cesium's
+// uniform layer has no unsigned-int setter (createUniform throws on uvec*),
+// so the words are signed and "all allowed" is -1 rather than 0xFFFFFFFF.
+bool classAllowed(int c) {
+  int word = c >> 5;
+  int bits = u_classMask[word >> 2][word & 3];
+  return ((bits >> (c & 31)) & 1) != 0;
+}`;
+
+// Also shared for the same reason: the pick pass must rasterize points at
+// exactly the size the main pass draws them, or a click that visually lands
+// on a point could miss it (or hit a neighbor) in the pick pass.
+const pointSizeSource = `
+  vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
+
+  if (u_sizeMode == ${SIZE_MODE.attenuated}) {
+    // max(..., epsilon): a point essentially at the camera would otherwise
+    // divide by ~0 and blow up to a huge, GPU-hostile point size.
+    float distMeters = max(length(eyeRel), 1e-4);
+    gl_PointSize = clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize);
+  } else {
+    gl_PointSize = u_pixelSize;
+  }`;
+
 export const vertexShaderSource = `
 in vec3 position;
 in vec4 color;
@@ -82,15 +110,7 @@ vec3 elevationColor(float t) {
   if (t < 0.75) return mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (t - 0.50) * 4.0);
   return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (t - 0.75) * 4.0);
 }
-
-// 256 codes packed into 8 int32 words: word = c / 32, bit = c % 32. Cesium's
-// uniform layer has no unsigned-int setter (createUniform throws on uvec*),
-// so the words are signed and "all allowed" is -1 rather than 0xFFFFFFFF.
-bool classAllowed(int c) {
-  int word = c >> 5;
-  int bits = u_classMask[word >> 2][word & 3];
-  return ((bits >> (c & 31)) & 1) != 0;
-}
+${classAllowedSource}
 
 void main() {
   int c = int(classification * 255.0 + 0.5);
@@ -121,16 +141,7 @@ void main() {
   // rides in the model matrix. Reconstruct the eye-relative position the way
   // czm_translateRelativeToEye does, but from a single Float32 offset — the
   // precision comes from the double-precision origin baked into the matrix.
-  vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
-
-  if (u_sizeMode == ${SIZE_MODE.attenuated}) {
-    // max(..., epsilon): a point essentially at the camera would otherwise
-    // divide by ~0 and blow up to a huge, GPU-hostile point size.
-    float distMeters = max(length(eyeRel), 1e-4);
-    gl_PointSize = clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize);
-  } else {
-    gl_PointSize = u_pixelSize;
-  }
+${pointSizeSource}
 
   gl_Position = czm_modelViewProjectionRelativeToEye * vec4(eyeRel, 1.0);
 }`;
@@ -148,3 +159,82 @@ in vec4 v_color;
 void main() {
   out_FragColor = v_color;
 }`;
+
+/**
+ * Highest node slot / point index the pick encoding below can represent.
+ * `decodePickColor()`'s caller must keep concurrently-picked nodes at or
+ * under this count, and must not pick a node with more points than this —
+ * past it the index wraps and reports a different point's data.
+ *
+ * Split 24/8 rather than 16/16: a COPC node commonly holds more than 65,535
+ * points, while the slot count is bounded by the visible node set (default
+ * `maxVisibleNodes` 100).
+ */
+export const MAX_PICKABLE_NODE_SLOTS = 0xff;
+export const MAX_PICKABLE_POINT_INDEX = 0xffffff;
+
+// Reads gl_VertexID (WebGL2/GLSL ES 300 only), so point-level picking is a
+// WebGL2-only feature — see CopcDataSource.pickPoint()'s
+// FeatureDetection.supportsWebgl2 guard.
+export const pickVertexShaderSource = `
+in vec3 position;
+in float classification;  // UNSIGNED_BYTE, normalized -> code / 255
+
+uniform float u_pixelSize;
+uniform int u_sizeMode;
+uniform float u_attenuationFactor;
+uniform float u_minPixelSize;
+uniform float u_maxPixelSize;
+uniform ivec4 u_classMask[2];
+// 1-based: a decoded node slot of 0 unambiguously means "the framebuffer's
+// clear color", i.e. no hit — point index 0 of node slot 0 would otherwise be
+// indistinguishable from an untouched pixel.
+uniform int u_nodeSlot;
+
+flat out int v_pointIndex;
+flat out int v_nodeSlot;
+${classAllowedSource}
+
+void main() {
+  int c = int(classification * 255.0 + 0.5);
+  v_pointIndex = gl_VertexID;
+  v_nodeSlot = u_nodeSlot;
+
+  if (!classAllowed(c)) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    return;
+  }
+${pointSizeSource}
+
+  gl_Position = czm_modelViewProjectionRelativeToEye * vec4(eyeRel, 1.0);
+}`;
+
+export const pickFragmentShaderSource = `
+flat in int v_pointIndex;
+flat in int v_nodeSlot;
+
+void main() {
+  // Packs pointIndex (24-bit, RGB) and nodeSlot (8-bit, A) across the four
+  // RGBA8 channels — decoded by decodePickColor() below.
+  int idx = v_pointIndex;
+  int slot = v_nodeSlot;
+  out_FragColor = vec4(
+    float(idx & 255) / 255.0,
+    float((idx >> 8) & 255) / 255.0,
+    float((idx >> 16) & 255) / 255.0,
+    float(slot & 255) / 255.0
+  );
+}`;
+
+/** Mirrors `pickFragmentShaderSource`'s encoding. Returns `undefined` for a
+ *  pixel the pick pass never drew to (node slot 0 — see the shader's comment). */
+export function decodePickColor(
+  rgba: Uint8Array | Uint8ClampedArray,
+  offset = 0,
+): { pointIndex: number; nodeSlot: number } | undefined {
+  const nodeSlot = rgba[offset + 3]!;
+  if (nodeSlot === 0) return undefined;
+  const pointIndex = rgba[offset]! | (rgba[offset + 1]! << 8) | (rgba[offset + 2]! << 16);
+  return { pointIndex, nodeSlot };
+}

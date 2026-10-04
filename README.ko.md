@@ -263,6 +263,7 @@ class CopcDataSource {
   readonly cacheSize: number;
   readonly stats: CopcStats;
   zoomTo(): Promise<void>;
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels?: number): PickedPoint | undefined;
   destroy(): void;
 }
 ```
@@ -285,7 +286,30 @@ class CopcDataSource {
 | `cacheSize` | 읽기 전용. LRU 캐시에 현재 남아있는 노드 수. |
 | `stats` | 읽기 전용. 이 데이터소스가 지금까지 얼마나 전송했고 각 단계가 얼마나 걸렸는지에 대한 스냅샷 — [전송량 측정](#전송량-측정) 참고. |
 | `zoomTo()` | 카메라를 데이터셋의 루트 bounding sphere로 비행시킵니다. `autoFrame`이 켜져 있으면 `load()`가 내부적으로 호출하며, 나중에 다시 프레이밍하고 싶으면 직접 호출하면 됩니다. |
+| `pickPoint()` | 화면 좌표(예: `ScreenSpaceEventHandler`) 아래에서 가장 가까운 현재 화면에 보이는 점을 찾습니다. [Picking](#picking) 참고. |
 | `destroy()` | Worker 풀(외부에서 주입된 게 아니라면)과 노드 캐시, 로드된 모든 프리미티브를 정리합니다. 여러 번 호출해도 안전합니다. |
+
+### Picking
+
+`pickPoint()`는 화면 위치 아래에서 가장 가까운 점을 찾아 위치와 속성을 반환합니다.
+
+```ts
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+  const picked = ds.pickPoint(click.position);
+  if (picked) {
+    console.log(picked.position, picked.classification, picked.intensity);
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+```
+
+`tolerancePixels`(기본값 `4`)는 정확한 픽셀 주변으로 탐색 범위를 넓힙니다 — 포인트는 면적이 거의 0인 점이라, 정확히 한 픽셀만 검사하면 채워진 도형을 검사할 때보다 훨씬 자주 놓칩니다.
+
+**WebGL2가 필요합니다.** 어떤 점이 클릭됐는지 식별할 때 `gl_VertexID`를 읽고, 위치·분류·intensity를 가져올 때 GPU 버퍼에서 몇 바이트만 직접 읽습니다(`gl.getBufferSubData`) — picking을 위해 로드된 모든 노드의 전체 CPU 사본을 유지하는 대신 이 방식을 택했습니다. WebGL1로 폴백된 컨텍스트(구형 브라우저, 또는 `contextOptions: { requestWebgl1: true }`로 생성한 `Viewer`)에서는 `pickPoint()`가 경고를 한 번만 출력하고 항상 `undefined`를 반환합니다 — 렌더링을 포함한 라이브러리의 다른 모든 기능은 그 환경에서도 정상 동작합니다.
+
+`pickPoint()`는 현재 렌더링 상태를 그대로 따릅니다 — `classificationFilter`로 숨겨졌거나, 뷰 프러스텀에 잘렸거나, 아직 로드되지 않은 노드에 속한 점은 선택할 수 없습니다. 반환된 `nodeKey`/`pointIndex`는 해당 노드가 캐시에 남아있는 동안에만 그 점을 식별합니다 — 재로드나 축출 이후에는 유효하지 않으므로 별도로 저장해두지 마세요.
+
+pick 패스는 이 데이터소스의 점끼리만 깊이 테스트를 하므로, 지형이나 3D Tiles 뒤에 가려진 점도 선택될 수 있습니다. 이것이 문제라면 같은 화면 위치의 `scene.pickPosition()`(또는 `scene.pick()`) 결과와 비교해 걸러내세요.
 
 ### 전송량 측정
 
