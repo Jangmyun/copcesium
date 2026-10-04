@@ -201,6 +201,9 @@ interface CopcDataSourceOptions {
   autoFrame?: boolean;
   colorMode?: 'rgb' | 'intensity' | 'classification' | 'elevation';
   opacity?: number;
+  eyeDomeLighting?: boolean;
+  eyeDomeLightingStrength?: number;
+  eyeDomeLightingRadius?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
 }
@@ -229,6 +232,9 @@ interface CopcDataSourceOptions {
 | `autoFrame` | `true` | Whether `load()` flies the camera to the dataset before resolving. Set `false` if you're managing the camera yourself. |
 | `colorMode` | `'rgb'` | How points are coloured. Live-adjustable via `dataSource.colorMode`. See [Styling](#styling). |
 | `opacity` | `1` | Alpha multiplier applied to every point's colour. Below `1`, points draw translucent with no per-point depth sort. Live-adjustable via `dataSource.opacity`. |
+| `eyeDomeLighting` | `false` | Eye-Dome Lighting on this point cloud only. See [Eye-Dome Lighting](#eye-dome-lighting). Live-adjustable via `dataSource.eyeDomeLighting`. |
+| `eyeDomeLightingStrength` | `1` | EDL shading strength, `>= 0`. Live-adjustable via `dataSource.eyeDomeLightingStrength`. |
+| `eyeDomeLightingRadius` | `1` | Distance in CSS pixels at which EDL samples each point's neighbours, `> 0`. Live-adjustable via `dataSource.eyeDomeLightingRadius`. |
 | `classificationFilter` | all codes | LAS classification codes to draw; everything else is dropped. Live-adjustable via `dataSource.classificationFilter`. |
 | `intensityRange` | auto | Raw intensity values at the two ends of the `'intensity'` ramp. Grows to `[0, highest seen]` as nodes load when omitted. |
 
@@ -255,6 +261,9 @@ class CopcDataSource {
   sseThreshold: number;
   colorMode: ColorMode;
   opacity: number;
+  eyeDomeLighting: boolean;
+  eyeDomeLightingStrength: number;
+  eyeDomeLightingRadius: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
   heightOffset: number;
@@ -277,6 +286,9 @@ class CopcDataSource {
 | `sseThreshold` | Get/set. Triggers an immediate LoD re-selection pass when set. |
 | `colorMode` | Get/set. Repaints every loaded node on the next frame — no refetch, no re-decode. |
 | `opacity` | Get/set. Updates every currently-rendered node's translucency immediately, no reload. Throws `RangeError` outside 0-1. |
+| `eyeDomeLighting` | Get/set. Turns EDL on or off on the next frame, no reload. |
+| `eyeDomeLightingStrength` | Get/set. Throws `RangeError` if negative or non-finite. |
+| `eyeDomeLightingRadius` | Get/set. Throws `RangeError` if not a positive finite number. |
 | `classificationFilter` | Get/set. Assign `undefined` to draw everything again. Throws `RangeError` on a value outside 0-255. |
 | `intensityRange` | Get/set. Assign `undefined` to hand the range back to auto. |
 | `heightOffset` | Get/set. Vertical offset in meters applied to every loaded point, for manually correcting a geoid/vertical-datum mismatch after load — moves the model matrix, not the geometry, so it updates immediately with no reload. Defaults to `0`. |
@@ -345,6 +357,31 @@ light grey.
 
 Filtered-out points are discarded in the vertex shader, so filtering hides
 points rather than reclaiming their GPU memory.
+
+### Eye-Dome Lighting
+
+Eye-Dome Lighting (EDL) darkens each point by how far its screen neighbours sit
+in front of it, which brings out edges and shape — most visibly on clouds with
+no colour, or in `'intensity'`/`'classification'` mode.
+
+```ts
+ds.eyeDomeLighting = true;
+ds.eyeDomeLightingStrength = 1.5; // >= 0, default 1
+ds.eyeDomeLightingRadius = 2;     // CSS pixels, default 1
+```
+
+- It applies to this data source's points only. Terrain, imagery, and other
+  scene objects are not shaded, and still occlude the points.
+- Points drawn with `opacity < 1` skip EDL and render as usual.
+- It needs WebGL2 (or the `WEBGL_draw_buffers` and `EXT_frag_depth`
+  extensions). Without them the points draw unshaded and a warning is logged
+  once.
+- Each data source with EDL on keeps its own screen-sized offscreen target,
+  released when EDL is turned off.
+- The points are rendered single-sampled for EDL, as in Cesium's own
+  point-cloud EDL, so they lose MSAA edge smoothing while it is on: point
+  edges look harder even at `eyeDomeLightingStrength = 0`. With
+  `viewer.scene.msaaSamples = 1`, strength `0` matches EDL off exactly.
 
 ## Requirements: HTTP Range Requests and CORS
 

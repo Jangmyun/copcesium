@@ -1,5 +1,6 @@
 import type * as Cesium from 'cesium';
 import { PointCloudPrimitive, type PointStyle } from '../renderer/PointCloudPrimitive';
+import type { EyeDomeLighting } from '../renderer/EyeDomeLighting';
 import type { NodeRenderData } from '../types';
 
 /**
@@ -19,6 +20,7 @@ export async function createNodePrimitive(
   boundingSphere: Cesium.BoundingSphere,
   style: PointStyle,
   onGpuInit?: (startedAt: number, endedAt: number) => void,
+  edl?: EyeDomeLighting,
 ): Promise<PointCloudPrimitive> {
-  return new PointCloudPrimitive(renderData, boundingSphere, style, onGpuInit);
+  return new PointCloudPrimitive(renderData, boundingSphere, style, onGpuInit, edl);
 }

@@ -99,3 +99,39 @@ describe('PointCloudPrimitive GPU-init timing', () => {
     expect(onGpuInit).not.toHaveBeenCalled();
   });
 });
+
+describe('PointCloudPrimitive eye-dome lighting', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('submits what EDL returns for an opaque command', () => {
+    const derived = {};
+    const edl = { apply: vi.fn(() => derived) };
+    const primitive = new PointCloudPrimitive(renderData, sphere, style, undefined, edl as never);
+
+    const f = frame();
+    primitive.update(f);
+
+    expect(edl.apply).toHaveBeenCalledTimes(1);
+    expect(f.commandList).toEqual([derived]);
+  });
+
+  // EDL's composite has no per-pixel alpha ordering; translucent points stay
+  // on the normal translucent pass.
+  it('bypasses EDL while opacity < 1', () => {
+    const edl = { apply: vi.fn() };
+    const translucent = { ...style, opacity: 0.5 };
+    const primitive = new PointCloudPrimitive(
+      renderData,
+      sphere,
+      translucent,
+      undefined,
+      edl as never,
+    );
+
+    const f = frame();
+    primitive.update(f);
+
+    expect(edl.apply).not.toHaveBeenCalled();
+    expect(f.commandList).toHaveLength(1);
+  });
+});

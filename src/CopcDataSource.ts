@@ -28,6 +28,7 @@ import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCar
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
+import { EyeDomeLighting } from './renderer/EyeDomeLighting';
 import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
@@ -57,6 +58,22 @@ function validateOpacity(value: number): number {
 function validateAttenuationFactor(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`attenuationFactor must be a positive finite number, got ${value}`);
+  }
+  return value;
+}
+
+/** Shared by the constructor and the live setter. */
+function validateEdlStrength(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`eyeDomeLightingStrength must be a non-negative finite number, got ${value}`);
+  }
+  return value;
+}
+
+/** Shared by the constructor and the live setter. */
+function validateEdlRadius(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`eyeDomeLightingRadius must be a positive finite number, got ${value}`);
   }
   return value;
 }
@@ -113,6 +130,9 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   autoFrame: true,
   colorMode: 'rgb',
   opacity: 1,
+  eyeDomeLighting: false,
+  eyeDomeLightingStrength: 1,
+  eyeDomeLightingRadius: 1,
 };
 
 // Total attempts per hierarchy sub-page before giving up, mirroring
@@ -191,6 +211,7 @@ export class CopcDataSource {
   private readonly _options: ResolvedOptions;
   private readonly _project: ProjectToCartesian;
   private readonly _style: PointStyle;
+  private readonly _edl: EyeDomeLighting;
   /** True while `intensityRange` is unpinned and grows with each node loaded. */
   private _autoIntensityRange: boolean;
   private readonly _nodeCache: NodeCache;
@@ -240,6 +261,12 @@ export class CopcDataSource {
       heightOffset: 0,
       opacity: validateOpacity(options.opacity),
     };
+    this._edl = new EyeDomeLighting(
+      this._getSphere('0-0-0-0'),
+      options.eyeDomeLighting,
+      validateEdlStrength(options.eyeDomeLightingStrength),
+      validateEdlRadius(options.eyeDomeLightingRadius),
+    );
     this._autoIntensityRange = options.intensityRange === undefined;
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
@@ -595,9 +622,15 @@ export class CopcDataSource {
       // work happens on the first frame the node is drawn, because that is
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style, (start, end) => {
-        if (!this._destroyed) this._recordStage('upload', start, end);
-      });
+      const primitive = await createNodePrimitive(
+        renderData,
+        boundingSphere,
+        this._style,
+        (start, end) => {
+          if (!this._destroyed) this._recordStage('upload', start, end);
+        },
+        this._edl,
+      );
       if (this._destroyed) {
         primitive.destroy();
         return;
@@ -757,6 +790,33 @@ export class CopcDataSource {
     this._viewer.scene.requestRender();
   }
 
+  /** Eye-Dome Lighting on/off; see `CopcDataSourceOptions.eyeDomeLighting`. */
+  get eyeDomeLighting(): boolean {
+    return this._edl.enabled;
+  }
+  set eyeDomeLighting(value: boolean) {
+    this._edl.enabled = value;
+    this._viewer.scene.requestRender();
+  }
+
+  /** EDL shading strength, `>= 0`. */
+  get eyeDomeLightingStrength(): number {
+    return this._edl.strength;
+  }
+  set eyeDomeLightingStrength(value: number) {
+    this._edl.strength = validateEdlStrength(value);
+    this._viewer.scene.requestRender();
+  }
+
+  /** EDL neighbour sampling distance, in CSS pixels, `> 0`. */
+  get eyeDomeLightingRadius(): number {
+    return this._edl.radius;
+  }
+  set eyeDomeLightingRadius(value: number) {
+    this._edl.radius = validateEdlRadius(value);
+    this._viewer.scene.requestRender();
+  }
+
   /**
    * How points are coloured. Every mode reads attributes already uploaded to
    * the GPU, so switching costs one uniform update — no refetch, no re-decode,
@@ -907,5 +967,6 @@ export class CopcDataSource {
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
+    this._edl.destroy();
   }
 }
