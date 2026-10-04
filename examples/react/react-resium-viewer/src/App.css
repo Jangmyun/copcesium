@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /* Ported from the original copcesium prototype UI (icon rail + tabbed panel,
    dark/light theme, footer status bar) — see the project's `copc` prototype
    repo. Only the visual shell moved; every control here is wired to a
