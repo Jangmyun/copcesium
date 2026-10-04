@@ -1,5 +1,5 @@
 /**
- * Offscreen RGBA8 + depth framebuffer used only by `CopcDataSource.pickPoint()`.
+ * Offscreen RGBA8 + 24-bit depth framebuffer used only by `CopcDataSource.pickPoint()`.
  * Rendered into with the exact same viewport/view/projection as the visible
  * scene — full canvas size, resized in lockstep via `ensure()` — so a pixel
  * read back from it lines up exactly with what's on screen. Depth testing
@@ -38,10 +38,10 @@ interface CesiumInternal {
   Framebuffer: new (opts: {
     context: unknown;
     colorTextures: CesiumDestroyable[];
-    depthTexture: CesiumDestroyable;
+    depthStencilTexture: CesiumDestroyable;
   }) => CesiumFramebufferLike;
-  PixelFormat: { RGBA: unknown; DEPTH_COMPONENT: unknown };
-  PixelDatatype: { UNSIGNED_BYTE: unknown; UNSIGNED_SHORT: unknown };
+  PixelFormat: { RGBA: unknown; DEPTH_STENCIL: unknown };
+  PixelDatatype: { UNSIGNED_BYTE: unknown; UNSIGNED_INT_24_8: unknown };
   PassState: new (context: unknown) => { framebuffer: unknown; viewport: unknown };
   ClearCommand: new (opts: { color: unknown; depth: unknown; framebuffer: unknown }) => {
     execute(context: unknown, passState?: unknown): void;
@@ -68,16 +68,25 @@ export class PickFramebuffer {
         pixelFormat: CesiumAny.PixelFormat.RGBA,
         pixelDatatype: CesiumAny.PixelDatatype.UNSIGNED_BYTE,
       });
-      const depthTexture = new CesiumAny.Texture({
+      // 24-bit depth (packed with an unused 8-bit stencil — WebGL2 has no
+      // standalone 24-bit depth texture format Cesium exposes): 16 bits can't
+      // order points kilometres away even with pickPoint()'s tightened
+      // near/far. The pick pass is WebGL2-only already, so this is always
+      // available.
+      const depthStencilTexture = new CesiumAny.Texture({
         context,
         width,
         height,
-        pixelFormat: CesiumAny.PixelFormat.DEPTH_COMPONENT,
-        pixelDatatype: CesiumAny.PixelDatatype.UNSIGNED_SHORT,
+        pixelFormat: CesiumAny.PixelFormat.DEPTH_STENCIL,
+        pixelDatatype: CesiumAny.PixelDatatype.UNSIGNED_INT_24_8,
       });
       // destroyAttachments defaults to true, so `this._framebuffer.destroy()`
       // tears both textures down too — no separate handles to track.
-      this._framebuffer = new CesiumAny.Framebuffer({ context, colorTextures: [colorTexture], depthTexture });
+      this._framebuffer = new CesiumAny.Framebuffer({
+        context,
+        colorTextures: [colorTexture],
+        depthStencilTexture,
+      });
       this._width = width;
       this._height = height;
       const passState = new CesiumAny.PassState(context);
