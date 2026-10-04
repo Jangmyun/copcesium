@@ -110,7 +110,9 @@ export interface CopcDataSourceOptions {
    * and other scene objects are unaffected and still occlude the points.
    * Points drawn with `opacity < 1` skip it. Needs WebGL2 (or the
    * `WEBGL_draw_buffers` + `EXT_frag_depth` extensions); without them the
-   * points are drawn unshaded and a warning is logged once. Default `false`.
+   * points are drawn unshaded and a warning is logged once. The points are
+   * rendered single-sampled for EDL (as in Cesium's own point-cloud EDL), so
+   * they lose MSAA edge smoothing while it is on. Default `false`.
    */
   eyeDomeLighting?: boolean;
   /** EDL shading strength, `>= 0`; `0` is no shading. Default `1`. */

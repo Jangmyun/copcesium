@@ -366,7 +366,8 @@ ds.eyeDomeLightingRadius = 2;     // CSS 픽셀, 기본값 1
 - 이 데이터 소스의 포인트에만 적용됩니다. 지형·영상·다른 장면 객체에는 음영이 들어가지 않으며, 이들이 포인트를 가리는 관계도 그대로 유지됩니다.
 - `opacity < 1`로 그리는 포인트에는 EDL이 적용되지 않고 평소대로 렌더링됩니다.
 - WebGL2(또는 `WEBGL_draw_buffers`, `EXT_frag_depth` 확장)가 필요합니다. 없으면 음영 없이 그리고 경고를 한 번 출력합니다.
-- EDL을 켠 데이터 소스마다 화면 크기의 오프스크린 버퍼를 하나씩 따로 둡니다.
+- EDL을 켠 데이터 소스마다 화면 크기의 오프스크린 버퍼를 하나씩 따로 두며, EDL을 끄면 해제합니다.
+- Cesium의 점군 EDL과 마찬가지로 EDL용 렌더링은 단일 샘플이라, EDL을 켜 두는 동안 포인트에 MSAA 가장자리 보정이 적용되지 않습니다. 그래서 `eyeDomeLightingStrength = 0`이어도 포인트 가장자리가 더 각져 보입니다. `viewer.scene.msaaSamples = 1`이면 strength `0`과 EDL 끔이 정확히 같습니다.
 
 ## 요구사항: HTTP Range Request와 CORS
 

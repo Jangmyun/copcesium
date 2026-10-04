@@ -376,7 +376,12 @@ ds.eyeDomeLightingRadius = 2;     // CSS pixels, default 1
 - It needs WebGL2 (or the `WEBGL_draw_buffers` and `EXT_frag_depth`
   extensions). Without them the points draw unshaded and a warning is logged
   once.
-- Each data source with EDL on keeps its own screen-sized offscreen target.
+- Each data source with EDL on keeps its own screen-sized offscreen target,
+  released when EDL is turned off.
+- The points are rendered single-sampled for EDL, as in Cesium's own
+  point-cloud EDL, so they lose MSAA edge smoothing while it is on: point
+  edges look harder even at `eyeDomeLightingStrength = 0`. With
+  `viewer.scene.msaaSamples = 1`, strength `0` matches EDL off exactly.
 
 ## Requirements: HTTP Range Requests and CORS
 

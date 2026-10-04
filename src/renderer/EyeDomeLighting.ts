@@ -10,6 +10,13 @@
  * 3D Tiles), rebuilt here rather than reused: that class expects its
  * commands as one contiguous run of the command list and tags the 3D Tiles
  * stencil bit, neither of which fits standalone primitives.
+ *
+ * Like Cesium's, the offscreen target is single-sampled, so the points it
+ * composites carry no MSAA: each pixel gets the one point covering its
+ * centre, with hard edges, where the scene's multisampled framebuffer would
+ * have blended partial coverage from neighbouring points and the background.
+ * Even at strength 0 the image therefore matches EDL-off pixel for pixel only
+ * with `scene.msaaSamples = 1`.
  */
 import * as Cesium from 'cesium';
 import { edlCompositeShaderSource } from './shaders';
