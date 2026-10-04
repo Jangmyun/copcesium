@@ -1,8 +1,8 @@
 /**
  * Orchestrator and public entry point. A standalone class (not a CesiumJS
  * `DataSource` implementation) that takes a `Viewer` and hooks its own
- * `scene.preRender`/`camera.moveEnd` listeners; owns the loaded hierarchy,
- * node cache, and per-frame LoD walk, wiring together `hierarchy` (metadata),
+ * `scene.preRender`/`camera.moveStart`/`camera.moveEnd` listeners; owns the
+ * loaded hierarchy, node cache, and per-frame LoD walk, wiring together `hierarchy` (metadata),
  * `RangeFetcher`/`WorkerPool` (fetch + decode), `selectNodes` (LoD), and
  * `PointCloudPrimitive` (rendering) into one coherent stream.
  */
@@ -135,6 +135,14 @@ const PAGE_RETRY_BASE_MS = 1000;
 // to a permanent give-up.
 const PAGE_FAILURE_RESET_MS = 60_000;
 
+// Heap-priority multiplier `selectNodes` gives nodes already on screen while
+// the camera moves, so nodes straddling a budget cut stop trading places on
+// every pass (#192). Released on `moveEnd`, so the settled selection is exact:
+// applied unconditionally it would let the view settle on whatever drifted in
+// during the move. 1.05–1.30 all eliminated the flicker in the issue's
+// measurements; 1.15 sits in the middle.
+const INCUMBENT_BONUS = 1.15;
+
 type StageName = 'fetch' | 'decode' | 'upload';
 
 /** How many recent nodes each stage's percentiles are computed over. Bounded
@@ -206,6 +214,8 @@ export class CopcDataSource {
   private _lastUpdateTime = 0;
   private _removeUpdateListener: () => void = () => {};
   private _removeMoveEndListener: () => void = () => {};
+  private _removeMoveStartListener: () => void = () => {};
+  private _cameraMoving = false;
   private _destroyed = false;
 
   private constructor(
@@ -319,6 +329,9 @@ export class CopcDataSource {
   private _startListening(): void {
     this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
     this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
+    this._removeMoveStartListener = this._viewer.scene.camera.moveStart.addEventListener(() => {
+      this._cameraMoving = true;
+    });
   }
 
   /** Flies the camera to the loaded dataset's root bounding sphere. */
@@ -384,6 +397,7 @@ export class CopcDataSource {
    *  possibly losing the final refinement to debounce timing. */
   private _onMoveEnd(): void {
     if (this._destroyed) return;
+    this._cameraMoving = false;
     this._lastUpdateTime = performance.now();
     void this._updateLoD();
   }
@@ -441,6 +455,8 @@ export class CopcDataSource {
           prefetchFrustumFactor: this._options.prefetchFrustumFactor,
           maxPrefetchNodes: this._options.maxPrefetchNodes,
           onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
+          incumbents: this._selectedKeys,
+          incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
         }),
       );
 
@@ -904,6 +920,7 @@ export class CopcDataSource {
     this._destroyed = true;
     this._removeUpdateListener();
     this._removeMoveEndListener();
+    this._removeMoveStartListener();
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();

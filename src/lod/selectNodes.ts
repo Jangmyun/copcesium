@@ -133,6 +133,19 @@ export interface SelectNodesOptions {
    * and cache it ahead of time.
    */
   onPrefetchCandidate?: (key: string) => void;
+  /**
+   * Keys currently on screen. Their heap priority is multiplied by
+   * `incumbentBonus`, so when a budget cuts the traversal mid-heap, a visible
+   * node is only displaced by a candidate that is clearly better rather than
+   * one that merely edges ahead on camera noise. Without this, the nodes
+   * straddling the cut swap places on almost every pass while the camera
+   * moves, and the same patch of ground pulses in and out of detail (#192).
+   * Only the traversal order is affected — the SSE threshold test still uses
+   * the raw value.
+   */
+  incumbents?: ReadonlySet<string>;
+  /** Priority multiplier for `incumbents`. Defaults to 1 (no bonus). */
+  incumbentBonus?: number;
 }
 
 /**
@@ -177,6 +190,8 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     prefetchFrustumFactor,
     maxPrefetchNodes = 50,
     onPrefetchCandidate,
+    incumbents,
+    incumbentBonus = 1,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
@@ -200,14 +215,18 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const sseOf = (key: string): number =>
     computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
 
-  const heap = new MaxHeap<{ key: string; sse: number }>((entry) => entry.sse);
+  const heap = new MaxHeap<{ key: string; priority: number }>((entry) => entry.priority);
   // The root's priority never matters — it's the only entry until popped.
-  heap.push({ key: '0-0-0-0', sse: Infinity });
+  heap.push({ key: '0-0-0-0', priority: Infinity });
 
   const expandChildren = (key: string): void => {
     for (const childKey of getChildKeys(key)) {
       if (nodes[childKey]) {
-        heap.push({ key: childKey, sse: sseOf(childKey) });
+        const sse = sseOf(childKey);
+        heap.push({
+          key: childKey,
+          priority: incumbents?.has(childKey) ? sse * incumbentBonus : sse,
+        });
       } else if (pages[childKey]) {
         onPageNeeded?.(childKey);
       }
