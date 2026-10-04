@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun), 김선교 (seongyooo)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 // Advanced example: the same public API `examples/basic-viewer` exercises
 // (`CopcDataSource.load()`, live setters, `destroy()`), driving a fuller
 // viewer UI — sidebar tabs, preset datasets, per-color-mode legends, a
