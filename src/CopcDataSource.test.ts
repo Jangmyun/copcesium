@@ -1281,9 +1281,21 @@ describe('CopcDataSource runtime API', () => {
       ds.clipPlanes = Array(7).fill(new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0));
     }).toThrow(RangeError);
 
+    ds.clipMode = 'outside';
+    expect(() => {
+      ds.clipMode = 'foo' as never;
+    }).toThrow(RangeError);
+    expect(ds.clipMode).toBe('outside'); // state unchanged after the throw
+
     mockCopc(undefined);
     await expect(
       CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { clipBoxes: [singular] }),
+    ).rejects.toThrow(RangeError);
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        clipMode: 'foo' as never,
+      }),
     ).rejects.toThrow(RangeError);
   });
 

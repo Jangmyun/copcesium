@@ -384,7 +384,7 @@ ds.clipBoxes = undefined; // clear
   box is set, inside **at least one** box. `'inside'` draws that region;
   `'outside'` draws the rest. With no planes or boxes, everything is drawn.
 - Boundaries count as inside. Regions are converted to each node's local
-  coordinates in double precision, so boundaries stay accurate to millimetres
+  coordinates in double precision, so boundaries stay accurate to centimetres
   rather than snapping to Float32's ~0.5 m steps at Earth-centered magnitudes.
 - Up to 6 planes and 4 boxes.
 

@@ -30,7 +30,12 @@ import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
 import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
-import { CLIP_MODE, createClipState, setClipBoxes, validateClipPlanes } from './renderer/clipping';
+import {
+  createClipState,
+  setClipBoxes,
+  validateClipMode,
+  validateClipPlanes,
+} from './renderer/clipping';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
@@ -856,8 +861,9 @@ export class CopcDataSource {
     return this._options.clipMode;
   }
   set clipMode(value: ClipMode) {
+    const mode = validateClipMode(value);
     this._options.clipMode = value;
-    this._style.clip.mode = CLIP_MODE[value];
+    this._style.clip.mode = mode;
     this._clipChanged();
   }
 
