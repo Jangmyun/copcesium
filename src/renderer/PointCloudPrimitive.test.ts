@@ -30,6 +30,7 @@ vi.mock('cesium', async (importOriginal) => {
 });
 
 const { PointCloudPrimitive } = await import('./PointCloudPrimitive');
+const { createClipState } = await import('./clipping');
 
 const renderData: NodeRenderData = {
   positions: new Float32Array([0, 0, 0]),
@@ -53,6 +54,7 @@ const style = {
   classMask: [new Cesium.Cartesian4(-1, -1, -1, -1), new Cesium.Cartesian4(-1, -1, -1, -1)],
   opacity: 1,
   heightOffset: 0,
+  clip: createClipState(undefined, undefined, 'inside'),
 };
 
 const sphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(6378137, 0, 0), 10);
@@ -97,5 +99,54 @@ describe('PointCloudPrimitive GPU-init timing', () => {
     primitive.update(frame());
 
     expect(onGpuInit).not.toHaveBeenCalled();
+  });
+});
+
+describe('PointCloudPrimitive clipping uniforms', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** The uniformMap handed to the (mocked) DrawCommand constructor. */
+  function uniforms(): Record<string, () => unknown> {
+    const opts = vi.mocked(
+      Cesium.DrawCommand as unknown as (o: { uniformMap: Record<string, () => unknown> }) => void,
+    ).mock.calls[0]![0];
+    return opts.uniformMap;
+  }
+
+  it('re-expresses the clip relative to the node origin, and rebuilds it on change', () => {
+    const clipStyle = { ...style, clip: createClipState(undefined, undefined, 'inside') };
+    // The DrawCommand mock's model matrix is the identity, so the node origin is (0, 0, 0).
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+    expect(uniforms().u_clipMode!()).toBe(0); // nothing to clip against
+
+    clipStyle.clip.planes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)];
+    clipStyle.clip.version++;
+    primitive.update(frame());
+    expect(uniforms().u_clipMode!()).toBe(1);
+    expect(uniforms().u_clipPlaneCount!()).toBe(1);
+    expect((uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]).toEqual(
+      new Cesium.Cartesian4(1, 0, 0, -10),
+    );
+  });
+
+  it('rebuilds the clip uniforms when heightOffset moves the node origin', () => {
+    const clipStyle = {
+      ...style,
+      clip: createClipState([new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)], undefined, 'inside'),
+    };
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+    const before = (uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]!.w;
+
+    clipStyle.heightOffset = 50;
+    primitive.update(frame());
+
+    // The mocked DrawCommand started at an identity model matrix (origin 0);
+    // heightOffset rebuilt it as the real node origin (6378137, 0, 0) shifted
+    // 50 m along its "up" (+X), and the plane's node-local w followed.
+    expect((uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]!.w).toBeCloseTo(
+      before + 6378137 + 50,
+    );
   });
 });

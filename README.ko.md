@@ -203,6 +203,9 @@ interface CopcDataSourceOptions {
   opacity?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
+  clipPlanes?: Cesium.Plane[];
+  clipBoxes?: Cesium.Matrix4[];
+  clipMode?: 'inside' | 'outside';
 }
 ```
 
@@ -231,6 +234,9 @@ interface CopcDataSourceOptions {
 | `opacity` | `1` | 모든 포인트 색상에 곱해지는 알파 값. `1` 미만이면 포인트당 깊이 정렬 없이 반투명하게 그립니다. `dataSource.opacity`로 실시간 조정 가능. |
 | `classificationFilter` | 전체 | 그릴 LAS 분류 코드 목록. 나머지는 그리지 않습니다. `dataSource.classificationFilter`로 실시간 조정 가능. |
 | `intensityRange` | 자동 | `'intensity'` 램프의 양 끝에 대응하는 원시 intensity 값. 생략하면 노드가 로드될 때마다 `[0, 지금까지 본 최댓값]`으로 넓어집니다. |
+| `clipPlanes` | 없음 | 월드 좌표(ECEF) `Cesium.Plane` 최대 6개. [Clipping](#clipping) 참고. `dataSource.clipPlanes`로 실시간 조정 가능. |
+| `clipBoxes` | 없음 | 박스 최대 4개. 각각 단위 정육면체 `[-0.5, 0.5]³`를 월드 좌표로 옮기는 `Cesium.Matrix4`. [Clipping](#clipping) 참고. `dataSource.clipBoxes`로 실시간 조정 가능. |
+| `clipMode` | `'inside'` | clip 영역 안의 포인트(`'inside'`)를 그릴지, 나머지(`'outside'`)를 그릴지. `dataSource.clipMode`로 실시간 조정 가능. |
 
 ## API 레퍼런스
 
@@ -257,6 +263,9 @@ class CopcDataSource {
   opacity: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
+  clipPlanes: Cesium.Plane[];
+  clipBoxes: Cesium.Matrix4[];
+  clipMode: 'inside' | 'outside';
   heightOffset: number;
   readonly maxDepth: number;
   readonly nodeCount: number;
@@ -279,6 +288,8 @@ class CopcDataSource {
 | `opacity` | get/set. 현재 렌더링 중인 모든 노드의 투명도를 재로드 없이 즉시 갱신합니다. 0-1 범위를 벗어나면 `RangeError`를 던집니다. |
 | `classificationFilter` | get/set. `undefined`를 넣으면 다시 전부 그립니다. 0-255 범위를 벗어난 값에는 `RangeError`를 던집니다. |
 | `intensityRange` | get/set. `undefined`를 넣으면 다시 자동 범위로 돌아갑니다. |
+| `clipPlanes` / `clipBoxes` | get/set. `undefined`나 `[]`를 넣으면 해제됩니다. 대입할 때 복사하므로, 이후 원본 객체를 바꿔도 다시 대입하기 전까지는 반영되지 않습니다. 개수 초과, 유한하지 않은 평면, 길이가 0인 축을 가진 박스에는 `RangeError`를 던집니다. |
+| `clipMode` | get/set. |
 | `heightOffset` | get/set. 로드된 모든 포인트에 적용되는 수직 오프셋(미터). 로드 후 지오이드/수직 기준면 불일치를 손으로 보정할 때 씁니다. 지오메트리가 아니라 모델 행렬을 옮기므로 재로드 없이 즉시 반영됩니다. 기본값 `0`. |
 | `maxDepth` | 읽기 전용. 로드된 계층 구조에 존재하는 가장 깊은 옥트리 레벨. |
 | `nodeCount` | 읽기 전용. 계층 구조 내 전체 노드 수(로드 여부 무관). |
@@ -340,6 +351,30 @@ ds.opacity = 0.5;                  // 0..1, 1 미만이면 알파 블렌딩
 | 6 | Building | | |
 
 필터로 걸러진 포인트는 vertex 셰이더에서 버려집니다. 즉 필터링은 포인트를 **숨기는** 것이지 GPU 메모리를 회수하는 게 아닙니다.
+
+### Clipping
+
+Clipping 평면과 박스로 관심 영역만 남기거나 단면을 볼 수 있습니다. vertex 셰이더에서 이 데이터 소스의 포인트에만 적용되며, 필터처럼 재요청 없이 uniform만 갱신됩니다.
+
+```ts
+const center = Cesium.Cartesian3.fromDegrees(-123.07, 44.05, 120);
+const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+// `center`를 중심으로 200m x 100m x 80m(동 x 북 x 위) 박스
+ds.clipBoxes = [Cesium.Matrix4.multiplyByScale(enu, new Cesium.Cartesian3(200, 100, 80), new Cesium.Matrix4())];
+
+// `center`의 동쪽만 남기기: 평면은 법선이 가리키는 쪽을 남깁니다.
+const east = Cesium.Matrix4.multiplyByPointAsVector(enu, Cesium.Cartesian3.UNIT_X, new Cesium.Cartesian3());
+ds.clipPlanes = [Cesium.Plane.fromPointNormal(center, east)];
+
+ds.clipMode = 'outside';  // 그 영역을 *제외한* 나머지를 그림
+ds.clipBoxes = undefined; // 해제
+```
+
+- 좌표는 월드 좌표(ECEF)이며, `heightOffset`이 적용된 뒤 실제로 그려지는 위치를 기준으로 판정합니다.
+- 영역은 **모든** 평면의 남기는 쪽에 있고, 박스가 하나라도 있으면 그중 **하나 이상**의 안에 있는 포인트입니다. `'inside'`는 그 영역을, `'outside'`는 나머지를 그립니다. 평면과 박스가 하나도 없으면 전부 그립니다.
+- 경계는 안쪽으로 칩니다. 영역을 노드별 로컬 좌표로 배정밀도 변환해 넘기므로, 지구 중심 좌표 규모에서 Float32의 약 0.5m 단위로 뭉개지지 않고 센티미터 수준으로 정확합니다.
+- 평면은 최대 6개, 박스는 최대 4개입니다.
 
 ## 요구사항: HTTP Range Request와 CORS
 

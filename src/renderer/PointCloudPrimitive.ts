@@ -9,6 +9,7 @@
  */
 import * as Cesium from 'cesium';
 import { vertexShaderSource, fragmentShaderSource } from './shaders';
+import { MAX_CLIP_BOXES, MAX_CLIP_PLANES, writeLocalClipUniforms, type ClipState } from './clipping';
 import type { NodeRenderData } from '../types';
 
 /**
@@ -43,6 +44,8 @@ export interface PointStyle {
    * doesn't need touching.
    */
   heightOffset: number;
+  /** Spatial clip regions in world (ECEF) coordinates — see `./clipping`. */
+  clip: ClipState;
 }
 
 // Cesium's low-level GPU API (Buffer/VertexArray/ShaderProgram/DrawCommand) has no
@@ -87,6 +90,14 @@ export class PointCloudPrimitive {
   private _up: Cesium.Cartesian3;
   private _appliedHeightOffset: number;
   private _appliedOpaque: boolean;
+  /** `-1` forces the first build; then the `clip.version` last applied. */
+  private _appliedClipVersion: number;
+  // Node-local clip uniforms, rebuilt whenever the clip regions or this
+  // node's origin (heightOffset) change. Fixed-length: the shader declares
+  // MAX_* slots and reads only the first `count`.
+  private readonly _clipPlanes = Array.from({ length: MAX_CLIP_PLANES }, () => new Cesium.Cartesian4());
+  private readonly _clipBoxes = Array.from({ length: MAX_CLIP_BOXES }, () => new Cesium.Matrix4());
+  private _clipUniforms = { mode: 0, planeCount: 0, boxCount: 0 };
   private _colors: Uint8Array | null;
   private _intensities: Uint16Array | null;
   private _classifications: Uint8Array | null;
@@ -116,6 +127,7 @@ export class PointCloudPrimitive {
     );
     this._appliedHeightOffset = 0;
     this._appliedOpaque = true;
+    this._appliedClipVersion = -1;
     this._colors = renderData.colors;
     this._intensities = renderData.intensities;
     this._classifications = renderData.classifications;
@@ -156,7 +168,9 @@ export class PointCloudPrimitive {
       if (this._style.heightOffset !== this._appliedHeightOffset) {
         this._cmd.modelMatrix = this._modelMatrix(this._style.heightOffset);
         this._appliedHeightOffset = this._style.heightOffset;
+        this._appliedClipVersion = -1; // the node origin moved under the clip
       }
+      if (this._style.clip.version !== this._appliedClipVersion) this._updateClipUniforms();
       const opaque = this._style.opacity >= 1;
       if (opaque !== this._appliedOpaque) {
         this._cmd.pass = opaque ? CesiumAny.Pass.OPAQUE : CesiumAny.Pass.TRANSLUCENT;
@@ -177,6 +191,13 @@ export class PointCloudPrimitive {
           depthMask: false,
           blending: CesiumAny.BlendingState.ALPHA_BLEND,
         });
+  }
+
+  /** Re-expresses the world-space clip regions relative to this node's current origin. */
+  private _updateClipUniforms(): void {
+    const origin = Cesium.Matrix4.getTranslation(this._cmd!.modelMatrix, new Cesium.Cartesian3());
+    this._clipUniforms = writeLocalClipUniforms(this._style.clip, origin, this._clipPlanes, this._clipBoxes);
+    this._appliedClipVersion = this._style.clip.version;
   }
 
   /** Node origin shifted `heightOffset` meters along the node's local "up". */
@@ -287,10 +308,16 @@ export class PointCloudPrimitive {
           u_intensityRange: () => style.intensityRange,
           u_classMask: () => style.classMask,
           u_opacity: () => style.opacity,
+          u_clipMode: () => this._clipUniforms.mode,
+          u_clipPlaneCount: () => this._clipUniforms.planeCount,
+          u_clipPlanes: () => this._clipPlanes,
+          u_clipBoxCount: () => this._clipUniforms.boxCount,
+          u_clipBoxes: () => this._clipBoxes,
         },
       }) as DrawCommandLike;
       this._appliedHeightOffset = this._style.heightOffset;
       this._appliedOpaque = opaque;
+      this._updateClipUniforms();
     } catch (err) {
       try {
         if (va) va.destroy();

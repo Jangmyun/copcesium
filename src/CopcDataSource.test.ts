@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as Cesium from 'cesium';
 import type { Viewer } from 'cesium';
 import type { Hierarchy } from 'copc';
 import type { NodeRenderData } from './types';
@@ -1235,6 +1236,66 @@ describe('CopcDataSource runtime API', () => {
     const { viewer } = makeFakeViewer();
     await expect(
       CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { opacity: -5 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it('clip planes/boxes/mode are live-settable, copied, and clearable', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.clipPlanes).toEqual([]);
+    expect(ds.clipBoxes).toEqual([]);
+    expect(ds.clipMode).toBe('inside');
+
+    const plane = new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, -5);
+    const box = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(2, 2, 2));
+    ds.clipPlanes = [plane];
+    ds.clipBoxes = [box];
+    ds.clipMode = 'outside';
+    expect(requestRender).toHaveBeenCalledTimes(3);
+
+    plane.distance = 99; // mutating the caller's object afterwards has no effect
+    box[12] = 99;
+    expect(ds.clipPlanes[0]!.distance).toBe(-5);
+    expect(ds.clipBoxes[0]![12]).toBe(0);
+    expect(ds.clipMode).toBe('outside');
+
+    ds.clipPlanes = undefined;
+    ds.clipBoxes = [];
+    expect(ds.clipPlanes).toEqual([]);
+    expect(ds.clipBoxes).toEqual([]);
+  });
+
+  it('clip setters and load() reject invalid regions', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    const singular = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(1, 0, 1));
+
+    expect(() => {
+      ds.clipBoxes = [singular];
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.clipPlanes = Array(7).fill(new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0));
+    }).toThrow(RangeError);
+
+    ds.clipMode = 'outside';
+    expect(() => {
+      ds.clipMode = 'foo' as never;
+    }).toThrow(RangeError);
+    expect(ds.clipMode).toBe('outside'); // state unchanged after the throw
+
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { clipBoxes: [singular] }),
+    ).rejects.toThrow(RangeError);
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        clipMode: 'foo' as never,
+      }),
     ).rejects.toThrow(RangeError);
   });
 

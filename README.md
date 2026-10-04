@@ -203,6 +203,9 @@ interface CopcDataSourceOptions {
   opacity?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
+  clipPlanes?: Cesium.Plane[];
+  clipBoxes?: Cesium.Matrix4[];
+  clipMode?: 'inside' | 'outside';
 }
 ```
 
@@ -231,6 +234,9 @@ interface CopcDataSourceOptions {
 | `opacity` | `1` | Alpha multiplier applied to every point's colour. Below `1`, points draw translucent with no per-point depth sort. Live-adjustable via `dataSource.opacity`. |
 | `classificationFilter` | all codes | LAS classification codes to draw; everything else is dropped. Live-adjustable via `dataSource.classificationFilter`. |
 | `intensityRange` | auto | Raw intensity values at the two ends of the `'intensity'` ramp. Grows to `[0, highest seen]` as nodes load when omitted. |
+| `clipPlanes` | none | Up to 6 world-space (ECEF) `Cesium.Plane`s. See [Clipping](#clipping). Live-adjustable via `dataSource.clipPlanes`. |
+| `clipBoxes` | none | Up to 4 boxes, each a `Cesium.Matrix4` mapping the unit cube `[-0.5, 0.5]³` to world space. See [Clipping](#clipping). Live-adjustable via `dataSource.clipBoxes`. |
+| `clipMode` | `'inside'` | Draw the points inside the clip region (`'inside'`) or everything else (`'outside'`). Live-adjustable via `dataSource.clipMode`. |
 
 ## API reference
 
@@ -257,6 +263,9 @@ class CopcDataSource {
   opacity: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
+  clipPlanes: Cesium.Plane[];
+  clipBoxes: Cesium.Matrix4[];
+  clipMode: 'inside' | 'outside';
   heightOffset: number;
   readonly maxDepth: number;
   readonly nodeCount: number;
@@ -279,6 +288,8 @@ class CopcDataSource {
 | `opacity` | Get/set. Updates every currently-rendered node's translucency immediately, no reload. Throws `RangeError` outside 0-1. |
 | `classificationFilter` | Get/set. Assign `undefined` to draw everything again. Throws `RangeError` on a value outside 0-255. |
 | `intensityRange` | Get/set. Assign `undefined` to hand the range back to auto. |
+| `clipPlanes` / `clipBoxes` | Get/set. Assign `undefined` or `[]` to clear. Copied on assignment, so mutating the objects afterwards has no effect until you assign again. Throws `RangeError` on too many regions, a non-finite plane, or a box with a zero-length axis. |
+| `clipMode` | Get/set. |
 | `heightOffset` | Get/set. Vertical offset in meters applied to every loaded point, for manually correcting a geoid/vertical-datum mismatch after load — moves the model matrix, not the geometry, so it updates immediately with no reload. Defaults to `0`. |
 | `maxDepth` | Read-only. Deepest octree level present in the loaded hierarchy. |
 | `nodeCount` | Read-only. Total nodes in the hierarchy (loaded or not). |
@@ -345,6 +356,37 @@ light grey.
 
 Filtered-out points are discarded in the vertex shader, so filtering hides
 points rather than reclaiming their GPU memory.
+
+### Clipping
+
+Clipping planes and boxes isolate a region or cut a section, applied in the
+vertex shader to this data source's points only — like a filter, a change is a
+uniform update with no refetch.
+
+```ts
+const center = Cesium.Cartesian3.fromDegrees(-123.07, 44.05, 120);
+const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+// A 200 m x 100 m x 80 m box (east x north x up) around `center`.
+ds.clipBoxes = [Cesium.Matrix4.multiplyByScale(enu, new Cesium.Cartesian3(200, 100, 80), new Cesium.Matrix4())];
+
+// Keep only what's east of `center`: a plane keeps the side its normal points to.
+const east = Cesium.Matrix4.multiplyByPointAsVector(enu, Cesium.Cartesian3.UNIT_X, new Cesium.Cartesian3());
+ds.clipPlanes = [Cesium.Plane.fromPointNormal(center, east)];
+
+ds.clipMode = 'outside';  // draw everything *except* that region
+ds.clipBoxes = undefined; // clear
+```
+
+- Coordinates are world space (ECEF), tested against each point's drawn
+  position — after `heightOffset`.
+- The region is the points on the kept side of **every** plane and, when any
+  box is set, inside **at least one** box. `'inside'` draws that region;
+  `'outside'` draws the rest. With no planes or boxes, everything is drawn.
+- Boundaries count as inside. Regions are converted to each node's local
+  coordinates in double precision, so boundaries stay accurate to centimetres
+  rather than snapping to Float32's ~0.5 m steps at Earth-centered magnitudes.
+- Up to 6 planes and 4 boxes.
 
 ## Requirements: HTTP Range Requests and CORS
 
