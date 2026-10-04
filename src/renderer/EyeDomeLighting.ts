@@ -124,14 +124,15 @@ void main() {
 }
 
 export class EyeDomeLighting {
-  enabled: boolean;
   /** Shading strength; `0` leaves the points unshaded. */
   strength: number;
   /** Neighbour sampling distance, in CSS pixels. */
   radius: number;
 
   private readonly _boundingVolume: Cesium.BoundingSphere;
-  private readonly _framebuffer: FramebufferManagerLike;
+  /** Created on the first EDL frame, released whenever EDL is turned off. */
+  private _framebuffer: FramebufferManagerLike | null = null;
+  private _enabled: boolean;
   private readonly _derived = new WeakMap<object, DrawCommandLike>();
   private readonly _radiusAndStrength = new Cesium.Cartesian2();
   private _compositeCommand: DrawCommandLike | null = null;
@@ -150,14 +151,23 @@ export class EyeDomeLighting {
     radius: number,
   ) {
     this._boundingVolume = boundingVolume;
-    this.enabled = enabled;
+    this._enabled = enabled;
     this.strength = strength;
     this.radius = radius;
-    this._framebuffer = new CesiumAny.FramebufferManager({
-      colorAttachmentsLength: 2,
-      depth: true,
-      supportsDepthTexture: true,
-    });
+  }
+
+  get enabled(): boolean {
+    return this._enabled;
+  }
+  /**
+   * Turning EDL off releases the offscreen target (two screen-sized colour
+   * textures plus depth, ~12 bytes per pixel); the next EDL frame recreates
+   * it. Setters run between frames, never between a frame's command
+   * submission and its execution, so no queued command still points at it.
+   */
+  set enabled(value: boolean) {
+    this._enabled = value;
+    if (!value) this._releaseFramebuffer();
   }
 
   /**
@@ -169,7 +179,7 @@ export class EyeDomeLighting {
   apply(frameState: { context: unknown; commandList: unknown[] }, command: object): object {
     const fs = frameState as EdlFrameState;
     // A pick pass reads the plain commands' pick output; nothing to shade.
-    if (!this.enabled || !fs.passes.render) return command;
+    if (!this._enabled || !fs.passes.render) return command;
     const context = fs.context;
     if (!context.drawBuffers || !context.fragmentDepth) {
       if (!this._warnedUnsupported) {
@@ -194,7 +204,12 @@ export class EyeDomeLighting {
   }
 
   private _prepareFrame(context: EdlContext, pixelRatio: number): void {
-    // No-op unless the drawing buffer was resized (or this is the first frame).
+    this._framebuffer ??= new CesiumAny.FramebufferManager({
+      colorAttachmentsLength: 2,
+      depth: true,
+      supportsDepthTexture: true,
+    });
+    // No-op unless the drawing buffer was resized (or the target is new).
     this._framebuffer.update(context, context.drawingBufferWidth, context.drawingBufferHeight);
 
     this._compositeCommand ??= context.createViewportQuadCommand(
@@ -206,8 +221,8 @@ export class EyeDomeLighting {
       }),
       {
         uniformMap: {
-          u_colorTexture: () => this._framebuffer.getColorTexture(0),
-          u_depthTexture: () => this._framebuffer.getColorTexture(1),
+          u_colorTexture: () => this._framebuffer!.getColorTexture(0),
+          u_depthTexture: () => this._framebuffer!.getColorTexture(1),
           u_radiusAndStrength: () => this._radiusAndStrength,
         },
         renderState: CesiumAny.RenderState.fromCache({
@@ -228,7 +243,7 @@ export class EyeDomeLighting {
       pass: CesiumAny.Pass.OPAQUE,
       owner: this,
     });
-    // A resize recreates the framebuffer.
+    // A resize or a disable/re-enable recreates the framebuffer.
     this._clearCommand.framebuffer = this._framebuffer.framebuffer;
 
     this._radiusAndStrength.x = this.radius * pixelRatio;
@@ -236,10 +251,12 @@ export class EyeDomeLighting {
   }
 
   private _derive(context: EdlContext, command: DrawCommandLike): DrawCommandLike {
-    const framebuffer = this._framebuffer.framebuffer;
+    // _prepareFrame ran first this frame, so the target exists.
+    const framebuffer = this._framebuffer!.framebuffer;
     let derived = this._derived.get(command);
     // modelMatrix is the one field PointCloudPrimitive replaces on an opaque
-    // command (heightOffset); the framebuffer changes on resize.
+    // command (heightOffset); the framebuffer changes on resize and on a
+    // disable/re-enable.
     if (
       !derived ||
       derived.framebuffer !== framebuffer ||
@@ -256,8 +273,13 @@ export class EyeDomeLighting {
     return derived;
   }
 
+  private _releaseFramebuffer(): void {
+    this._framebuffer?.destroy();
+    this._framebuffer = null;
+  }
+
   destroy(): void {
-    this._framebuffer.destroy();
+    this._releaseFramebuffer();
     this._compositeCommand?.shaderProgram.destroy();
     this._compositeCommand = null;
     this._clearCommand = null;

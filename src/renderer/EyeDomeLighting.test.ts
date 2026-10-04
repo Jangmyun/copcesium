@@ -212,6 +212,40 @@ describe('EyeDomeLighting', () => {
     expect(Cesium.DrawCommand.shallowClone).toHaveBeenCalledTimes(3);
   });
 
+  it('allocates the offscreen target only once an EDL frame is drawn', () => {
+    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    expect(Cesium.FramebufferManager).not.toHaveBeenCalled();
+
+    edl.apply(makeFrame(makeContext()), makeCommand());
+    expect(Cesium.FramebufferManager).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the offscreen target when disabled and recreates it when re-enabled', () => {
+    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const context = makeContext();
+    const cmd = makeCommand();
+    edl.apply(makeFrame(context, 1), cmd);
+
+    edl.enabled = false;
+    expect(edl.enabled).toBe(false);
+    expect(framebufferDestroy).toHaveBeenCalledTimes(1);
+    // Disabling again with nothing allocated is a no-op.
+    edl.enabled = false;
+    expect(framebufferDestroy).toHaveBeenCalledTimes(1);
+    expect(edl.apply(makeFrame(context, 2), cmd)).toBe(cmd);
+    expect(Cesium.FramebufferManager).toHaveBeenCalledTimes(1);
+
+    currentFramebuffer = {};
+    edl.enabled = true;
+    const frame = makeFrame(context, 3);
+    const derived = edl.apply(frame, cmd) as Record<string, unknown>;
+    expect(Cesium.FramebufferManager).toHaveBeenCalledTimes(2);
+    expect(framebufferUpdate).toHaveBeenLastCalledWith(context, 800, 600);
+    // The derived command and the clear both follow the new target.
+    expect(derived.framebuffer).toBe(currentFramebuffer);
+    expect((frame.commandList[1] as Record<string, unknown>).framebuffer).toBe(currentFramebuffer);
+  });
+
   it('destroy() releases the framebuffer and the composite shader', () => {
     const edl = new EyeDomeLighting(sphere, true, 1, 1);
     edl.apply(makeFrame(makeContext()), makeCommand());
