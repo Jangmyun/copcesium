@@ -23,6 +23,16 @@ cp .env.example .env   # set VITE_CESIUM_TOKEN for Cesium Ion terrain/imagery â€
 npm run dev
 ```
 
+To try a dataset that isn't in the preset list, paste a COPC URL into the
+Data tab's URL field and press **Load**. The Info tab then shows
+"Custom URL â€” no credit on file" in place of a preset's attribution. This
+small one (~6 MB, buildings around the CN Tower, Toronto) has its CRS in the
+file, so it loads with no extra options:
+
+```
+https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz
+```
+
 ## Benchmark
 
 The sidebar's **Benchmark** tab measures what a session actually cost: file
