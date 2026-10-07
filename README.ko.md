@@ -196,6 +196,8 @@ interface CopcDataSourceOptions {
   minPixelSize?: number;
   maxPixelSize?: number;
   sseThreshold?: number;
+  prefetchFrustumFactor?: number;
+  maxPrefetchNodes?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -220,6 +222,8 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
 | `maxVisibleNodes` | `100` | 한 번의 LoD 패스에서 렌더링용으로 선택하는 최대 노드 수. |
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
+| `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
+| `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
 | `pointSizeMode` | `'fixed'` | `'fixed'`는 모든 포인트를 `pixelSize`로 그립니다. `'attenuated'`는 카메라 거리에 따라 크기를 줄입니다(`attenuationFactor / sqrt(dist_m)`, `[minPixelSize, maxPixelSize]`로 클램프) — 가까이 갈 때 포인트 사이 빈틈이 보이지 않도록 합니다. `dataSource.pointSizeMode`로 실시간 조정 가능. |
 | `attenuationFactor` | `100` | 거리 감쇠 크기 공식의 분자값(pixel·√meters 단위). `pointSizeMode`가 `'attenuated'`일 때만 사용됩니다. 데이터셋 밀도에 맞게 조정하세요. `dataSource.attenuationFactor`로 실시간 조정 가능. |

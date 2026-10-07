@@ -3,6 +3,43 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Distance-based point sizing.** `gl_PointSize` was always the fixed
+  `pixelSize`, so gaps opened up between points as the camera approached the
+  cloud. `pointSizeMode: 'attenuated'` scales size with camera distance —
+  `attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize,
+  maxPixelSize]` (defaults `100`, `1`, `6`) — so near points grow to cover
+  the gaps while distant, already-dense nodes don't overdraw. All four are
+  options and live setters, validated on both paths (`RangeError` for a
+  non-positive `attenuationFactor` or `minPixelSize > maxPixelSize`). The
+  default `'fixed'` keeps the previous behaviour. (#209)
+- **Prefetching of nodes just outside the view.** Selection only ever looked
+  inside the actual camera frustum, so a fast pan revealed regions whose
+  nodes hadn't started loading. `selectNodes()` now also walks a frustum
+  widened by `prefetchFrustumFactor` (default `1.8`, scaling the near-plane
+  projected width and height rather than the raw FOV angle), and reports
+  populated nodes found only there as prefetch candidates, at the same SSE
+  rule the visible walk uses — up to `maxPrefetchNodes` (default `50`) per
+  pass, outside the `maxVisibleNodes`/`maxPoints` budget. They're loaded and
+  cached but never shown until a later pass finds them on screen. Visible
+  loads are dispatched first, and prefetch loads only fill spare worker-pool
+  capacity, so they never delay on-screen detail; a pending prefetch load
+  isn't cancelled for being off-screen. Prefetched nodes get an LRU recency
+  bump rather than a pin, so they stay evictable and the cache still honours
+  `maxCacheNodes`/`maxCacheBytes`. Set `prefetchFrustumFactor: 1` to
+  disable. (#212)
+
+### Changed
+
+- **The README documents bundler-free usage via an import map**, resolving
+  `cesium` and `copcesium` to their published jsDelivr `/npm/` files. ESM
+  CDNs that rebuild packages are called out as unsupported: esm.sh resolves
+  Cesium's `@cesium/engine` to the latest release, so an older Cesium fails
+  to load with a `SyntaxError` about a missing export. (#199)
+
 ## [1.4.0] - 2026-08-18
 
 ### Added

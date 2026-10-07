@@ -196,6 +196,8 @@ interface CopcDataSourceOptions {
   minPixelSize?: number;
   maxPixelSize?: number;
   sseThreshold?: number;
+  prefetchFrustumFactor?: number;
+  maxPrefetchNodes?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -220,6 +222,8 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
+| `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
+| `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
 | `pointSizeMode` | `'fixed'` | `'fixed'` draws every point at `pixelSize`. `'attenuated'` scales size down with camera distance (`attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize, maxPixelSize]`) so close-up points don't show gaps. Live-adjustable via `dataSource.pointSizeMode`. |
 | `attenuationFactor` | `100` | Numerator of the attenuated-size formula, in pixel·√meters. Only used when `pointSizeMode` is `'attenuated'`. Tune per dataset density. Live-adjustable via `dataSource.attenuationFactor`. |
