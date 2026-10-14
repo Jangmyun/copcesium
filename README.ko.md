@@ -67,6 +67,8 @@ WGS84 타원체와 OpenStreetMap 배경지도로 시작하므로 Cesium Ion 토�
 
 ## 설치
 
+이미 있는 프로젝트에 설치한다고 가정합니다(아래 예시는 Vite 기준). 빈 폴더에서 시작한다면 먼저 프로젝트를 만드세요(`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`). 현재 폴더에 `package.json`이 없으면 `npm install`은 상위 폴더를 거슬러 올라가 `package.json`이나 `node_modules`가 있는 가장 가까운 폴더에 설치합니다. 그래서 에러 없이 끝나지만 프로젝트 폴더는 비어 있게 됩니다. 번들러 없이 쓴다면 `npm install` 없이 import map으로 두 패키지를 CDN에서 불러올 수 있습니다. [셋업](#셋업) 끝부분을 참고하세요.
+
 ```bash
 npm install copcesium cesium
 ```
@@ -100,7 +102,7 @@ export default defineConfig({ plugins: [cesium()] });
 </style>
 
 <div id="cesiumContainer"></div>
-<script type="module" src="/main.ts"></script>
+<script type="module" src="/src/main.ts"></script>
 ```
 
 다른 번들러를 쓴다면 같은 두 가지를 직접 해주면 됩니다. `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}`를 정적 출력 경로로 복사하고, 첫 `import` 전에 Cesium이 그곳을 보도록 지정합니다:
@@ -143,6 +145,7 @@ window.CESIUM_BASE_URL = '/cesium/';
 ## 빠른 시작
 
 ```ts
+// src/main.ts
 import * as Cesium from 'cesium';
 import { CopcDataSource } from 'copcesium';
 
@@ -153,6 +156,8 @@ const dataSource = await CopcDataSource.load(
   viewer,
 );
 ```
+
+`npm run dev`(Vite 스캐폴드가 만들어 주는 스크립트)로 실행한 뒤, 출력된 로컬 URL을 브라우저에서 여세요.
 
 이게 전부입니다 — `load()`가 COPC 계층 구조를 가져오고, 파일의 WKT가 있으면 원본 좌표계를 자동 감지하고, 카메라를 데이터셋 위치로 이동시킨 뒤, 카메라가 움직이는 대로 노드를 스트리밍하기 시작합니다. URL 입력창, 실시간 `pixelSize`/`sseThreshold` 슬라이더, 에러 처리까지 포함된 조금 더 완전한 예제는 [`examples/basic-viewer/main.ts`](./examples/basic-viewer/main.ts)를 참고하세요.
 
