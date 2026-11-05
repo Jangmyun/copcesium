@@ -12,6 +12,7 @@ import {
   COLOR_MODE,
   SIZE_MODE,
   buildClassMask,
+  clipShaderChunk,
   decodePickColor,
   MAX_PICKABLE_NODE_SLOTS,
   MAX_PICKABLE_POINT_INDEX,
@@ -143,7 +144,12 @@ describe('pick shaders', () => {
   it('reuses the same classification allow-list as the main pass', () => {
     expect(pickVertexShaderSource).toContain('uniform ivec4 u_classMask[2];');
     expect(pickVertexShaderSource).toContain('bool classAllowed(int c) {');
-    expect(pickVertexShaderSource).toContain('if (!classAllowed(c)) {');
+    expect(pickVertexShaderSource).toContain('if (!classAllowed(c) || !clipKeeps(position)) {');
+  });
+
+  it('applies the same clip test as the main pass, so clipped points cannot be picked', () => {
+    expect(pickVertexShaderSource).toContain(clipShaderChunk);
+    expect(vertexShaderSource).toContain(clipShaderChunk);
   });
 
   it('sizes points the same way the main pass does, so a click and a rendered dot agree', () => {
