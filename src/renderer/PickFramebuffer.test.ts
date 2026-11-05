@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Texture/Framebuffer/PassState need a live WebGL context; mock them to plain

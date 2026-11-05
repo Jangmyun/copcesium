@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * Offscreen RGBA8 + 24-bit depth framebuffer used only by `CopcDataSource.pickPoint()`.
  * Rendered into with the exact same viewport/view/projection as the visible
