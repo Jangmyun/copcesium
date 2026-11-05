@@ -233,12 +233,7 @@ export class PointCloudPrimitive {
     } else {
       // Cheap enough to compare every frame; the underlying rebuilds only
       // happen on the frames where the relevant style field actually changed.
-      if (this._style.heightOffset !== this._appliedHeightOffset) {
-        this._cmd.modelMatrix = this._modelMatrix(this._style.heightOffset);
-        this._appliedHeightOffset = this._style.heightOffset;
-        this._appliedClipVersion = -1; // the node origin moved under the clip
-      }
-      if (this._style.clip.version !== this._appliedClipVersion) this._updateClipUniforms();
+      this._syncOriginAndClip();
       const opaque = this._style.opacity >= 1;
       if (opaque !== this._appliedOpaque) {
         this._cmd.pass = opaque ? CesiumAny.Pass.OPAQUE : CesiumAny.Pass.TRANSLUCENT;
@@ -259,6 +254,17 @@ export class PointCloudPrimitive {
           depthMask: false,
           blending: CesiumAny.BlendingState.ALPHA_BLEND,
         });
+  }
+
+  /** Applies a changed `heightOffset` to the main command's origin, then
+   *  rebuilds the node-local clip uniforms if either it or the clip changed. */
+  private _syncOriginAndClip(): void {
+    if (this._style.heightOffset !== this._appliedHeightOffset) {
+      this._cmd!.modelMatrix = this._modelMatrix(this._style.heightOffset);
+      this._appliedHeightOffset = this._style.heightOffset;
+      this._appliedClipVersion = -1; // the node origin moved under the clip
+    }
+    if (this._style.clip.version !== this._appliedClipVersion) this._updateClipUniforms();
   }
 
   /** Re-expresses the world-space clip regions relative to this node's current origin. */
@@ -440,6 +446,9 @@ export class PointCloudPrimitive {
       return null;
     }
     this._pickNodeSlot = nodeSlot;
+    // The pick pass shares the main pass's clip uniforms, so bring them up to
+    // date in case the clip or heightOffset changed since the last render.
+    this._syncOriginAndClip();
     if (this._pickCmd) {
       this._pickCmd.framebuffer = framebuffer;
       // heightOffset may have changed since this command was built; update()
@@ -500,6 +509,11 @@ export class PointCloudPrimitive {
         u_maxPixelSize: () => style.maxPixelSize,
         u_classMask: () => style.classMask,
         u_nodeSlot: () => this._pickNodeSlot,
+        u_clipMode: () => this._clipUniforms.mode,
+        u_clipPlaneCount: () => this._clipUniforms.planeCount,
+        u_clipPlanes: () => this._clipPlanes,
+        u_clipBoxCount: () => this._clipUniforms.boxCount,
+        u_clipBoxes: () => this._clipBoxes,
       },
     }) as DrawCommandLike;
     return this._pickCmd;

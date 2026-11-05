@@ -238,6 +238,7 @@ uniform int u_nodeSlot;
 
 flat out int v_pointIndex;
 flat out int v_nodeSlot;
+${clipShaderChunk}
 ${classAllowedSource}
 
 void main() {
@@ -245,7 +246,7 @@ void main() {
   v_pointIndex = gl_VertexID;
   v_nodeSlot = u_nodeSlot;
 
-  if (!classAllowed(c)) {
+  if (!classAllowed(c) || !clipKeeps(position)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     gl_PointSize = 0.0;
     return;

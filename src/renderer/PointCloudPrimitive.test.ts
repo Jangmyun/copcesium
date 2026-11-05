@@ -273,4 +273,23 @@ describe('PointCloudPrimitive clipping uniforms', () => {
       before + 6378137 + 50,
     );
   });
+
+  it('gives the pick command the same clip uniforms, current even without a render in between', () => {
+    const clipStyle = { ...style, clip: createClipState(undefined, undefined, 'inside') };
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+
+    // Changed after the last update(), with no frame rendered before the pick.
+    clipStyle.clip.planes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)];
+    clipStyle.clip.version++;
+    const pickCmd = primitive.preparePickCommand({}, 1, {}) as unknown as {
+      uniformMap: Record<string, () => unknown>;
+    };
+
+    expect(pickCmd.uniformMap.u_clipMode!()).toBe(1);
+    expect(pickCmd.uniformMap.u_clipPlaneCount!()).toBe(1);
+    expect(pickCmd.uniformMap.u_clipPlanes!()).toBe(uniforms().u_clipPlanes!());
+    expect(pickCmd.uniformMap.u_clipBoxCount!()).toBe(0);
+    expect(pickCmd.uniformMap.u_clipBoxes!()).toBe(uniforms().u_clipBoxes!());
+  });
 });
