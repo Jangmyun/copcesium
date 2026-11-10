@@ -68,6 +68,16 @@ http://localhost:5173/?bench=montreal   # 51.9 GB
 
 Results also go to the console and `window.__copcesiumBench`.
 
+Each stop reports `visibleLoadMs` alongside `loadMs`. `loadMs` waits for
+everything in flight, off-screen prefetch loads included, so use
+`visibleLoadMs` for how long a viewer actually waits.
+
+`&route=pan` replaces the last stops with a low view over the data and a
+sideways drag in bursts, which the walk can't measure because it waits for
+every stop to settle. Results land under `pan`: `gapMs` and `gapNodeMs` for how
+long selected nodes were missing, `selectedHits` of `selectedNew` for how many
+were already cached when the view reached them.
+
 ### Tuning options
 
 Options with no UI can be set from the query string, so a sweep needs no edit
@@ -84,7 +94,7 @@ checked — a second run over the same walk otherwise serves from the HTTP
 cache and reads as a win for whichever setting went second.
 
 `concurrency`, `maxConcurrentRequests`, `maxCacheNodes`, `maxCacheBytes`,
-`maxVisibleNodes`, `maxPoints`, `debounceMs`, and `lodHysteresis` are accepted; anything
+`maxVisibleNodes`, `maxPoints`, `debounceMs`, `lodHysteresis`, and `prefetchFrustumFactor` are accepted; anything
 non-numeric is ignored with a console warning. `sseThreshold` is deliberately
 not here — it has a slider, and two sources for one value would fight. The
 values in effect are recorded in the walk's JSON under `options`, so two
