@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-10
+
 ### Added
 
 - **Distance-based point sizing.** `gl_PointSize` was always the fixed
@@ -30,7 +32,9 @@ All notable changes to this project are documented here. This project follows
   isn't cancelled for being off-screen. Prefetched nodes get an LRU recency
   bump rather than a pin, so they stay evictable and the cache still honours
   `maxCacheNodes`/`maxCacheBytes`. Set `prefetchFrustumFactor: 1` to
-  disable. (#212)
+  disable. Prefetching costs bandwidth: on the example viewer's benchmark
+  routes it transferred 26–65% more bytes, in exchange for 42% less missing
+  detail during a pan on a 2 GB file and nearly none on an 81 MB one. (#212)
 
 ### Changed
 
