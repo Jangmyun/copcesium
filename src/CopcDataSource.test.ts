@@ -163,6 +163,8 @@ function makeFakeViewer() {
       },
       primitives: { add: addPrimitive, remove: removePrimitive },
       camera: {
+        positionWC: new Cesium.Cartesian3(0, 0, 0),
+        directionWC: new Cesium.Cartesian3(0, 0, -1),
         moveEnd: {
           addEventListener: vi.fn((cb: () => void) => {
             moveEndCallback = cb;

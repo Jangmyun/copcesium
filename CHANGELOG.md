@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Nodes are requested shallowest first, then closest to the screen centre.**
+  Screen-space error says how large a node appears but not where, so within a
+  depth the part of the view filling in first had nothing to do with where a
+  viewer was looking. Selection, budgets, and bytes transferred are unchanged;
+  only the order of one pass's requests is.
+
 ### Fixed
 
 - **Nodes loaded in file order instead of the order the view needed them.**
