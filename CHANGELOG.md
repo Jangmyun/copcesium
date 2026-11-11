@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Reprojection in the decode worker is about twice as fast, with identical
+  output.** `proj4(...).forward()` cost nearly as much as the LAZ decode itself, almost
+  none of it projection math: every point was cloned, checked, and copied into
+  a fresh object at each step, then passed through a datum step that did
+  nothing. For a projected CRS whose datum needs no shift to WGS84, the worker
+  now calls the projection's own `inverse()` directly; any other CRS still goes
+  through `forward()`. On 5.1M points from five public datasets the results
+  match `forward()` bit for bit, and the decode stage's median per node drops
+  14-16% in the browser.
+
 ## [1.4.1] - 2026-11-10
 
 ### Added
