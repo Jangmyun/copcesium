@@ -367,6 +367,21 @@ export class CopcDataSource {
       // already carries the (indistinguishable) default of 1.
       if (options.zFactor === undefined) resolved.zFactor = detected.zFactor;
       if (options.xyFactor === undefined) resolved.xyFactor = detected.xyFactor;
+      if (detected.warning && !options.projDef) console.warn(`[CopcDataSource] ${url}: ${detected.warning}`);
+    }
+    // Without a CRS the coordinates are read as degrees. For projected data
+    // (meters or feet) that puts every point off the globe or in the wrong
+    // place with no error at all, so refuse it while it can still be told
+    // apart: longitude/latitude never leave ±180/±90.
+    if (resolved.proj === 'EPSG:4326') {
+      const { min, max } = hierarchy.copc.header;
+      if ([min[0], max[0]].some((x) => Math.abs(x) > 180) || [min[1], max[1]].some((y) => Math.abs(y) > 90)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: no CRS could be determined from the file, and its extent ` +
+            `(x ${min[0]}..${max[0]}, y ${min[1]}..${max[1]}) is not longitude/latitude. ` +
+            'Pass `proj` and `projDef` for its coordinate system.',
+        );
+      }
     }
     if (resolved.projDef && resolved.proj !== 'EPSG:4326') {
       proj4.defs(resolved.proj, resolved.projDef);

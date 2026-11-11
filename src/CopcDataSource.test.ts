@@ -225,7 +225,11 @@ const fakeViewer = makeFakeViewer().viewer;
  *   invented but the hierarchy never actually had. Left empty by default so
  *   nodeCount/maxDepth assertions against the single real root node hold.
  */
-function mockCopc(wkt: string | undefined, extraNodes: Record<string, Hierarchy.Node> = {}) {
+function mockCopc(
+  wkt: string | undefined,
+  extraNodes: Record<string, Hierarchy.Node> = {},
+  header = { min: [0, 0, 0], max: [10, 10, 10] },
+) {
   create.mockResolvedValueOnce({
     info: {
       cube: [0, 0, 0, 10, 10, 10],
@@ -233,7 +237,7 @@ function mockCopc(wkt: string | undefined, extraNodes: Record<string, Hierarchy.
     },
     // The elevation colour ramp normalizes each point's Z over the header's
     // range, so _loadNode() reads header.min/max on every dispatch.
-    header: { min: [0, 0, 0], max: [10, 10, 10] },
+    header,
     wkt,
   });
   loadHierarchyPage.mockResolvedValueOnce({
@@ -281,6 +285,42 @@ describe('CopcDataSource.load', () => {
     mockCopc(undefined);
     const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
     expect(() => ds.destroy()).not.toThrow();
+  });
+
+  it('refuses a file with no detectable CRS whose extent cannot be longitude/latitude', async () => {
+    // UTM meters, which would otherwise be read as degrees.
+    mockCopc(undefined, {}, { min: [500000, 4100000, 0], max: [501000, 4101000, 50] });
+
+    await expect(CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer)).rejects.toThrow(
+      /no CRS could be determined.*Pass `proj` and `projDef`/,
+    );
+  });
+
+  it('accepts that same extent once the caller supplies the CRS', async () => {
+    mockCopc(undefined, {}, { min: [500000, 4100000, 0], max: [501000, 4101000, 50] });
+
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, {
+        proj: 'EPSG:32652',
+        projDef: '+proj=utm +zone=52 +datum=WGS84 +units=m +no_defs',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('logs the detection warning when the datum shift is unknown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const wkt =
+      'PROJCS["Tokyo / Japan Plane Rectangular CS IX",GEOGCS["Tokyo",DATUM["Tokyo",' +
+      'SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+      'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",36],' +
+      'PARAMETER["central_meridian",139.8333333333333],PARAMETER["scale_factor",0.9999],' +
+      'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]';
+    mockCopc(wkt);
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no datum shift/));
+    warn.mockRestore();
   });
 
   it('applies zFactor/xyFactor auto-detected from a non-meter WKT', async () => {

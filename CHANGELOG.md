@@ -5,6 +5,23 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Points hundreds of meters off on datums proj4 does not know.** A WKT
+  that names such a datum without a TOWGS84 (common for Korean 1985, Tokyo,
+  DHDN) was converted with no datum shift at all: 362 m, 463 m and 144 m off
+  respectively. The local EPSG table's definition, which carries the
+  published shift, is now used when it has one; otherwise `load()` warns.
+  Datums on the WGS84/GRS80 ellipsoid (NAD83, ETRS89, Korea 2000) are
+  unaffected.
+- **A file with no detectable CRS was read as degrees.** Projected
+  coordinates then landed nowhere near the data, with no error. `load()` now
+  throws when the CRS is unknown and the extent cannot be longitude/latitude,
+  asking for `proj`/`projDef`.
+- **The EPSG-table fallback looked up the spheroid's code.** In WKT1 the first
+  `AUTHORITY` is the SPHEROID's (e.g. 7019), so the projected CRS was never
+  found. Only the root node's own `AUTHORITY`/`ID` is used now.
+
 ## [1.4.1] - 2026-11-10
 
 ### Added
