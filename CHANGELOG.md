@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stalled Range request held its fetch slot forever.** Each attempt is now
+  abandoned and retried after 20 s with no data from the server — measured
+  from the last chunk received, so a large group that keeps arriving is never
+  cut off.
+- **A non-206 response's body was left open.** A server ignoring `Range`
+  answers 200 with the whole file; that stream is now cancelled.
+- **A short body reached the decoder.** A response with fewer bytes than the
+  requested range is now rejected (and retried) instead of being decoded as a
+  truncated chunk.
+- **A worker that timed out was handed the next task.** It was still busy
+  with the one that timed out, so the next task queued behind it. It is now
+  replaced, like a crashed worker.
+
 ## [1.4.1] - 2026-11-10
 
 ### Added
