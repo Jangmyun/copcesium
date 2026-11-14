@@ -15,6 +15,23 @@ import type * as Cesium from 'cesium';
 import { getDepth } from '../copc/node';
 
 /**
+ * Cosine of the angle between `point` and the camera's forward vector: 1 on the
+ * view axis, falling off toward the edges of the screen.
+ */
+export function viewAlignment(
+  point: Cesium.Cartesian3,
+  eye: Cesium.Cartesian3,
+  forward: Cesium.Cartesian3,
+): number {
+  const dx = point.x - eye.x;
+  const dy = point.y - eye.y;
+  const dz = point.z - eye.z;
+  const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  // A camera sitting on the point is as central as it gets.
+  return distance > 0 ? (dx * forward.x + dy * forward.y + dz * forward.z) / distance : 1;
+}
+
+/**
  * Orders nodes for requesting: shallowest first, then closest to the view axis.
  *
  * Depth comes first because a shallower node covers more of the screen, so the
@@ -34,19 +51,11 @@ export function orderForLoading(
   const eye = camera.positionWC;
   const forward = camera.directionWC;
 
-  const ranked = Array.from(keys, (key) => {
-    const { center } = getSphere(key);
-    const dx = center.x - eye.x;
-    const dy = center.y - eye.y;
-    const dz = center.z - eye.z;
-    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    return {
-      key,
-      depth: getDepth(key),
-      // A camera sitting on the node's centre is as central as it gets.
-      alignment: distance > 0 ? (dx * forward.x + dy * forward.y + dz * forward.z) / distance : 1,
-    };
-  });
+  const ranked = Array.from(keys, (key) => ({
+    key,
+    depth: getDepth(key),
+    alignment: viewAlignment(getSphere(key).center, eye, forward),
+  }));
 
   ranked.sort((a, b) => a.depth - b.depth || b.alignment - a.alignment);
   return ranked.map((entry) => entry.key);

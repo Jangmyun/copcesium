@@ -1116,6 +1116,27 @@ describe('CopcDataSource update loop', () => {
     expect(lastOptions().incumbentBonus).toBe(1);
   });
 
+  it('passes viewAxisBias to node selection, on by default', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const lastBias = () => (selectNodesMock.mock.lastCall![0] as { viewAxisBias: number }).viewAxisBias;
+
+    const byDefault = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', byDefault.viewer, { debounceMs: 0 });
+    byDefault.triggerUpdate();
+    expect(lastBias()).toBe(2);
+
+    mockCopc(undefined);
+    const disabled = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', disabled.viewer, {
+      debounceMs: 0,
+      viewAxisBias: 0,
+    });
+    disabled.triggerUpdate();
+    expect(lastBias()).toBe(0);
+  });
+
   // `count` used to be the length of the percentile window, which stops at
   // STAGE_SAMPLE_WINDOW — so every session past that point reported the same
   // number and two different datasets looked identical (#194).

@@ -159,6 +159,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   maxCacheNodes: 150,
   maxVisibleNodes: 100,
   maxPoints: 5_000_000,
+  viewAxisBias: 2,
   prefetchFrustumFactor: 1.8,
   maxPrefetchNodes: 50,
   pixelSize: 2,
@@ -569,6 +570,7 @@ export class CopcDataSource {
           onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
           incumbents: this._selectedKeys,
           incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
+          viewAxisBias: this._options.viewAxisBias,
         }),
       );
 
