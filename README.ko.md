@@ -347,6 +347,7 @@ console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴
 | `transferredBytes` | 실제로 수신한 바이트 — Range 지원 확인 요청, 헤더, 계층 구조 페이지, 노드 포인트 데이터를 모두 포함합니다. |
 | `requestCount` | 수신한 range 응답 수. 병합된 요청은 한 번으로 셉니다. |
 | `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
+| `waste` | 위 합계가 빠뜨리는 노드 포인트 데이터 쪽 수치입니다. 중단된 시도(`abortedRequests`, 그중 본문 도중에 끊긴 것은 `abortedAfterHeaders`), 실패한 시도(`failedRequests`), 재시도(`retries`)를 셉니다. 중단·실패한 시도가 **요청한** 바이트는 `abortedBytes`, `failedBytes`입니다. `unusedBytes`는 받았지만 아무 노드도 쓰지 않은 바이트(병합 틈, 받는 도중 취소된 노드)이며, 이미 `transferredBytes`에 들어 있습니다. `cancelledBeforeSend`는 보내기 전에 취소된 요청 수입니다. |
 | `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
 
 `upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.
