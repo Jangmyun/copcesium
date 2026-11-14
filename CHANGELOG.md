@@ -5,6 +5,17 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Nodes loaded in file order instead of the order the view needed them.**
+  `selectNodes()` ranks nodes by screen-space error, but `RangeFetcher` sorted
+  each batch by byte offset to find mergeable neighbors and then queued the
+  merged groups in that order. Once the batch exceeded `maxConcurrent`, the
+  file's layout decided what appeared first, so fine nodes could land before
+  the coarse nodes covering the same view, showing up as scattered patches.
+  Groups now dispatch in request order, each placed by its earliest member;
+  which ranges get merged is unchanged.
+
 ## [1.4.1] - 2026-11-10
 
 ### Added

@@ -139,7 +139,9 @@ describe('RangeFetcher', () => {
           }
           legacy.push(`bytes=${group[0]![0]}-${group[group.length - 1]![1] - 1}`);
 
-          expect(fetchMock.mock.calls.map((call) => call[1].headers.Range)).toEqual(legacy);
+          // Same groups; their dispatch order is request order now, not offset order.
+          const sent = fetchMock.mock.calls.map((call) => call[1].headers.Range as string);
+          expect([...sent].sort()).toEqual([...legacy].sort());
           vi.unstubAllGlobals();
         }
       });
@@ -483,6 +485,39 @@ describe('RangeFetcher', () => {
       await b; // resolves only once the queued group got its turn
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('dispatches groups in request order rather than file offset order', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => fakeResponse(makeSourceBytes(10)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      await Promise.all([fetcher.fetch(2000, 2010), fetcher.fetch(0, 10), fetcher.fetch(1000, 1010)]);
+
+      expect(fetchMock.mock.calls.map(([, init]) => init.headers.Range)).toEqual([
+        'bytes=2000-2009',
+        'bytes=0-9',
+        'bytes=1000-1009',
+      ]);
+    });
+
+    it('places a merged group by its earliest requested member', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => fakeResponse(makeSourceBytes(20)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      await Promise.all([
+        fetcher.fetch(500, 510),
+        fetcher.fetch(10, 20),
+        fetcher.fetch(1000, 1010),
+        fetcher.fetch(0, 10),
+      ]);
+
+      expect(fetchMock.mock.calls.map(([, init]) => init.headers.Range)).toEqual([
+        'bytes=500-509',
+        'bytes=0-19',
+        'bytes=1000-1009',
+      ]);
     });
 
     it('drops a queued group entirely (no fetch) once every member is cancelled before it gets a slot', async () => {

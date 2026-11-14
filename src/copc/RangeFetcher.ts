@@ -259,8 +259,15 @@ export class RangeFetcher {
    * sorted by `begin`, a later member can lie wholly inside an earlier one,
    * and measuring from the later member's end would both cut the earlier
    * member's bytes short and mis-measure the gap to whatever comes next.
+   *
+   * Groups come back in request order, each placed by its earliest member.
+   * Offset order only finds the neighbors: `_updateLoD()` asks for nodes most
+   * important first, and leaving the groups sorted by offset made the file's
+   * layout decide what appeared on screen first once `maxConcurrent` queued
+   * the rest.
    */
   private _group(requests: RangeRequest[]): RangeRequest[][] {
+    const askedAt = new Map(requests.map((req, i) => [req, i]));
     const sorted = [...requests].sort((a, b) => a.begin - b.begin);
     const groups: RangeRequest[][] = [];
     let groupEnd = 0;
@@ -275,7 +282,9 @@ export class RangeFetcher {
         groupEnd = req.end;
       }
     }
-    return groups;
+    const firstAsked = (group: RangeRequest[]): number =>
+      Math.min(...group.map((req) => askedAt.get(req)!));
+    return groups.sort((a, b) => firstAsked(a) - firstAsked(b));
   }
 
   private async _fetchGroup(group: RangeRequest[], state: GroupState): Promise<void> {
