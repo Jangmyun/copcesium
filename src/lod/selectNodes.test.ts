@@ -155,7 +155,8 @@ describe('selectNodes', () => {
     // A parent is popped (and selected) before its children are ever pushed,
     // so no descendant can appear without the ancestors it draws on top of.
     for (const key of selected) {
-      if (key !== '0-0-0-0') expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
+      if (key !== '0-0-0-0')
+        expect(selected.indexOf('0-0-0-0')).toBeLessThan(selected.indexOf(key));
     }
   });
 
@@ -252,6 +253,65 @@ describe('selectNodes', () => {
     expect(selected[0]).toBe('0-0-0-0');
     expect(selected.slice(1).every((key) => key.endsWith('-1'))).toBe(true);
     expect(selected).toHaveLength(4);
+  });
+
+  describe('viewAxisBias', () => {
+    // Slightly off to one side and aimed at the child at (5, 5, 5), so the
+    // child at (-5, -5, 5) is nearer the camera but far from the view axis.
+    const aimedAtFarCorner = () =>
+      makeCamera(
+        new Cesium.Cartesian3(-1, -1, 30),
+        Cesium.Cartesian3.normalize(new Cesium.Cartesian3(6, 6, -25), new Cesium.Cartesian3()),
+        lookingAtOrigin.up,
+      );
+    const options = (camera: Cesium.Camera, maxVisibleNodes: number) => ({
+      nodes: makeOneLevelOctree(),
+      getSphere: makeGetSphere(rootCenter, rootHalfSize),
+      camera,
+      viewportHeight: 1000,
+      sseThreshold: 16,
+      maxVisibleNodes,
+    });
+
+    it('spends a cut budget on the nearest node without it', () => {
+      const selected = selectNodes(options(aimedAtFarCorner(), 2));
+
+      expect(selected).toEqual(['0-0-0-0', '1-0-0-1']);
+    });
+
+    it('spends a cut budget on the node on the view axis with it', () => {
+      const selected = selectNodes({ ...options(aimedAtFarCorner(), 2), viewAxisBias: 1 });
+
+      expect(selected).toEqual(['0-0-0-0', '1-1-1-1']);
+    });
+
+    it('selects the same nodes when the view fits the budget', () => {
+      const without = selectNodes(options(aimedAtFarCorner(), 100));
+      const biased = selectNodes({ ...options(aimedAtFarCorner(), 100), viewAxisBias: 2 });
+
+      expect([...biased].sort()).toEqual([...without].sort());
+    });
+
+    it('does not expand a node whose raw screen-space error is under the threshold', () => {
+      const nodes = makeOneLevelOctree();
+      nodes['2-3-3-3'] = { pointCount: 10, pointDataOffset: 0, pointDataLength: 1 };
+      // From z=100 the root's error is about 150 and a child's about 80.
+      const camera = makeCamera(
+        new Cesium.Cartesian3(0, 0, 100),
+        lookingAtOrigin.direction,
+        lookingAtOrigin.up,
+      );
+
+      const selected = selectNodes({
+        ...options(camera, 100),
+        nodes,
+        sseThreshold: 100,
+        viewAxisBias: 5,
+      });
+
+      expect(selected).toContain('1-1-1-1');
+      expect(selected).not.toContain('2-3-3-3');
+    });
   });
 
   it('keeps an incumbent that loses the budget cut by less than incumbentBonus', () => {

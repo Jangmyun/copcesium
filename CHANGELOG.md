@@ -5,6 +5,20 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The centre of the view is refined first when a budget cuts the
+  selection.** Selection ranked nodes by screen-space error alone, which only
+  knows how near a node is. Looking out at a shallow angle, the ground under
+  the camera filled `maxVisibleNodes` before the distant middle of the screen,
+  so the centre stayed coarse even after loading settled. The traversal order
+  now scales a node's priority from `1 + viewAxisBias` on the view axis down
+  to 1 at the screen corner (`viewAxisBias`, default `2`; `0` restores the old
+  order). The SSE threshold is unchanged, so a view that fits the budget
+  selects the same nodes. On a recorded low-pitch pass over Montréal, the
+  centre half of the screen went from 0.50 to 0.97 SSIM against an
+  unbudgeted reference, at the same bytes.
+
 ## [1.4.2] - 2026-11-14
 
 1.4.1 also shipped three changes its notes left out: point-level picking with

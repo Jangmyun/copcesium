@@ -94,7 +94,7 @@ checked — a second run over the same walk otherwise serves from the HTTP
 cache and reads as a win for whichever setting went second.
 
 `concurrency`, `maxConcurrentRequests`, `maxCacheNodes`, `maxCacheBytes`,
-`maxVisibleNodes`, `maxPoints`, `debounceMs`, `lodHysteresis`, and `prefetchFrustumFactor` are accepted; anything
+`maxVisibleNodes`, `maxPoints`, `viewAxisBias`, `debounceMs`, `lodHysteresis`, and `prefetchFrustumFactor` are accepted; anything
 non-numeric is ignored with a console warning. `sseThreshold` is deliberately
 not here — it has a slider, and two sources for one value would fight. The
 values in effect are recorded in the walk's JSON under `options`, so two

@@ -79,6 +79,14 @@ export interface CopcDataSourceOptions {
    * of `maxVisibleNodes`. Default 5,000,000.
    */
   maxPoints?: number;
+  /**
+   * How far the centre of the view outranks its corners when `maxVisibleNodes`
+   * or `maxPoints` cuts the selection: a node's priority is scaled from
+   * `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views
+   * that fit the budget select the same nodes either way. Default `2`; `0`
+   * ranks by screen-space error alone.
+   */
+  viewAxisBias?: number;
   pixelSize?: number;
   /** How `gl_PointSize` is computed. Default `'fixed'`. */
   pointSizeMode?: PointSizeMode;
