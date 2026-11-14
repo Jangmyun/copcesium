@@ -1011,6 +1011,7 @@ export class CopcDataSource {
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
       pendingNodes: this._pendingKeys.size,
+      waste: this._counter.waste,
       fetch: this._stageTiming('fetch'),
       decode: this._stageTiming('decode'),
       upload: this._stageTiming('upload'),

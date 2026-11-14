@@ -347,6 +347,7 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `transferredBytes` | Bytes actually received, across every path: the Range-support probe, the header, hierarchy pages, and node point data. |
 | `requestCount` | Range responses received. Fetches merged into one request count once. |
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
+| `waste` | What the totals above leave out, for node point data. Attempts that were aborted (`abortedRequests`, with `abortedAfterHeaders` for those cut off mid-body), attempts that failed (`failedRequests`), and `retries`. The bytes those aborted and failed attempts *asked for* (`abortedBytes`, `failedBytes`). `unusedBytes`: received bytes that no node used, such as merge gaps and nodes cancelled while their request was in flight; these are already part of `transferredBytes`. `cancelledBeforeSend`: requests dropped before anything was sent. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.

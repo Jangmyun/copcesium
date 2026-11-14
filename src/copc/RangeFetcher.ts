@@ -216,6 +216,7 @@ export class RangeFetcher {
       if (req.cancelled) req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
       else live.push(req);
     }
+    if (live.length < batch.length) this.counter?.recordCancelledBeforeSend(batch.length - live.length);
     for (const group of this._group(live)) {
       const state: GroupState = { liveCount: group.length, controller: null };
       for (const req of group) req.group = state;
@@ -229,6 +230,7 @@ export class RangeFetcher {
     const index = this.queue.findIndex((queued) => queued.state === state);
     if (index === -1) return; // already dispatched by the time this ran
     const [removed] = this.queue.splice(index, 1);
+    this.counter?.recordCancelledBeforeSend(removed!.requests.length);
     for (const req of removed!.requests) {
       req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
     }
@@ -276,6 +278,8 @@ export class RangeFetcher {
     this.inFlight.add(controller);
     try {
       const bytes = await this._fetchRange(groupBegin, groupEnd, controller.signal);
+      let used = 0;
+      let usedEnd = groupBegin;
       for (const req of group) {
         if (req.cancelled) {
           req.reject(abortError('RangeFetcher: request cancelled before its result was needed'));
@@ -283,8 +287,12 @@ export class RangeFetcher {
           // A copy, not a view — each member is handed off independently
           // (e.g. transferred to a worker), which a shared buffer can't be.
           req.resolve(bytes.slice(req.begin - groupBegin, req.end - groupBegin));
+          // Members are in offset order and may overlap; count each byte once.
+          used += Math.max(0, req.end - Math.max(req.begin, usedEnd));
+          usedEnd = Math.max(usedEnd, req.end);
         }
       }
+      this.counter?.recordUnused(bytes.length - used);
     } catch (err) {
       const error = err as Error;
       for (const req of group) req.reject(error);
@@ -304,11 +312,14 @@ export class RangeFetcher {
    */
   private async _fetchRange(begin: number, end: number, signal: AbortSignal): Promise<Uint8Array> {
     for (let attempt = 1; ; attempt++) {
+      if (attempt > 1) this.counter?.recordRetry();
+      let afterHeaders = false;
       try {
         const response = await fetch(this.url, {
           headers: { Range: `bytes=${begin}-${end - 1}` },
           signal,
         });
+        afterHeaders = true;
         // Strictly 206, not merely `ok`: a 200 means the server ignored the
         // Range header and sent the whole file, and those bytes would then be
         // sliced at range-relative offsets — silently handing the decoder data
@@ -324,6 +335,10 @@ export class RangeFetcher {
         this.counter?.record(begin, begin + bytes.length);
         return bytes;
       } catch (err) {
+        // Tallied per attempt, so a group that fails twice and then succeeds
+        // shows two failures and two retries next to its one counted response.
+        if (signal.aborted) this.counter?.recordAborted(begin, end, afterHeaders);
+        else this.counter?.recordFailed(begin, end);
         if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
         await delay(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
         // Cancelled while backing off — don't resurrect work nobody wants.
