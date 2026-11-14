@@ -253,7 +253,10 @@ export class WorkerPool {
       if (pending !== task) continue;
       this.pending.delete(worker);
       task.reject(new Error('WorkerPool: task timed out waiting for a worker response'));
-      this._release(worker);
+      // The worker is still inside that task — 30 s into one decode is stuck,
+      // not slow — so handing it the next task would queue that task behind
+      // it. Replace it the way a crashed worker is replaced.
+      this._replaceWorker(worker);
       return;
     }
     const queueIndex = this.queue.indexOf(task);

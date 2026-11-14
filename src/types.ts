@@ -8,6 +8,7 @@
  */
 
 import type * as Cesium from 'cesium';
+import type { FetchWaste } from './copc/TransferCounter';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
 import type { WorkerPoolTiming } from './worker/WorkerPool';
 
@@ -31,6 +32,8 @@ export interface DecodeQueueStats extends WorkerPoolTiming {
   /** Visible nodes held back by `decodeBackpressure`, waiting to be started. */
   deferredLoads: number;
 }
+
+export type { FetchWaste };
 
 /**
  * How a point's colour is chosen.
@@ -220,6 +223,13 @@ export interface CrsDetectionResult {
   zFactor: number;
   /** Factor that converts the XY axis unit to meters */
   xyFactor: number;
+  /**
+   * Set when the CRS was recognised but positions may still be wrong, e.g. a
+   * datum whose shift to WGS84 neither the WKT nor the local EPSG table
+   * gives, which proj4 then applies as no shift at all (hundreds of meters
+   * for Tokyo, Korean 1985, DHDN). `CopcDataSource.load()` logs it.
+   */
+  warning?: string;
 }
 
 /**
@@ -290,6 +300,9 @@ export interface CopcStats {
   decodeQueue: DecodeQueueStats;
   /** The decoded-node cache against its `maxCacheNodes`/`maxCacheBytes` budget. */
   cache: CacheStats;
+  /** Node point-data fetches that were aborted, failed or retried, and bytes
+   *  received that no node used — what `transferredBytes` leaves out. */
+  waste: FetchWaste;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */

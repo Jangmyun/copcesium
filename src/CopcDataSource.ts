@@ -29,13 +29,14 @@ import type {
   PointSizeMode,
   StageTiming,
 } from './types';
-import { loadCopcHierarchy } from './copc/hierarchy';
+import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
 import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { orderForLoading } from './lod/loadOrder';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
@@ -366,6 +367,7 @@ export class CopcDataSource {
       // on its own, because the two stages saturate at different widths.
       options.maxConcurrentRequests ?? workerPool.concurrency,
       this._counter,
+      undefined, // idleTimeoutMs: the fetcher's default
       options.adaptiveMergeGap ? {} : undefined,
     );
     this._workerPool = workerPool;
@@ -385,6 +387,11 @@ export class CopcDataSource {
     workerPool?: WorkerPool,
   ): Promise<CopcDataSource> {
     const resolved: ResolvedOptions = { ...DEFAULT_OPTIONS, ...options };
+    // NaN would otherwise flow into every point's height and blank the cloud
+    // with no error.
+    if (!Number.isFinite(resolved.geoidOffset)) {
+      throw new Error(`[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`);
+    }
 
     const hierarchy = await loadCopcHierarchy(url);
 
@@ -403,6 +410,21 @@ export class CopcDataSource {
       // already carries the (indistinguishable) default of 1.
       if (options.zFactor === undefined) resolved.zFactor = detected.zFactor;
       if (options.xyFactor === undefined) resolved.xyFactor = detected.xyFactor;
+      if (detected.warning && !options.projDef) console.warn(`[CopcDataSource] ${url}: ${detected.warning}`);
+    }
+    // Without a CRS the coordinates are read as degrees. For projected data
+    // (meters or feet) that puts every point off the globe or in the wrong
+    // place with no error at all, so refuse it while it can still be told
+    // apart: longitude/latitude never leave ±180/±90.
+    if (resolved.proj === 'EPSG:4326') {
+      const { min, max } = hierarchy.copc.header;
+      if ([min[0], max[0]].some((x) => Math.abs(x) > 180) || [min[1], max[1]].some((y) => Math.abs(y) > 90)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: no CRS could be determined from the file, and its extent ` +
+            `(x ${min[0]}..${max[0]}, y ${min[1]}..${max[1]}) is not longitude/latitude. ` +
+            'Pass `proj` and `projDef` for its coordinate system.',
+        );
+      }
     }
     if (resolved.projDef && resolved.proj !== 'EPSG:4326') {
       proj4.defs(resolved.proj, resolved.projDef);
@@ -410,6 +432,33 @@ export class CopcDataSource {
 
     const converter = resolved.proj !== 'EPSG:4326' ? proj4(resolved.proj, 'EPSG:4326') : null;
     const project = createProjector(converter, resolved.geoidOffset, resolved.zFactor);
+
+    // A CRS proj4 can define but not evaluate here — most often a +nadgrids
+    // definition whose grid file was never registered — turns every point
+    // into NaN and fails each node's decode one by one. Try the middle of
+    // the data once, up front, and say why instead.
+    if (converter) {
+      const { min, max } = hierarchy.copc.header;
+      const [lon, lat] = converter.forward([(min[0] + max[0]) / 2, (min[1] + max[1]) / 2]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: the CRS "${resolved.proj}" cannot transform this file's coordinates to WGS84 ` +
+            '(a +nadgrids definition needs its grid registered with proj4.nadgrid() first). ' +
+            'Pass a usable `projDef`.',
+        );
+      }
+    }
+
+    // A compound CRS gives heights against a vertical datum, which for
+    // nearly every survey is a geoid; Cesium places them on the WGS84
+    // ellipsoid. Without `geoidOffset` the cloud floats or sinks by the local
+    // geoid height, tens of meters in much of the world.
+    if (options.geoidOffset === undefined && /\b(?:VERT_CS|VERTCRS|VERTICALCRS)\s*[[(]/i.test(hierarchy.copc.wkt ?? '')) {
+      console.warn(
+        `[CopcDataSource] ${url}: heights are relative to a vertical datum (usually a geoid), not the WGS84 ` +
+          'ellipsoid Cesium uses. Pass `geoidOffset` (the local geoid height in meters) to place them correctly.',
+      );
+    }
 
     const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
 
@@ -567,6 +616,7 @@ export class CopcDataSource {
 
       // Show/load the new selection first, so a just-arrived replacement
       // already counts as "ready" when the hide pass below checks for it.
+      const toLoad: string[] = [];
       const deferred: string[] = [];
       for (const key of newSelectedKeys) {
         const node = this._nodeCache.peek(key);
@@ -579,6 +629,11 @@ export class CopcDataSource {
           continue;
         }
         if (this._pendingKeys.has(key)) continue;
+        toLoad.push(key);
+      }
+      // Ordered before the backpressure check, so deferred loads resume in
+      // the same shallowest-first, centre-first order.
+      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
         if (this._options.decodeBackpressure && this._decodeBound()) {
           deferred.push(key);
           continue;
@@ -836,6 +891,7 @@ export class CopcDataSource {
     try {
       const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
       if (this._destroyed) return;
+      emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
       Object.assign(this._nodes, nodes);
       for (const nodeKey of Object.keys(nodes)) {
         const depth = getDepth(nodeKey);
@@ -1136,6 +1192,7 @@ export class CopcDataSource {
         pinned: this._nodeCache.pinnedCount,
         evictions: this._nodeCache.evictionCount,
       },
+      waste: this._counter.waste,
       fetch: this._stageTiming('fetch'),
       decode: this._stageTiming('decode'),
       upload: this._stageTiming('upload'),

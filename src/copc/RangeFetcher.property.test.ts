@@ -173,6 +173,7 @@ describe('RangeFetcher properties', () => {
           undefined,
           config.maxConcurrent,
           counter,
+          undefined, // idleTimeoutMs
           config.adaptive ? { ...config.adaptive, now } : undefined,
           config.tailGapBytes,
         );

@@ -19,7 +19,7 @@ vi.mock('copc', () => ({
   },
 }));
 
-const { loadCopcHierarchy } = await import('./hierarchy');
+const { emptyInvalidNodes, loadCopcHierarchy } = await import('./hierarchy');
 
 // Every test exercises the Range-support probe first; default it to a
 // well-behaved 206 response so tests unrelated to that probe don't have to
@@ -46,6 +46,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('loadCopcHierarchy', () => {
   it('extracts root center/half size from the cube and computes max depth', async () => {
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: {
         cube: [-100, -50, 0, 100, 150, 40],
         rootHierarchyPage: { pageOffset: 0, pageLength: 100 },
@@ -71,6 +72,7 @@ describe('loadCopcHierarchy', () => {
 
   it('returns the root page\'s unresolved sub-page entry points alongside its nodes', async () => {
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: {
         cube: [0, 0, 0, 10, 10, 10],
         rootHierarchyPage: { pageOffset: 0, pageLength: 100 },
@@ -103,15 +105,36 @@ describe('loadCopcHierarchy', () => {
 
   it('rejects with a clear error when the server ignores the Range header', async () => {
     fetchMock.mockResolvedValueOnce(rangeResponse(1_000_000, 200)); // whole file, not a 206 partial response
+    // The header read goes out alongside the probe and fails too on such a
+    // server; the probe's explanation is still the one the caller sees.
+    create.mockRejectedValueOnce(new Error('Invalid header'));
 
     await expect(loadCopcHierarchy('https://example.com/sample.copc.laz')).rejects.toThrow(
       /Range Request|206/,
     );
-    expect(create).not.toHaveBeenCalled(); // fails fast, before ever trying to parse a header
+    expect(loadHierarchyPage).not.toHaveBeenCalled();
+  });
+
+  it('reads the header without waiting for the Range probe to come back', async () => {
+    let answerProbe!: (r: unknown) => void;
+    fetchMock.mockReturnValueOnce(new Promise((resolve) => (answerProbe = resolve)));
+    create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
+      info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: { '0-0-0-0': { pointCount: 1 } }, pages: {} });
+
+    const loading = loadCopcHierarchy('https://example.com/sample.copc.laz');
+    expect(create).toHaveBeenCalledTimes(1); // already in flight while the probe is pending
+
+    answerProbe(rangeResponse());
+    await expect(loading).resolves.toMatchObject({ maxDepth: 0 });
   });
 
   it('probes with a 1-byte Range request before reading the header', async () => {
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
       wkt: undefined,
     });
@@ -126,6 +149,7 @@ describe('loadCopcHierarchy', () => {
 
   it('skips the Range probe for a non-HTTP getter (e.g. a local file path)', async () => {
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
       wkt: undefined,
     });
@@ -138,6 +162,7 @@ describe('loadCopcHierarchy', () => {
 
   it('computes max depth without a stack overflow on a large (~150k-key) node map (#126)', async () => {
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
       wkt: undefined,
     });
@@ -151,5 +176,35 @@ describe('loadCopcHierarchy', () => {
     const result = await loadCopcHierarchy('https://example.com/sample.copc.laz');
 
     expect(result.maxDepth).toBe(6);
+  });
+});
+
+describe('emptyInvalidNodes', () => {
+  it('empties entries that cannot hold real point data and keeps the rest', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const nodes = {
+      '0-0-0-0': { pointCount: 10, pointDataOffset: 100, pointDataLength: 50 },
+      '1-0-0-0': { pointCount: 5_000, pointDataOffset: 200, pointDataLength: 50 }, // more than the file
+      '1-1-0-0': { pointCount: 3, pointDataOffset: 300, pointDataLength: 0 }, // points, no bytes
+      '1-0-1-0': { pointCount: 0, pointDataOffset: 0, pointDataLength: 0 }, // empty is fine
+    };
+
+    expect(emptyInvalidNodes(nodes, 1_000, 'https://example.com/a.copc.laz')).toBe(2);
+
+    expect(nodes['0-0-0-0']).toEqual({ pointCount: 10, pointDataOffset: 100, pointDataLength: 50 });
+    // Emptied, not deleted: selection still walks through to their children.
+    expect(nodes['1-0-0-0']).toEqual({ pointCount: 0, pointDataOffset: 0, pointDataLength: 0 });
+    expect(nodes['1-1-0-0']).toEqual({ pointCount: 0, pointDataOffset: 0, pointDataLength: 0 });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ignored 2 hierarchy entries/));
+    warn.mockRestore();
+  });
+
+  it('stays quiet when every entry is valid', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const nodes = { '0-0-0-0': { pointCount: 10, pointDataOffset: 100, pointDataLength: 50 } };
+
+    expect(emptyInvalidNodes(nodes, 10, 'https://example.com/a.copc.laz')).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

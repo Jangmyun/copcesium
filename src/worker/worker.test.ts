@@ -28,6 +28,9 @@ function proj4Mock(..._args: unknown[]) {
   return { forward: proj4Forward };
 }
 proj4Mock.defs = (...args: unknown[]) => proj4Defs(...args);
+// A geographic Proj keeps lonLatTransform on `forward()`, which these tests
+// script; its direct path is covered against real proj4 in its own tests.
+proj4Mock.Proj = () => ({ projName: 'longlat', inverse: () => null });
 vi.mock('proj4', () => ({ default: proj4Mock }));
 
 const { convertNode, lonLatAltToEcef } = await import('./worker');

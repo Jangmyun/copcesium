@@ -54,14 +54,53 @@ function extractLinearUnit(wkt: string): number {
 }
 
 /**
- * Extracts the EPSG code from a WKT string.
+ * Extracts the CRS's own EPSG code from a WKT string: an ID[...] (WKT2) or
+ * AUTHORITY[...] (WKT1) that is a direct child of the root node. Nested ones
+ * belong to its datum, spheroid, units and so on — in WKT1 the SPHEROID's
+ * AUTHORITY (e.g. 7019) is the first one in the string.
  */
 function extractEpsgCode(wkt: string): string | null {
-  const idMatches = [...wkt.matchAll(/\bID\s*\[\s*"EPSG"\s*,\s*(\d+)/gi)];
-  if (idMatches.length > 0) return idMatches[idMatches.length - 1][1];
-  const authMatch = wkt.match(/AUTHORITY\s*\[\s*"EPSG"\s*,\s*"(\d+)"/i);
-  if (authMatch) return authMatch[1];
-  return null;
+  let depth = 0;
+  let found: string | null = null;
+  for (let i = 0; i < wkt.length; i++) {
+    const c = wkt[i];
+    if (c === '"') {
+      // Names are quoted and may contain brackets; skip them whole.
+      const close = wkt.indexOf('"', i + 1);
+      if (close < 0) break;
+      i = close;
+    } else if (c === '[' || c === '(') {
+      depth++;
+    } else if (c === ']' || c === ')') {
+      depth--;
+    } else if (depth === 1 && !/[A-Za-z_]/.test(wkt[i - 1] ?? '')) {
+      const m = /^(?:ID|AUTHORITY)\s*[[(]\s*"EPSG"\s*,\s*"?(\d+)/i.exec(wkt.slice(i, i + 48));
+      if (m) found = m[1];
+    }
+  }
+  return found;
+}
+
+// proj4's PJD_NODATUM: the WKT named a datum proj4 doesn't know and gave no
+// TOWGS84, so proj4 converts with no datum shift at all.
+const PJD_NODATUM = 5;
+const WGS84_A = 6378137;
+
+/** True for a proj4 definition string that carries a non-zero datum shift. */
+function hasDatumShift(def: string): boolean {
+  const m = /\+towgs84=([^\s]+)/.exec(def);
+  return !!m && m[1].split(',').some((v) => parseFloat(v) !== 0);
+}
+
+/**
+ * proj4 applies no shift for a datum it doesn't know when the WKT gives no
+ * TOWGS84. On a WGS84/GRS80 ellipsoid that is within a couple of meters
+ * (NAD83, ETRS89, Korea 2000…); on any other ellipsoid it is hundreds of
+ * meters off (Tokyo, Korean 1985, DHDN).
+ */
+function lacksDatumShift(proj: string): boolean {
+  const datum = (proj4.Proj(proj) as unknown as { datum?: { datum_type: number; a: number } }).datum;
+  return !!datum && datum.datum_type === PJD_NODATUM && datum.a !== WGS84_A;
 }
 
 /**
@@ -86,12 +125,33 @@ export function detectCrs(wkt: string | undefined, url: string): CrsDetectionRes
   const zFactor = extractLinearUnit(trimmed);
   const proj = `CRS:${url.replace(/\W+/g, '_')}`;
 
+  let parsed = false;
   try {
     proj4.defs(proj, crsWkt);
     proj4(proj, 'EPSG:4326', [0, 0]);
-    return { proj, projDef: crsWkt, zFactor, xyFactor: zFactor };
+    parsed = true;
   } catch {
     // WKT2 or an unsupported format → fall through to step 2
+  }
+  if (parsed) {
+    if (!lacksDatumShift(proj)) return { proj, projDef: crsWkt, zFactor, xyFactor: zFactor };
+    // The WKT parsed but left the datum shift out. The local table carries
+    // the published TOWGS84 for some of these (Korean 1985, RD New…).
+    const tableDef = lookupEpsg(extractEpsgCode(crsWkt) ?? '');
+    if (tableDef && hasDatumShift(tableDef)) {
+      proj4.defs(proj, tableDef);
+      return { proj, projDef: tableDef, zFactor, xyFactor: zFactor };
+    }
+    return {
+      proj,
+      projDef: crsWkt,
+      zFactor,
+      xyFactor: zFactor,
+      warning:
+        'The CRS datum has no TOWGS84 in the file and none is known locally, so it is converted to WGS84 ' +
+        'with no datum shift; positions may be off by up to several hundred meters. ' +
+        'Pass `projDef` with the datum shift (e.g. +towgs84=...) to correct it.',
+    };
   }
 
   // For a COMPD_CS (horizontal + vertical CRS composite), searching the full

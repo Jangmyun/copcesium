@@ -5,6 +5,107 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-14
+
+1.4.1 also shipped three changes its notes left out: point-level picking with
+coordinate and attribute lookup (#213), plane and box clipping (#214), and
+holding on-screen nodes across budget cuts while the camera moves, which
+stopped LoD flicker during tilts (#192).
+
+### Added
+
+- **`stats.waste` counts work that was thrown away.** `requestCount` and
+  `transferredBytes` only ever counted completed responses. `CopcStats.waste`
+  (`FetchWaste`) now also reports, for node point data:
+  - attempts aborted by `cancel()`/`destroy()`, before or after the headers;
+  - attempts that failed, and the retries actually sent;
+  - bytes inside completed responses that no node used (merge gaps, members
+    cancelled in flight);
+  - requests dropped before any fetch.
+
+  Byte counts for incomplete attempts are the requested span. Hierarchy page
+  fetches are not covered yet.
+
+### Changed
+
+- **Nodes are requested shallowest first, then closest to the screen centre.**
+  Screen-space error says how large a node appears but not where, so within a
+  depth the part of the view filling in first had nothing to do with where a
+  viewer was looking. Selection, budgets, and bytes transferred are unchanged;
+  only the order of one pass's requests is.
+- **Reprojection in the decode worker is about twice as fast, with identical
+  output.** `proj4(...).forward()` cost nearly as much as the LAZ decode itself, almost
+  none of it projection math: every point was cloned, checked, and copied into
+  a fresh object at each step, then passed through a datum step that did
+  nothing. For a projected CRS whose datum needs no shift to WGS84, the worker
+  now calls the projection's own `inverse()` directly; any other CRS still goes
+  through `forward()`. On 5.1M points from five public datasets the results
+  match `forward()` bit for bit, and the decode stage's median per node drops
+  14-16% in the browser.
+- **First points one or two round trips sooner.** Opening a file sent the
+  Range probe, then (in a browser, where `Content-Range` is unreadable) a
+  HEAD, then the header read, then the root hierarchy page, each waiting for
+  the last. The probe and the header read now go out together and the HEAD
+  runs off the critical path, so only the header and the root page are in
+  series. At 50 ms per request the hierarchy loads in 157 ms instead of
+  261 ms. The probe's error for a server that ignores `Range` is unchanged,
+  and a non-206 body is now cancelled instead of left streaming.
+
+### Fixed
+
+- **Nodes loaded in file order instead of the order the view needed them.**
+  `selectNodes()` ranks nodes by screen-space error, but `RangeFetcher` sorted
+  each batch by byte offset to find mergeable neighbors and then queued the
+  merged groups in that order. Once the batch exceeded `maxConcurrent`, the
+  file's layout decided what appeared first, so fine nodes could land before
+  the coarse nodes covering the same view, showing up as scattered patches.
+  Groups now dispatch in request order, each placed by its earliest member;
+  which ranges get merged is unchanged.
+- **A stalled Range request held its fetch slot forever.** Each attempt is now
+  abandoned and retried after 20 s with no data from the server — measured
+  from the last chunk received, so a large group that keeps arriving is never
+  cut off.
+- **A non-206 response's body was left open.** A server ignoring `Range`
+  answers 200 with the whole file; that stream is now cancelled.
+- **A short body reached the decoder.** A response with fewer bytes than the
+  requested range is now rejected (and retried) instead of being decoded as a
+  truncated chunk.
+- **A worker that timed out was handed the next task.** It was still busy
+  with the one that timed out, so the next task queued behind it. It is now
+  replaced, like a crashed worker.
+- **Points hundreds of meters off on datums proj4 does not know.** A WKT
+  that names such a datum without a TOWGS84 (common for Korean 1985, Tokyo,
+  DHDN) was converted with no datum shift at all: 362 m, 463 m and 144 m off
+  respectively. The local EPSG table's definition, which carries the
+  published shift, is now used when it has one; otherwise `load()` warns.
+  Datums on the WGS84/GRS80 ellipsoid (NAD83, ETRS89, Korea 2000) are
+  unaffected.
+- **A file with no detectable CRS was read as degrees.** Projected
+  coordinates then landed nowhere near the data, with no error. `load()` now
+  throws when the CRS is unknown and the extent cannot be longitude/latitude,
+  asking for `proj`/`projDef`.
+- **The EPSG-table fallback looked up the spheroid's code.** In WKT1 the first
+  `AUTHORITY` is the SPHEROID's (e.g. 7019), so the projected CRS was never
+  found. Only the root node's own `AUTHORITY`/`ID` is used now.
+- **A CRS proj4 can define but not evaluate failed node by node.** A
+  `+nadgrids` definition whose grid was never registered turned every point
+  into NaN. `load()` now transforms the middle of the data once and throws if
+  that is not finite.
+- **A non-finite `geoidOffset` blanked the cloud silently.** It is now rejected
+  before anything is fetched.
+- **Corrupt hierarchy entries reached the decoder.** An entry with more points
+  than the whole file, or with points but no bytes, is now treated as empty
+  (its children stay reachable) and logged.
+- **Geoid heights placed on the ellipsoid without notice.** A file whose CRS
+  includes a vertical datum, loaded without `geoidOffset`, now logs that its
+  heights will be off by the local geoid height.
+- **A range inside another one cut the outer one's bytes short.**
+  `RangeFetcher` ended a merged group at its last member in offset order, so
+  a request lying wholly inside an earlier one shortened the earlier one's
+  bytes. The group now ends at its furthest-ending member. An empty range on
+  its own is resolved without a request instead of being sent as an invalid
+  `Range` and failing with 416. Neither happens with a well-formed COPC file.
+
 ## [1.4.1] - 2026-11-10
 
 ### Added

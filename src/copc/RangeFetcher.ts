@@ -154,6 +154,20 @@ const RETRY_BASE_MS = 250;
 const DEFAULT_MAX_ADAPTIVE_GAP = 256 * 1024;
 const DEFAULT_ADAPTIVE_MAX_GROUP_BYTES = 4 * 1024 * 1024;
 
+// How long one attempt may go without the server sending anything — the
+// response headers, or the next chunk of the body — before it is abandoned
+// and retried. Measured from the last progress, not from the start, so a
+// large group arriving slowly but steadily is never cut off; only a stalled
+// connection is, which would otherwise hold one of `maxConcurrent` slots
+// indefinitely.
+const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
+
+function timeoutError(ms: number): Error {
+  const err = new Error(`RangeFetcher: no data from the server for ${ms} ms`);
+  err.name = 'TimeoutError';
+  return err;
+}
+
 /**
  * Batches concurrent byte-range requests for one COPC file into fewer HTTP
  * Range Requests, merging ones within `gapBytes` of each other into a single
@@ -187,6 +201,7 @@ export class RangeFetcher {
      *  so node point data lands in the same total as the header and the
      *  hierarchy pages (#181). */
     private readonly counter?: TransferCounter,
+    private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
     /** Omit to keep the fixed `gapBytes`. `gapBytes` is then only the gap
      *  used until enough responses have been timed. */
     private readonly adaptive?: AdaptiveGapOptions,
@@ -289,6 +304,7 @@ export class RangeFetcher {
       else if (req.end <= req.begin) req.resolve(new Uint8Array(0));
       else live.push(req);
     }
+    if (live.length < batch.length) this.counter?.recordCancelledBeforeSend(batch.length - live.length);
     for (const group of this._group(live)) {
       const state: GroupState = { liveCount: group.length, controller: null };
       for (const req of group) req.group = state;
@@ -302,6 +318,7 @@ export class RangeFetcher {
     const index = this.queue.findIndex((queued) => queued.state === state);
     if (index === -1) return; // already dispatched by the time this ran
     const [removed] = this.queue.splice(index, 1);
+    this.counter?.recordCancelledBeforeSend(removed!.requests.length);
     for (const req of removed!.requests) {
       req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
     }
@@ -350,8 +367,15 @@ export class RangeFetcher {
    * sorted by `begin`, a later member can lie wholly inside an earlier one,
    * and measuring from the later member's end would both cut the earlier
    * member's bytes short and mis-measure the gap to whatever comes next.
+   *
+   * Groups come back in request order, each placed by its earliest member.
+   * Offset order only finds the neighbors: `_updateLoD()` asks for nodes most
+   * important first, and leaving the groups sorted by offset made the file's
+   * layout decide what appeared on screen first once `maxConcurrent` queued
+   * the rest.
    */
   private _merge(requests: RangeRequest[], gapBytes: number, maxGroupBytes: number): RangeRequest[][] {
+    const askedAt = new Map(requests.map((req, i) => [req, i]));
     const sorted = [...requests].sort((a, b) => a.begin - b.begin);
     const tailGap = Math.max(gapBytes, this.tailGapBytes);
     const groups: RangeRequest[][] = [];
@@ -369,7 +393,9 @@ export class RangeFetcher {
         reach = req;
       }
     }
-    return groups;
+    const firstAsked = (group: RangeRequest[]): number =>
+      Math.min(...group.map((req) => askedAt.get(req)!));
+    return groups.sort((a, b) => firstAsked(a) - firstAsked(b));
   }
 
   private async _fetchGroup(group: RangeRequest[], state: GroupState): Promise<void> {
@@ -380,6 +406,8 @@ export class RangeFetcher {
     this.inFlight.add(controller);
     try {
       const bytes = await this._fetchRange(groupBegin, groupEnd, controller.signal);
+      let used = 0;
+      let usedEnd = groupBegin;
       for (const req of group) {
         if (req.cancelled) {
           req.reject(abortError('RangeFetcher: request cancelled before its result was needed'));
@@ -387,8 +415,12 @@ export class RangeFetcher {
           // A copy, not a view — each member is handed off independently
           // (e.g. transferred to a worker), which a shared buffer can't be.
           req.resolve(bytes.slice(req.begin - groupBegin, req.end - groupBegin));
+          // Members are in offset order and may overlap; count each byte once.
+          used += Math.max(0, req.end - Math.max(req.begin, usedEnd));
+          usedEnd = Math.max(usedEnd, req.end);
         }
       }
+      this.counter?.recordUnused(bytes.length - used);
     } catch (err) {
       const error = err as Error;
       for (const req of group) req.reject(error);
@@ -408,31 +440,29 @@ export class RangeFetcher {
    */
   private async _fetchRange(begin: number, end: number, signal: AbortSignal): Promise<Uint8Array> {
     for (let attempt = 1; ; attempt++) {
+      if (attempt > 1) this.counter?.recordRetry();
+      let afterHeaders = false;
       try {
         const sentAt = this.now();
-        const response = await fetch(this.url, {
-          headers: { Range: `bytes=${begin}-${end - 1}` },
-          signal,
-        });
-        const headersAt = this.now();
-        // Strictly 206, not merely `ok`: a 200 means the server ignored the
-        // Range header and sent the whole file, and those bytes would then be
-        // sliced at range-relative offsets — silently handing the decoder data
-        // from the wrong part of the file instead of failing (#117).
-        if (response.status !== 206) throw httpError(response.status, begin, end);
-        // Every body is clocked, even one that fails or is aborted, since it
-        // still shared the link with the bodies that do get timed.
-        const mark = this.overlap?.start(headersAt) ?? 0;
+        let headersAt = sentAt;
+        // Every body is clocked from its headers on, even one that fails or is
+        // aborted, since it still shared the link with the bodies that do get
+        // timed.
+        let mark: number | null = null;
         let bodyArea = 0;
-        let bodyEnd = headersAt;
+        let bodyEnd = sentAt;
         let bytes: Uint8Array;
         try {
-          bytes = new Uint8Array(await response.arrayBuffer());
+          bytes = await this._attempt(begin, end, signal, () => {
+            afterHeaders = true;
+            headersAt = this.now();
+            if (this.overlap) mark = this.overlap.start(headersAt);
+          });
         } finally {
           // One timestamp for both the overlap integral and the body time, so
           // `sharedWith` is the mean over exactly the interval it divides by.
           bodyEnd = this.now();
-          bodyArea = this.overlap?.end(bodyEnd, mark) ?? 0;
+          if (mark !== null) bodyArea = this.overlap!.end(bodyEnd, mark);
         }
         // Only successful reads are timed: a failed or aborted attempt says
         // nothing about what the next request on a working link costs.
@@ -454,6 +484,10 @@ export class RangeFetcher {
         this.counter?.record(begin, begin + bytes.length);
         return bytes;
       } catch (err) {
+        // Tallied per attempt, so a group that fails twice and then succeeds
+        // shows two failures and two retries next to its one counted response.
+        if (signal.aborted) this.counter?.recordAborted(begin, end, afterHeaders);
+        else this.counter?.recordFailed(begin, end);
         if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
         await delay(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
         // Cancelled while backing off — don't resurrect work nobody wants.
@@ -461,4 +495,91 @@ export class RangeFetcher {
       }
     }
   }
+
+  /**
+   * One attempt at a group's Range Request. It runs on its own controller,
+   * which follows `signal` (the caller's cancellation) and also fires when
+   * the server sends nothing for `idleTimeoutMs`. A stall then surfaces as a
+   * retryable `TimeoutError`, not as the `AbortError` that tells
+   * `_fetchRange()` the caller gave up. `onHeaders` runs once the response
+   * headers arrive, so an abort can be told apart as before or after them.
+   */
+  private async _attempt(
+    begin: number,
+    end: number,
+    signal: AbortSignal,
+    onHeaders: () => void,
+  ): Promise<Uint8Array> {
+    const controller = new AbortController();
+    const follow = () => controller.abort();
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', follow, { once: true });
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const touch = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.idleTimeoutMs);
+    };
+    try {
+      touch();
+      const response = await fetch(this.url, {
+        headers: { Range: `bytes=${begin}-${end - 1}` },
+        signal: controller.signal,
+      });
+      onHeaders();
+      touch();
+      // Strictly 206, not merely `ok`: a 200 means the server ignored the
+      // Range header and sent the whole file, and those bytes would then be
+      // sliced at range-relative offsets — silently handing the decoder data
+      // from the wrong part of the file instead of failing (#117). That body
+      // can be the whole multi-GB file, so release it rather than leave the
+      // stream open until it is garbage-collected.
+      if (response.status !== 206) {
+        void response.body?.cancel().catch(() => {});
+        throw httpError(response.status, begin, end);
+      }
+      const bytes = await readBody(response, touch);
+      // A short body would otherwise reach the decoder as a truncated chunk.
+      // A longer one is harmless: members are sliced from its start.
+      if (bytes.length < end - begin) {
+        throw new Error(
+          `RangeFetcher: expected ${end - begin} bytes for bytes=${begin}-${end - 1}, received ${bytes.length}`,
+        );
+      }
+      return bytes;
+    } catch (err) {
+      if (timedOut) throw timeoutError(this.idleTimeoutMs);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', follow);
+    }
+  }
+}
+
+/** Reads a response body chunk by chunk, calling `onProgress` for each, so
+ *  the idle timer measures silence rather than total download time. */
+async function readBody(response: Response, onProgress: () => void): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array(await response.arrayBuffer());
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    onProgress();
+    chunks.push(value);
+    length += value.length;
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }

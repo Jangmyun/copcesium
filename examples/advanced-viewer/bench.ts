@@ -9,6 +9,7 @@
 
 import * as Cesium from 'cesium';
 import type { CopcDataSource } from 'copcesium';
+import { escapeHtml } from './html';
 
 /**
  * The shape this harness needs, declared locally rather than imported.
@@ -360,7 +361,7 @@ class BenchPanel {
           return (
             `<tr style="border-top:1px solid var(--border)">` +
             `<td style="padding:4px 6px 4px 0;color:var(--dim)">${k}</td>` +
-            cells.map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`).join('') +
+            cells.map((c) => `<td style="padding:4px 6px 4px 0">${escapeHtml(c)}</td>`).join('') +
             `</tr>`
           );
         })
@@ -375,13 +376,13 @@ class BenchPanel {
         (s) =>
           `<tr style="border-top:1px solid var(--border)">` +
           [
-            s.label + (s.timedOut ? ' &#9888;' : ''),
+            escapeHtml(s.label) + (s.timedOut ? ' &#9888;' : ''),
             String(s.visibleLoadMs),
             String(s.loadMs),
-            formatSize(s.bytesDelta),
+            escapeHtml(formatSize(s.bytesDelta)),
             String(s.requestsDelta),
             String(s.nodesDelta),
-            s.bytesPerSec > 0 ? `${formatSize(s.bytesPerSec)}/s` : '—',
+            s.bytesPerSec > 0 ? escapeHtml(`${formatSize(s.bytesPerSec)}/s`) : '—',
           ]
             .map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`)
             .join('') +
@@ -423,9 +424,9 @@ function formatSize(n: number): string {
 function statBlock(label: string, value: string, accent = false): string {
   return (
     `<div style="margin-bottom:9px">` +
-    `<div style="font-size:10.5px;color:var(--dim)">${label}</div>` +
+    `<div style="font-size:10.5px;color:var(--dim)">${escapeHtml(label)}</div>` +
     `<div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;` +
-    `color:${accent ? 'var(--accent)' : 'inherit'}">${value}</div></div>`
+    `color:${accent ? 'var(--accent)' : 'inherit'}">${escapeHtml(value)}</div></div>`
   );
 }
 
