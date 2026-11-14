@@ -119,6 +119,7 @@ describe('loadCopcHierarchy', () => {
     let answerProbe!: (r: unknown) => void;
     fetchMock.mockReturnValueOnce(new Promise((resolve) => (answerProbe = resolve)));
     create.mockResolvedValueOnce({
+      header: { pointCount: 1_000_000 },
       info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
       wkt: undefined,
     });
