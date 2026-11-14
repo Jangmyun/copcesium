@@ -80,6 +80,8 @@ interface CesiumContextLike {
 export interface PickedPointAttributes {
   /** World-space (ECEF) position, including the live `heightOffset` shift. */
   position: Cesium.Cartesian3;
+  /** The same point with `heightOffset` at 0: where the data itself puts it. */
+  dataPosition: Cesium.Cartesian3;
   /** Raw LAS classification code (0-255). */
   classification: number;
   /** Raw LAS intensity, or 0 for a file with no such dimension. */
@@ -557,9 +559,14 @@ export class PointCloudPrimitive {
       offset,
       new Cesium.Cartesian3(),
     );
+    // The shift is applied per node along that node's own "up", so only this
+    // primitive can undo it exactly; a caller holding just `position` could
+    // only guess the direction.
+    const dataPosition = Cesium.Matrix4.multiplyByPoint(this._modelMatrix(0), offset, new Cesium.Cartesian3());
 
     return {
       position,
+      dataPosition,
       classification: classificationBytes[0]!,
       intensity: intensityBytes[0]!,
     };

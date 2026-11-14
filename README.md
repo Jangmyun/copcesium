@@ -331,6 +331,25 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 
 The pick pass depth-tests only this data source's own points, so a point hidden behind terrain or 3D Tiles can still be picked. If that matters, compare the result against `scene.pickPosition()` (or `scene.pick()`) at the same screen position.
 
+### Measuring
+
+`measureSegment(a, b)` and `measurePath(points)` turn picked positions into distances. They are pure functions, with no scene or drawing involved, so any UI can use them:
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference: all in meters
+```
+
+| Value | Meaning |
+| --- | --- |
+| `distance` | Straight line between the two ECEF points. |
+| `horizontalDistance` | Geodesic between the points' footprints on the WGS84 ellipsoid. It doesn't depend on their heights. |
+| `heightDifference` | Ellipsoidal height of the end point minus the start point. This is not the difference in ECEF Z, and not a geoid (orthometric) height difference. |
+
+`measurePath()` also returns `length`, `horizontalLength`, `totalAscent`/`totalDescent`, and each segment. Use `dataPosition` rather than `position` so a measurement doesn't depend on the live `heightOffset`. A load-time `geoidOffset` shifts every point equally, so it cancels out of `heightDifference`.
+
 ### Measuring transfer
 
 `dataSource.stats` returns a `CopcStats` snapshot, so the streaming claim can be measured rather than taken on trust:

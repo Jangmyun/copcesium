@@ -1135,6 +1135,7 @@ export class CopcDataSource {
       nodeKey,
       pointIndex: best.pointIndex,
       position: attrs.position,
+      dataPosition: attrs.dataPosition,
       classification: attrs.classification,
       intensity: attrs.intensity,
     };

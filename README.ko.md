@@ -331,6 +331,25 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 
 pick 패스는 이 데이터소스의 점끼리만 깊이 테스트를 하므로, 지형이나 3D Tiles 뒤에 가려진 점도 선택될 수 있습니다. 이것이 문제라면 같은 화면 위치의 `scene.pickPosition()`(또는 `scene.pick()`) 결과와 비교해 걸러내세요.
 
+### 측정
+
+`measureSegment(a, b)`와 `measurePath(points)`는 선택한 점의 위치로 거리를 계산합니다. 장면이나 그리기와 무관한 순수 함수라 어떤 UI에서도 쓸 수 있습니다.
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference — 모두 미터
+```
+
+| 값 | 뜻 |
+| --- | --- |
+| `distance` | 두 ECEF 점 사이의 직선거리. |
+| `horizontalDistance` | 두 점을 WGS84 타원체 면에 내린 위치 사이의 측지선 거리. 점의 높이와 무관합니다. |
+| `heightDifference` | 끝점의 타원체고에서 시작점의 타원체고를 뺀 값. ECEF Z의 차이가 아니고, 지오이드 기준 정표고의 차이도 아닙니다. |
+
+`measurePath()`는 `length`, `horizontalLength`, `totalAscent`/`totalDescent`와 구간별 결과도 돌려줍니다. 측정이 실시간 `heightOffset`에 따라 바뀌지 않게 하려면 `position` 대신 `dataPosition`을 쓰세요. 로드할 때 준 `geoidOffset`은 모든 점에 같은 값을 더하므로 `heightDifference`에서 소거됩니다.
+
 ### 전송량 측정
 
 `dataSource.stats`는 `CopcStats` 스냅샷을 돌려줍니다. 스트리밍한다는 주장을 믿는 대신 재어 볼 수 있게 하기 위한 것입니다.
