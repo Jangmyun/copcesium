@@ -181,7 +181,11 @@ export function createCountingGetter(
 ): (begin: number, end: number) => Promise<Uint8Array> {
   return async (begin: number, end: number): Promise<Uint8Array> => {
     const response = await fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
-    if (response.status !== 206) throw httpError(url, response.status, begin, end);
+    if (response.status !== 206) {
+      // A 200 can be the whole file streaming in; release it.
+      void response.body?.cancel().catch(() => {});
+      throw httpError(url, response.status, begin, end);
+    }
     if (counter.fileBytes === 0) {
       const total = parseContentRangeTotal(response.headers?.get('Content-Range') ?? null);
       if (total !== undefined) counter.setFileBytes(total);

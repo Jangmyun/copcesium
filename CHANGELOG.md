@@ -21,6 +21,14 @@ All notable changes to this project are documented here. This project follows
   through `forward()`. On 5.1M points from five public datasets the results
   match `forward()` bit for bit, and the decode stage's median per node drops
   14-16% in the browser.
+- **First points one or two round trips sooner.** Opening a file sent the
+  Range probe, then (in a browser, where `Content-Range` is unreadable) a
+  HEAD, then the header read, then the root hierarchy page, each waiting for
+  the last. The probe and the header read now go out together and the HEAD
+  runs off the critical path, so only the header and the root page are in
+  series. At 50 ms per request the hierarchy loads in 157 ms instead of
+  261 ms. The probe's error for a server that ignores `Range` is unchanged,
+  and a non-206 body is now cancelled instead of left streaming.
 
 ### Fixed
 
