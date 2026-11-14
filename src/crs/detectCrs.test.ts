@@ -90,6 +90,69 @@ describe('detectCrs', () => {
     );
   });
 
+  it('takes the projected CRS code, not the spheroid code that comes first in WKT1', () => {
+    // GARBAGE keeps proj4 from parsing it, so this goes through the table
+    // lookup; the first AUTHORITY in the string is the SPHEROID's (7019).
+    const wkt =
+      'PROJCS["Korea 2000 / Central Belt 2010",' +
+      'GEOGCS["Korea 2000",DATUM["Geocentric_datum_of_Korea",' +
+      'SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6737"]],' +
+      'AUTHORITY["EPSG","4737"]],GARBAGE,AUTHORITY["EPSG","5186"]]';
+
+    const result = detectCrs(wkt, SAMPLE_URL);
+
+    expect(result).not.toBeNull();
+    expect(result!.projDef).toBe(
+      '+proj=tmerc +lat_0=38 +lon_0=127 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs',
+    );
+  });
+
+  describe('datum shift', () => {
+    const bessel = 'SPHEROID["Bessel 1841",6377397.155,299.1528128,AUTHORITY["EPSG","7004"]]';
+    const tmerc = (lon0: number, y0: number) =>
+      'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",38],' +
+      `PARAMETER["central_meridian",${lon0}],PARAMETER["scale_factor",1],` +
+      `PARAMETER["false_easting",200000],PARAMETER["false_northing",${y0}],UNIT["metre",1]`;
+
+    it('uses the local table definition when the WKT parses but leaves out a known TOWGS84', () => {
+      // Korean 1985 / Modified Central Belt as many writers emit it: no
+      // TOWGS84, so proj4 alone would apply no shift (~360 m off).
+      const wkt =
+        `PROJCS["Korean 1985 / Modified Central Belt",GEOGCS["Korean 1985",DATUM["Korean_Datum_1985",${bessel}],` +
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+        `${tmerc(127.0028902777778, 500000)},AUTHORITY["EPSG","5174"]]`;
+
+      const result = detectCrs(wkt, SAMPLE_URL);
+
+      expect(result!.projDef).toContain('+towgs84=-115.80,474.99,674.11');
+      expect(result!.warning).toBeUndefined();
+    });
+
+    it('warns when the datum shift is in neither the WKT nor the local table', () => {
+      const wkt =
+        `PROJCS["Tokyo / Japan Plane Rectangular CS IX",GEOGCS["Tokyo",DATUM["Tokyo",${bessel}],` +
+        'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+        `${tmerc(139.8333333333333, 0)},AUTHORITY["EPSG","30169"]]`;
+
+      const result = detectCrs(wkt, SAMPLE_URL);
+
+      expect(result!.projDef).toBe(wkt);
+      expect(result!.warning).toMatch(/no datum shift/);
+    });
+
+    it('does not warn for a datum on the WGS84/GRS80 ellipsoid, which needs no shift', () => {
+      const wkt =
+        'PROJCS["Korea 2000 / Central Belt 2010",GEOGCS["Korea 2000",DATUM["Geocentric_datum_of_Korea",' +
+        'SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+        `${tmerc(127, 600000)},AUTHORITY["EPSG","5186"]]`;
+
+      const result = detectCrs(wkt, SAMPLE_URL);
+
+      expect(result!.projDef).toBe(wkt);
+      expect(result!.warning).toBeUndefined();
+    });
+  });
+
   it('returns null when the CRS cannot be determined at all', () => {
     const wkt = 'NOT A REAL WKT STRING WITHOUT ANY EPSG MARKERS';
 

@@ -165,6 +165,13 @@ export interface CrsDetectionResult {
   zFactor: number;
   /** Factor that converts the XY axis unit to meters */
   xyFactor: number;
+  /**
+   * Set when the CRS was recognised but positions may still be wrong, e.g. a
+   * datum whose shift to WGS84 neither the WKT nor the local EPSG table
+   * gives, which proj4 then applies as no shift at all (hundreds of meters
+   * for Tokyo, Korean 1985, DHDN). `CopcDataSource.load()` logs it.
+   */
+  warning?: string;
 }
 
 /**
