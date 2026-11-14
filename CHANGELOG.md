@@ -5,6 +5,27 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-14
+
+1.4.1 also shipped three changes its notes left out: point-level picking with
+coordinate and attribute lookup (#213), plane and box clipping (#214), and
+holding on-screen nodes across budget cuts while the camera moves, which
+stopped LoD flicker during tilts (#192).
+
+### Added
+
+- **`stats.waste` counts work that was thrown away.** `requestCount` and
+  `transferredBytes` only ever counted completed responses. `CopcStats.waste`
+  (`FetchWaste`) now also reports, for node point data:
+  - attempts aborted by `cancel()`/`destroy()`, before or after the headers;
+  - attempts that failed, and the retries actually sent;
+  - bytes inside completed responses that no node used (merge gaps, members
+    cancelled in flight);
+  - requests dropped before any fetch.
+
+  Byte counts for incomplete attempts are the requested span. Hierarchy page
+  fetches are not covered yet.
+
 ### Changed
 
 - **Nodes are requested shallowest first, then closest to the screen centre.**
@@ -78,6 +99,12 @@ All notable changes to this project are documented here. This project follows
 - **Geoid heights placed on the ellipsoid without notice.** A file whose CRS
   includes a vertical datum, loaded without `geoidOffset`, now logs that its
   heights will be off by the local geoid height.
+- **A range inside another one cut the outer one's bytes short.**
+  `RangeFetcher` ended a merged group at its last member in offset order, so
+  a request lying wholly inside an earlier one shortened the earlier one's
+  bytes. The group now ends at its furthest-ending member. An empty range on
+  its own is resolved without a request instead of being sent as an invalid
+  `Range` and failing with 416. Neither happens with a well-formed COPC file.
 
 ## [1.4.1] - 2026-11-10
 
