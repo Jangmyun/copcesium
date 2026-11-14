@@ -214,6 +214,9 @@ export class RangeFetcher {
     const live: RangeRequest[] = [];
     for (const req of batch) {
       if (req.cancelled) req.reject(abortError('RangeFetcher: request cancelled before it reached a fetch'));
+      // An empty range needs no bytes, and alone it would go out as the
+      // invalid header `bytes=b-(b-1)` and fail with a 416.
+      else if (req.end <= req.begin) req.resolve(new Uint8Array(0));
       else live.push(req);
     }
     for (const group of this._group(live)) {
@@ -251,18 +254,25 @@ export class RangeFetcher {
    * unless doing so would grow the group's span past `maxGroupBytes` — a
    * request that alone exceeds the cap still gets its own group, since
    * there's no smaller fetch that would satisfy it.
+   *
+   * A group reaches as far as its furthest-ending member, not its last one:
+   * sorted by `begin`, a later member can lie wholly inside an earlier one,
+   * and measuring from the later member's end would both cut the earlier
+   * member's bytes short and mis-measure the gap to whatever comes next.
    */
   private _group(requests: RangeRequest[]): RangeRequest[][] {
     const sorted = [...requests].sort((a, b) => a.begin - b.begin);
     const groups: RangeRequest[][] = [];
+    let groupEnd = 0;
     for (const req of sorted) {
       const group = groups[groups.length - 1];
-      const last = group?.[group.length - 1];
-      const spanIfAdded = group ? req.end - group[0]!.begin : 0;
-      if (last && req.begin - last.end <= this.gapBytes && spanIfAdded <= this.maxGroupBytes) {
+      const spanIfAdded = group ? Math.max(groupEnd, req.end) - group[0]!.begin : 0;
+      if (group && req.begin - groupEnd <= this.gapBytes && spanIfAdded <= this.maxGroupBytes) {
         group.push(req);
+        groupEnd = Math.max(groupEnd, req.end);
       } else {
         groups.push([req]);
+        groupEnd = req.end;
       }
     }
     return groups;
@@ -270,7 +280,7 @@ export class RangeFetcher {
 
   private async _fetchGroup(group: RangeRequest[], state: GroupState): Promise<void> {
     const groupBegin = group[0]!.begin;
-    const groupEnd = group[group.length - 1]!.end;
+    const groupEnd = Math.max(...group.map((req) => req.end));
     const controller = new AbortController();
     state.controller = controller;
     this.inFlight.add(controller);
