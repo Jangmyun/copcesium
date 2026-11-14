@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RangeFetcher } from './RangeFetcher';
+import { TransferCounter } from './TransferCounter';
 
 /** A successful Range response: 206, since every request this class makes
  *  carries a `Range` header. */
@@ -325,6 +326,188 @@ describe('RangeFetcher', () => {
     await vi.runAllTimersAsync();
 
     await rejections;
+  });
+
+  describe('waste accounting', () => {
+    const url = 'https://example.com/file.copc.laz';
+
+    it('counts merge-gap bytes as received but unused', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(30))));
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 10, undefined, undefined, counter);
+
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(20, 30)]);
+
+      expect(counter.transferredBytes).toBe(30);
+      expect(counter.waste.unusedBytes).toBe(10);
+    });
+
+    it('counts overlapping members once', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(30))));
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      await Promise.all([fetcher.fetch(0, 20), fetcher.fetch(10, 30)]);
+
+      expect(counter.waste.unusedBytes).toBe(0);
+    });
+
+    it('counts the slice of a member cancelled while its group was in flight as unused', async () => {
+      let respond!: () => void;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockReturnValue(
+          new Promise((resolve) => {
+            respond = () => resolve(fakeResponse(makeSourceBytes(20)));
+          }),
+        ),
+      );
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      const a = fetcher.fetch(0, 10);
+      const b = fetcher.fetch(10, 20);
+      await Promise.resolve();
+      b.cancel();
+      const rejected = expect(b).rejects.toThrow(/cancelled/);
+      respond();
+
+      await a;
+      await rejected;
+      expect(counter.waste.unusedBytes).toBe(10);
+      expect(counter.waste.abortedRequests).toBe(0);
+    });
+
+    it('counts a fetch aborted before its headers arrived', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: string, opts: { signal: AbortSignal }) => {
+          return new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }),
+      );
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      const request = fetcher.fetch(0, 100);
+      await Promise.resolve();
+      request.cancel();
+
+      await expect(request).rejects.toThrow(/aborted/i);
+      expect(counter.waste).toMatchObject({ abortedRequests: 1, abortedAfterHeaders: 0, abortedBytes: 100 });
+      expect(counter.requestCount).toBe(0);
+    });
+
+    it('counts a fetch aborted while its body was downloading', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: string, opts: { signal: AbortSignal }) => ({
+          status: 206,
+          arrayBuffer: () =>
+            new Promise((_resolve, reject) => {
+              opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            }),
+        })),
+      );
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      const request = fetcher.fetch(0, 100);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      request.cancel();
+
+      await expect(request).rejects.toThrow(/aborted/i);
+      expect(counter.waste).toMatchObject({ abortedRequests: 1, abortedAfterHeaders: 1, abortedBytes: 100 });
+    });
+
+    it('counts each failed attempt and each retry, next to the one response that delivered', async () => {
+      useFakeBackoff();
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValueOnce(statusResponse(503))
+          .mockRejectedValueOnce(new Error('network down'))
+          .mockResolvedValueOnce(fakeResponse(makeSourceBytes(10))),
+      );
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      const request = fetcher.fetch(0, 10);
+      await vi.runAllTimersAsync();
+
+      await expect(request).resolves.toHaveLength(10);
+      expect(counter.waste).toMatchObject({ failedRequests: 2, failedBytes: 20, retries: 2 });
+      expect(counter.requestCount).toBe(1);
+    });
+
+    it('does not count a retry that a cancellation during the backoff stopped from being sent', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockResolvedValue(statusResponse(503));
+      vi.stubGlobal('fetch', fetchMock);
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      const request = fetcher.fetch(0, 10);
+      const rejected = expect(request).rejects.toThrow(/cancelled/);
+      await vi.waitFor(() => expect(counter.waste.failedRequests).toBe(1));
+      request.cancel(); // during the first backoff
+      await vi.runAllTimersAsync();
+
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(counter.waste).toMatchObject({ failedRequests: 1, retries: 0, abortedRequests: 0 });
+    });
+
+    it('keeps the totals it already had when no fetch goes wrong', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(20))));
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(10, 20)]);
+
+      expect(counter.requestCount).toBe(1);
+      expect(counter.transferredBytes).toBe(20);
+      expect(counter.waste).toEqual({
+        abortedRequests: 0,
+        abortedAfterHeaders: 0,
+        abortedBytes: 0,
+        failedRequests: 0,
+        failedBytes: 0,
+        retries: 0,
+        unusedBytes: 0,
+        cancelledBeforeSend: 0,
+      });
+    });
+
+    it('does not count a retry for a failure that is not retried', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(statusResponse(404)));
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, counter);
+
+      await expect(fetcher.fetch(0, 10)).rejects.toThrow(/404/);
+
+      expect(counter.waste).toMatchObject({ failedRequests: 1, retries: 0 });
+    });
+
+    it('counts requests cancelled before any fetch was made, at no byte cost', async () => {
+      const fetchMock = vi.fn().mockReturnValue(new Promise(() => {}));
+      vi.stubGlobal('fetch', fetchMock);
+      const counter = new TransferCounter();
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, counter);
+
+      fetcher.fetch(0, 10); // takes the only slot
+      const queued = fetcher.fetch(1000, 1010);
+      const unflushed = fetcher.fetch(5000, 5010);
+      unflushed.cancel(); // before the flush
+      await Promise.resolve();
+      queued.cancel(); // flushed, waiting for the slot
+
+      await expect(queued).rejects.toThrow(/cancelled/);
+      await expect(unflushed).rejects.toThrow(/cancelled/);
+      expect(counter.waste).toMatchObject({ cancelledBeforeSend: 2, abortedRequests: 0, abortedBytes: 0 });
+    });
   });
 
   describe('response status', () => {
