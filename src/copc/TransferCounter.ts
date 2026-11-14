@@ -22,10 +22,90 @@
  * S3, which sends no `Timing-Allow-Origin`, so `transferSize` on a
  * cross-origin `PerformanceResourceTiming` reads 0. (#181)
  */
+/**
+ * Node point-data fetches that did not end in delivered bytes, and bytes that
+ * arrived but that no node used. `requestCount`/`transferredBytes` count only
+ * responses read to the end, so on their own they cannot say how much of the
+ * link went to work that was thrown away.
+ *
+ * Bytes for an attempt that never completed are the bytes it *asked for*: the
+ * body is read in one `arrayBuffer()` call, so how much of it had arrived when
+ * the attempt ended is not known. `abortedAfterHeaders` tells the two kinds of
+ * abort apart — one that ended before the server answered moved little or
+ * nothing, one that ended mid-body may have moved most of the span.
+ */
+export interface FetchWaste {
+  /** Attempts ended by `cancel()`/`destroy()` after `fetch()` was called. */
+  abortedRequests: number;
+  /** Of those, the ones whose response headers had already arrived. */
+  abortedAfterHeaders: number;
+  /** Bytes the aborted attempts asked for. */
+  abortedBytes: number;
+  /** Attempts that ended in an HTTP error or a network failure. */
+  failedRequests: number;
+  /** Bytes the failed attempts asked for. */
+  failedBytes: number;
+  /** Attempts sent after an earlier one failed. A retry cancelled during its
+   *  backoff is never sent and not counted. */
+  retries: number;
+  /** Bytes inside completed responses that no caller received: merge gaps,
+   *  and the slices of members cancelled while their group was in flight.
+   *  Already part of `transferredBytes` — a share of it, not an addition. */
+  unusedBytes: number;
+  /** Requests cancelled before any fetch was made for them. They cost nothing
+   *  on the wire; counted to show how much cancellation saved. */
+  cancelledBeforeSend: number;
+}
+
 export class TransferCounter {
   private _requestCount = 0;
   private _transferredBytes = 0;
   private _fileBytes = 0;
+  private readonly _waste: FetchWaste = {
+    abortedRequests: 0,
+    abortedAfterHeaders: 0,
+    abortedBytes: 0,
+    failedRequests: 0,
+    failedBytes: 0,
+    retries: 0,
+    unusedBytes: 0,
+    cancelledBeforeSend: 0,
+  };
+
+  /** An attempt for `[begin, end)` ended by the caller's cancellation. */
+  recordAborted(begin: number, end: number, afterHeaders: boolean): void {
+    this._waste.abortedRequests++;
+    if (afterHeaders) this._waste.abortedAfterHeaders++;
+    this._waste.abortedBytes += end - begin;
+  }
+
+  /** An attempt for `[begin, end)` that failed. */
+  recordFailed(begin: number, end: number): void {
+    this._waste.failedRequests++;
+    this._waste.failedBytes += end - begin;
+  }
+
+  /** A further attempt is actually being sent. Counted then, not when the
+   *  failure decides to retry, because a cancellation during the backoff
+   *  means the retry never happens. */
+  recordRetry(): void {
+    this._waste.retries++;
+  }
+
+  /** Bytes of a completed response that were not handed to anyone. */
+  recordUnused(bytes: number): void {
+    this._waste.unusedBytes += bytes;
+  }
+
+  /** Logical requests dropped before a fetch was made for them. */
+  recordCancelledBeforeSend(count: number): void {
+    this._waste.cancelledBeforeSend += count;
+  }
+
+  /** A snapshot; later records don't change it. */
+  get waste(): FetchWaste {
+    return { ...this._waste };
+  }
 
   /**
    * Records one HTTP range response that was actually read.
@@ -101,7 +181,11 @@ export function createCountingGetter(
 ): (begin: number, end: number) => Promise<Uint8Array> {
   return async (begin: number, end: number): Promise<Uint8Array> => {
     const response = await fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
-    if (response.status !== 206) throw httpError(url, response.status, begin, end);
+    if (response.status !== 206) {
+      // A 200 can be the whole file streaming in; release it.
+      void response.body?.cancel().catch(() => {});
+      throw httpError(url, response.status, begin, end);
+    }
     if (counter.fileBytes === 0) {
       const total = parseContentRangeTotal(response.headers?.get('Content-Range') ?? null);
       if (total !== undefined) counter.setFileBytes(total);

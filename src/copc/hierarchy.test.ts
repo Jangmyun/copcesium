@@ -105,11 +105,30 @@ describe('loadCopcHierarchy', () => {
 
   it('rejects with a clear error when the server ignores the Range header', async () => {
     fetchMock.mockResolvedValueOnce(rangeResponse(1_000_000, 200)); // whole file, not a 206 partial response
+    // The header read goes out alongside the probe and fails too on such a
+    // server; the probe's explanation is still the one the caller sees.
+    create.mockRejectedValueOnce(new Error('Invalid header'));
 
     await expect(loadCopcHierarchy('https://example.com/sample.copc.laz')).rejects.toThrow(
       /Range Request|206/,
     );
-    expect(create).not.toHaveBeenCalled(); // fails fast, before ever trying to parse a header
+    expect(loadHierarchyPage).not.toHaveBeenCalled();
+  });
+
+  it('reads the header without waiting for the Range probe to come back', async () => {
+    let answerProbe!: (r: unknown) => void;
+    fetchMock.mockReturnValueOnce(new Promise((resolve) => (answerProbe = resolve)));
+    create.mockResolvedValueOnce({
+      info: { cube: [0, 0, 0, 1, 1, 1], rootHierarchyPage: { pageOffset: 0, pageLength: 1 } },
+      wkt: undefined,
+    });
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: { '0-0-0-0': { pointCount: 1 } }, pages: {} });
+
+    const loading = loadCopcHierarchy('https://example.com/sample.copc.laz');
+    expect(create).toHaveBeenCalledTimes(1); // already in flight while the probe is pending
+
+    answerProbe(rangeResponse());
+    await expect(loading).resolves.toMatchObject({ maxDepth: 0 });
   });
 
   it('probes with a 1-byte Range request before reading the header', async () => {

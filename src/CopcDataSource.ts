@@ -36,6 +36,7 @@ import { createCountingGetter, type TransferCounter } from './copc/TransferCount
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { orderForLoading } from './lod/loadOrder';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
@@ -372,6 +373,21 @@ export class CopcDataSource {
       // already carries the (indistinguishable) default of 1.
       if (options.zFactor === undefined) resolved.zFactor = detected.zFactor;
       if (options.xyFactor === undefined) resolved.xyFactor = detected.xyFactor;
+      if (detected.warning && !options.projDef) console.warn(`[CopcDataSource] ${url}: ${detected.warning}`);
+    }
+    // Without a CRS the coordinates are read as degrees. For projected data
+    // (meters or feet) that puts every point off the globe or in the wrong
+    // place with no error at all, so refuse it while it can still be told
+    // apart: longitude/latitude never leave ±180/±90.
+    if (resolved.proj === 'EPSG:4326') {
+      const { min, max } = hierarchy.copc.header;
+      if ([min[0], max[0]].some((x) => Math.abs(x) > 180) || [min[1], max[1]].some((y) => Math.abs(y) > 90)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: no CRS could be determined from the file, and its extent ` +
+            `(x ${min[0]}..${max[0]}, y ${min[1]}..${max[1]}) is not longitude/latitude. ` +
+            'Pass `proj` and `projDef` for its coordinate system.',
+        );
+      }
     }
     if (resolved.projDef && resolved.proj !== 'EPSG:4326') {
       proj4.defs(resolved.proj, resolved.projDef);
@@ -563,6 +579,7 @@ export class CopcDataSource {
 
       // Show/load the new selection first, so a just-arrived replacement
       // already counts as "ready" when the hide pass below checks for it.
+      const toLoad: string[] = [];
       for (const key of newSelectedKeys) {
         const node = this._nodeCache.peek(key);
         if (node) {
@@ -574,6 +591,9 @@ export class CopcDataSource {
           continue;
         }
         if (this._pendingKeys.has(key)) continue;
+        toLoad.push(key);
+      }
+      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
         void this._loadNode(key);
       }
 
@@ -1044,6 +1064,7 @@ export class CopcDataSource {
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
       pendingNodes: this._pendingKeys.size,
+      waste: this._counter.waste,
       fetch: this._stageTiming('fetch'),
       decode: this._stageTiming('decode'),
       upload: this._stageTiming('upload'),

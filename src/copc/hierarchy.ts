@@ -50,6 +50,8 @@ async function assertRangeRequestsSupported(url: string, counter: TransferCounte
   if (total !== undefined) counter.setFileBytes(total);
   counter.record(0, 1);
   if (response.status !== 206) {
+    // A server ignoring Range streams the whole file here; don't keep it open.
+    void response.body?.cancel().catch(() => {});
     throw new Error(
       `Server did not honor an HTTP Range Request (expected 206 Partial Content, got ${response.status}). ` +
         'COPC streaming requires Range Request support — check that the server or CDN advertises "Accept-Ranges: bytes".',
@@ -104,20 +106,33 @@ export function emptyInvalidNodes(nodes: Hierarchy.Node.Map, totalPoints: number
  */
 export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
   const counter = new TransferCounter();
-  await assertRangeRequestsSupported(url, counter);
-  // Falls back to a HEAD when the probe couldn't disclose the size — see the
-  // CORS note above. `Content-Length` *is* safelisted, so a HEAD reads it from
-  // any origin. One extra headers-only request, and only when needed.
-  if (counter.fileBytes === 0) await readFileSizeViaHead(url, counter);
   // `Copc.create()` and `loadHierarchyPage()` both accept a Getter in place of
   // a URL, which is what makes the header and root-page bytes countable —
   // handing them the URL would route them through copc's own uncounted (and
   // status-blind) default getter instead.
   const getter = createCountingGetter(url, counter);
 
+  // The Range probe and the header read don't depend on each other, so they
+  // go out together: before first points, the probe's round trip (and the
+  // HEAD's, below) used to sit in series ahead of the header and root page.
+  // The probe still gets the first word — on a server that ignores Range,
+  // its error says why, where the header read's failure would not.
+  const probe = assertRangeRequestsSupported(url, counter);
+  const header = Copc.create(getter);
+  header.catch(() => {}); // awaited below, once the probe has passed
+  // Falls back to a HEAD when the probe couldn't disclose the size — see the
+  // CORS note above. `Content-Length` *is* safelisted, so a HEAD reads it from
+  // any origin. One extra headers-only request, only when needed, and off the
+  // path to first points.
+  const fileSize = probe.then(
+    () => (counter.fileBytes === 0 ? readFileSizeViaHead(url, counter) : undefined),
+    () => undefined,
+  );
+  await probe;
+
   let copc: Copc;
   try {
-    copc = await Copc.create(getter);
+    copc = await header;
   } catch (err) {
     const e = err as Error;
     if (/must be at least|Invalid header|COPC info VLR/i.test(e.message)) {
@@ -143,5 +158,6 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
     if (depth > maxDepth) maxDepth = depth;
   }
 
+  await fileSize;
   return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize, counter };
 }
