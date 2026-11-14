@@ -365,6 +365,102 @@ describe('RangeFetcher', () => {
     });
   });
 
+  describe('stalled and short responses', () => {
+    /** A fetch that never answers until its signal aborts, like a dead connection. */
+    function hangingFetch() {
+      return (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        });
+    }
+
+    /** A 206 whose body arrives as `chunks`, one every `everyMs`. */
+    function trickleResponse(chunks: Uint8Array[], everyMs: number) {
+      let i = 0;
+      return {
+        status: 206,
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            return new Promise<void>((resolve) =>
+              setTimeout(() => {
+                if (i < chunks.length) controller.enqueue(chunks[i++]!);
+                else controller.close();
+                resolve();
+              }, everyMs),
+            );
+          },
+        }),
+      };
+    }
+
+    it('abandons an attempt the server stops answering, and retries it', async () => {
+      useFakeBackoff();
+      const source = makeSourceBytes(10);
+      const fetchMock = vi.fn().mockImplementationOnce(hangingFetch()).mockResolvedValueOnce(fakeResponse(source));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, undefined, undefined, 1000);
+
+      const request = fetcher.fetch(0, 10);
+      await vi.runAllTimersAsync();
+
+      expect(Array.from(await request)).toEqual(Array.from(source));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects with a TimeoutError once every attempt stalls', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockImplementation(hangingFetch());
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, undefined, undefined, 1000);
+
+      const request = fetcher.fetch(0, 10);
+      const rejection = expect(request).rejects.toMatchObject({ name: 'TimeoutError' });
+      await vi.runAllTimersAsync();
+
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not cut off a body that keeps arriving, however long it takes in total', async () => {
+      useFakeBackoff();
+      const source = makeSourceBytes(30);
+      // 600 ms between chunks against a 1000 ms idle limit: 2.4 s in total.
+      const chunks = [source.slice(0, 10), source.slice(10, 20), source.slice(20, 30)];
+      const fetchMock = vi.fn().mockResolvedValue(trickleResponse(chunks, 600));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, undefined, undefined, 1000);
+
+      const request = fetcher.fetch(0, 30);
+      await vi.runAllTimersAsync();
+
+      expect(Array.from(await request)).toEqual(Array.from(source));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the body of a non-206 response instead of leaving it streaming', async () => {
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      const fetchMock = vi.fn().mockResolvedValue({ status: 200, body: { cancel } });
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      await expect(fetcher.fetch(0, 10)).rejects.toThrow(/200/);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a body shorter than the range instead of handing on a truncated chunk', async () => {
+      useFakeBackoff();
+      const fetchMock = vi.fn().mockResolvedValue(fakeResponse(makeSourceBytes(6)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const request = fetcher.fetch(0, 10);
+      const rejection = expect(request).rejects.toThrow(/expected 10 bytes.*received 6/);
+      await vi.runAllTimersAsync();
+
+      await rejection;
+    });
+  });
+
   describe('retry', () => {
     it('retries a 5xx and resolves once an attempt succeeds', async () => {
       useFakeBackoff();

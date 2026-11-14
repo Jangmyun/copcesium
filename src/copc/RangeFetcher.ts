@@ -125,6 +125,20 @@ const DEFAULT_MAX_CONCURRENT = 6;
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 250;
 
+// How long one attempt may go without the server sending anything — the
+// response headers, or the next chunk of the body — before it is abandoned
+// and retried. Measured from the last progress, not from the start, so a
+// large group arriving slowly but steadily is never cut off; only a stalled
+// connection is, which would otherwise hold one of `maxConcurrent` slots
+// indefinitely.
+const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
+
+function timeoutError(ms: number): Error {
+  const err = new Error(`RangeFetcher: no data from the server for ${ms} ms`);
+  err.name = 'TimeoutError';
+  return err;
+}
+
 /**
  * Batches concurrent byte-range requests for one COPC file into fewer HTTP
  * Range Requests, merging ones within `gapBytes` of each other into a single
@@ -155,6 +169,7 @@ export class RangeFetcher {
      *  so node point data lands in the same total as the header and the
      *  hierarchy pages (#181). */
     private readonly counter?: TransferCounter,
+    private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
   ) {}
 
   /** Resolves with the raw bytes for `[begin, end)`. */
@@ -324,16 +339,7 @@ export class RangeFetcher {
   private async _fetchRange(begin: number, end: number, signal: AbortSignal): Promise<Uint8Array> {
     for (let attempt = 1; ; attempt++) {
       try {
-        const response = await fetch(this.url, {
-          headers: { Range: `bytes=${begin}-${end - 1}` },
-          signal,
-        });
-        // Strictly 206, not merely `ok`: a 200 means the server ignored the
-        // Range header and sent the whole file, and those bytes would then be
-        // sliced at range-relative offsets — silently handing the decoder data
-        // from the wrong part of the file instead of failing (#117).
-        if (response.status !== 206) throw httpError(response.status, begin, end);
-        const bytes = new Uint8Array(await response.arrayBuffer());
+        const bytes = await this._attempt(begin, end, signal);
         // Counted after the body is in hand, not at the response headers: the
         // LoD pass cancels requests the camera has moved past (#86), and an
         // abort partway through the download would otherwise be tallied as a
@@ -350,4 +356,84 @@ export class RangeFetcher {
       }
     }
   }
+
+  /**
+   * One attempt at a group's Range Request. It runs on its own controller,
+   * which follows `signal` (the caller's cancellation) and also fires when
+   * the server sends nothing for `idleTimeoutMs`. A stall then surfaces as a
+   * retryable `TimeoutError`, not as the `AbortError` that tells
+   * `_fetchRange()` the caller gave up.
+   */
+  private async _attempt(begin: number, end: number, signal: AbortSignal): Promise<Uint8Array> {
+    const controller = new AbortController();
+    const follow = () => controller.abort();
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', follow, { once: true });
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const touch = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.idleTimeoutMs);
+    };
+    try {
+      touch();
+      const response = await fetch(this.url, {
+        headers: { Range: `bytes=${begin}-${end - 1}` },
+        signal: controller.signal,
+      });
+      touch();
+      // Strictly 206, not merely `ok`: a 200 means the server ignored the
+      // Range header and sent the whole file, and those bytes would then be
+      // sliced at range-relative offsets — silently handing the decoder data
+      // from the wrong part of the file instead of failing (#117). That body
+      // can be the whole multi-GB file, so release it rather than leave the
+      // stream open until it is garbage-collected.
+      if (response.status !== 206) {
+        void response.body?.cancel().catch(() => {});
+        throw httpError(response.status, begin, end);
+      }
+      const bytes = await readBody(response, touch);
+      // A short body would otherwise reach the decoder as a truncated chunk.
+      // A longer one is harmless: members are sliced from its start.
+      if (bytes.length < end - begin) {
+        throw new Error(
+          `RangeFetcher: expected ${end - begin} bytes for bytes=${begin}-${end - 1}, received ${bytes.length}`,
+        );
+      }
+      return bytes;
+    } catch (err) {
+      if (timedOut) throw timeoutError(this.idleTimeoutMs);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', follow);
+    }
+  }
+}
+
+/** Reads a response body chunk by chunk, calling `onProgress` for each, so
+ *  the idle timer measures silence rather than total download time. */
+async function readBody(response: Response, onProgress: () => void): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array(await response.arrayBuffer());
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    onProgress();
+    chunks.push(value);
+    length += value.length;
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }
