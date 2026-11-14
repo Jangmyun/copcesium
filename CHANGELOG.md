@@ -7,6 +7,11 @@ All notable changes to this project are documented here. This project follows
 
 ### Changed
 
+- **Nodes are requested shallowest first, then closest to the screen centre.**
+  Screen-space error says how large a node appears but not where, so within a
+  depth the part of the view filling in first had nothing to do with where a
+  viewer was looking. Selection, budgets, and bytes transferred are unchanged;
+  only the order of one pass's requests is.
 - **Reprojection in the decode worker is about twice as fast, with identical
   output.** `proj4(...).forward()` cost nearly as much as the LAZ decode itself, almost
   none of it projection math: every point was cloned, checked, and copied into
@@ -16,6 +21,29 @@ All notable changes to this project are documented here. This project follows
   through `forward()`. On 5.1M points from five public datasets the results
   match `forward()` bit for bit, and the decode stage's median per node drops
   14-16% in the browser.
+
+### Fixed
+
+- **Nodes loaded in file order instead of the order the view needed them.**
+  `selectNodes()` ranks nodes by screen-space error, but `RangeFetcher` sorted
+  each batch by byte offset to find mergeable neighbors and then queued the
+  merged groups in that order. Once the batch exceeded `maxConcurrent`, the
+  file's layout decided what appeared first, so fine nodes could land before
+  the coarse nodes covering the same view, showing up as scattered patches.
+  Groups now dispatch in request order, each placed by its earliest member;
+  which ranges get merged is unchanged.
+- **A stalled Range request held its fetch slot forever.** Each attempt is now
+  abandoned and retried after 20 s with no data from the server — measured
+  from the last chunk received, so a large group that keeps arriving is never
+  cut off.
+- **A non-206 response's body was left open.** A server ignoring `Range`
+  answers 200 with the whole file; that stream is now cancelled.
+- **A short body reached the decoder.** A response with fewer bytes than the
+  requested range is now rejected (and retried) instead of being decoded as a
+  truncated chunk.
+- **A worker that timed out was handed the next task.** It was still busy
+  with the one that timed out, so the next task queued behind it. It is now
+  replaced, like a crashed worker.
 
 ## [1.4.1] - 2026-11-10
 

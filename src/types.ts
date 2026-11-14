@@ -8,7 +8,10 @@
  */
 
 import type * as Cesium from 'cesium';
+import type { FetchWaste } from './copc/TransferCounter';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
+
+export type { FetchWaste };
 
 /**
  * How a point's colour is chosen.
@@ -223,6 +226,9 @@ export interface CopcStats {
    *  the current view is fully resolved, which is the only externally visible
    *  signal a benchmark can use to know when to stop the clock. */
   pendingNodes: number;
+  /** Node point-data fetches that were aborted, failed or retried, and bytes
+   *  received that no node used — what `transferredBytes` leaves out. */
+  waste: FetchWaste;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */
