@@ -257,6 +257,12 @@ export interface PickedPoint {
   pointIndex: number;
   /** World-space (ECEF) position, including the live `heightOffset` shift. */
   position: Cesium.Cartesian3;
+  /**
+   * The same point with `heightOffset` at 0, i.e. where the data itself puts
+   * it. Keep this, not `position`, when a measurement should outlive later
+   * `heightOffset` changes (see `measureSegment()`).
+   */
+  dataPosition: Cesium.Cartesian3;
   /** Raw LAS classification code (0-255). */
   classification: number;
   /** Raw LAS intensity, or 0 for a file with no such dimension. */
