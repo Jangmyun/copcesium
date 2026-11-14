@@ -41,6 +41,113 @@ describe('RangeFetcher', () => {
     vi.useRealTimers();
   });
 
+  describe('ranges inside other ranges, and empty ranges', () => {
+    /** Serves whatever range is asked for out of one source buffer. */
+    function serve(length: number) {
+      const source = makeSourceBytes(length);
+      const fetchMock = vi.fn().mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+        const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+        if (Number(to) < Number(from)) return statusResponse(416);
+        return fakeResponse(source.slice(Number(from), Number(to) + 1));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return { source, fetchMock };
+    }
+
+    it('fetches to the furthest end when one request lies inside another', async () => {
+      const { source, fetchMock } = serve(100);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const [outer, inner] = await Promise.all([fetcher.fetch(0, 100), fetcher.fetch(20, 30)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-99');
+      expect(Array.from(outer)).toEqual(Array.from(source));
+      expect(Array.from(inner)).toEqual(Array.from(source.slice(20, 30)));
+    });
+
+    it('measures the gap to the next request from the furthest end, not the inner one', async () => {
+      const { source, fetchMock } = serve(110);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const [outer, , after] = await Promise.all([
+        fetcher.fetch(0, 100),
+        fetcher.fetch(20, 30),
+        fetcher.fetch(100, 110), // contiguous with the outer range
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-109');
+      expect(Array.from(outer)).toEqual(Array.from(source.slice(0, 100)));
+      expect(Array.from(after)).toEqual(Array.from(source.slice(100, 110)));
+    });
+
+    it('resolves an empty range without a request', async () => {
+      const { fetchMock } = serve(100);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      await expect(fetcher.fetch(50, 50)).resolves.toHaveLength(0);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('leaves the other requests of a batch alone when one of them is empty', async () => {
+      const { source, fetchMock } = serve(40);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+      const [a, empty, b] = await Promise.all([fetcher.fetch(0, 20), fetcher.fetch(20, 20), fetcher.fetch(20, 40)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-39');
+      expect(Array.from(a)).toEqual(Array.from(source.slice(0, 20)));
+      expect(empty).toHaveLength(0);
+      expect(Array.from(b)).toEqual(Array.from(source.slice(20, 40)));
+    });
+
+    // The fix only changes batches with a range inside another (or an empty
+    // one). Everything else must still group exactly as 1.4.1 did.
+    for (const gapBytes of [0, 4096]) {
+      it(`groups non-overlapping batches exactly as before (gapBytes ${gapBytes})`, async () => {
+        let s = 20261114 + gapBytes;
+        const rand = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+        for (let round = 0; round < 50; round++) {
+          const { fetchMock } = serve(0);
+          fetchMock.mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+            const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+            return fakeResponse(new Uint8Array(Number(to) - Number(from) + 1));
+          });
+          const fetcher = new RangeFetcher('https://example.com/f.copc.laz', gapBytes, undefined, 1000);
+          const requests: [number, number][] = [];
+          let at = 0;
+          for (let i = 0; i < 1 + Math.floor(rand() * 30); i++) {
+            at += Math.floor(rand() * 3) === 0 ? 0 : Math.floor(rand() * 8192);
+            const length = 1 + Math.floor(rand() * 200_000);
+            requests.push([at, at + length]);
+            at += length;
+          }
+          await Promise.all([...requests].sort(() => rand() - 0.5).map(([b, e]) => fetcher.fetch(b, e)));
+
+          // 1.4.1's grouping: offset order, next gap measured from the last member.
+          const legacy: string[] = [];
+          let group: [number, number][] = [];
+          for (const req of [...requests].sort((x, y) => x[0] - y[0])) {
+            const last = group[group.length - 1];
+            if (last && req[0] - last[1] <= gapBytes && req[1] - group[0]![0] <= 512 * 1024) group.push(req);
+            else {
+              if (group.length) legacy.push(`bytes=${group[0]![0]}-${group[group.length - 1]![1] - 1}`);
+              group = [req];
+            }
+          }
+          legacy.push(`bytes=${group[0]![0]}-${group[group.length - 1]![1] - 1}`);
+
+          // Same groups; their dispatch order is request order now, not offset order.
+          const sent = fetchMock.mock.calls.map((call) => call[1].headers.Range as string);
+          expect([...sent].sort()).toEqual([...legacy].sort());
+          vi.unstubAllGlobals();
+        }
+      });
+    }
+  });
+
   it('merges two adjacent requests queued in the same tick into one HTTP request', async () => {
     const source = makeSourceBytes(20);
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(source.slice(0, 20)));
@@ -474,6 +581,39 @@ describe('RangeFetcher', () => {
       await b; // resolves only once the queued group got its turn
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('dispatches groups in request order rather than file offset order', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => fakeResponse(makeSourceBytes(10)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      await Promise.all([fetcher.fetch(2000, 2010), fetcher.fetch(0, 10), fetcher.fetch(1000, 1010)]);
+
+      expect(fetchMock.mock.calls.map(([, init]) => init.headers.Range)).toEqual([
+        'bytes=2000-2009',
+        'bytes=0-9',
+        'bytes=1000-1009',
+      ]);
+    });
+
+    it('places a merged group by its earliest requested member', async () => {
+      const fetchMock = vi.fn().mockImplementation(async () => fakeResponse(makeSourceBytes(20)));
+      vi.stubGlobal('fetch', fetchMock);
+      const fetcher = new RangeFetcher('https://example.com/file.copc.laz', 0, undefined, 1);
+
+      await Promise.all([
+        fetcher.fetch(500, 510),
+        fetcher.fetch(10, 20),
+        fetcher.fetch(1000, 1010),
+        fetcher.fetch(0, 10),
+      ]);
+
+      expect(fetchMock.mock.calls.map(([, init]) => init.headers.Range)).toEqual([
+        'bytes=500-509',
+        'bytes=0-19',
+        'bytes=1000-1009',
+      ]);
     });
 
     it('drops a queued group entirely (no fetch) once every member is cancelled before it gets a slot', async () => {
