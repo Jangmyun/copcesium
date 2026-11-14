@@ -51,6 +51,10 @@ const TUNING_PARAMS = [
   'debounceMs',
   'lodHysteresis',
   'prefetchFrustumFactor',
+  'prefetchIdleOnly',
+  'adaptiveMergeGap',
+  'decodeBackpressure',
+  'strictCacheBudget',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {

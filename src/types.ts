@@ -9,6 +9,28 @@
 
 import type * as Cesium from 'cesium';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
+import type { WorkerPoolTiming } from './worker/WorkerPool';
+
+/** See `CopcStats.cache`. */
+export interface CacheStats {
+  /** Nodes held, on screen or not. */
+  nodes: number;
+  /** `pointCount × 21` summed over them: the figure `maxCacheBytes` limits.
+   *  Nodes decoded but not yet drawn hold this in JS memory, drawn ones on
+   *  the GPU. */
+  estimatedBytes: number;
+  /** Nodes on screen, which eviction skips; the budget can be exceeded by
+   *  these alone. */
+  pinned: number;
+  /** Nodes evicted to stay within budget since load. */
+  evictions: number;
+}
+
+/** See `CopcStats.decodeQueue`. */
+export interface DecodeQueueStats extends WorkerPoolTiming {
+  /** Visible nodes held back by `decodeBackpressure`, waiting to be started. */
+  deferredLoads: number;
+}
 
 /**
  * How a point's colour is chosen.
@@ -44,9 +66,11 @@ export interface CopcDataSourceOptions {
   geoidOffset?: number;
   /**
    * Worker pool size — how many nodes decode at once. Also the default for
-   * `maxConcurrentRequests`. Default `5`.
+   * `maxConcurrentRequests`. `'auto'` sizes it from the device:
+   * `navigator.hardwareConcurrency − 1` (one core left for the page and
+   * rendering), kept between 2 and 5. Default `5`.
    */
-  concurrency?: number;
+  concurrency?: number | 'auto';
   /**
    * How many HTTP Range Requests may be in flight at once. Defaults to
    * `concurrency`, which is how the two were fused before they could be set
@@ -60,6 +84,16 @@ export interface CopcDataSourceOptions {
    * memory spent on a stage that was never the bottleneck.
    */
   maxConcurrentRequests?: number;
+  /**
+   * Merge node Range Requests across small gaps when requests are queueing,
+   * sizing the gap from the link itself: measured time to first byte times
+   * the link's download rate divided by `maxConcurrentRequests` (≈ RTT ×
+   * bandwidth ÷ concurrent requests), clamped to 0–256 KiB. Bridging a gap downloads bytes no node needs to save
+   * one request, which pays on a fast, high-latency link and costs on a slow
+   * one; a fixed gap gets one of the two wrong. Default `false` (merge only
+   * contiguous ranges).
+   */
+  adaptiveMergeGap?: boolean;
   debounceMs?: number;
   maxCacheNodes?: number;
   /**
@@ -106,6 +140,30 @@ export interface CopcDataSourceOptions {
    * prefetching. Default `50`.
    */
   maxPrefetchNodes?: number;
+  /**
+   * Holds prefetch back until every load for the current view has finished,
+   * instead of only until they have all been dispatched. Worth turning on
+   * for slow links, where prefetch bytes delay the visible ones. Default
+   * `false`.
+   */
+  prefetchIdleOnly?: boolean;
+  /**
+   * Stops starting new node downloads while the CPU is the bottleneck: once a
+   * full round of decoding (one task per worker) is already waiting for a
+   * worker, further nodes of the view are held back and started as decodes
+   * finish, prefetch waits until the decode queue is empty, and prefetched
+   * nodes decode after visible ones. Meant for slow devices, where LAZ
+   * decoding — not the link — limits how fast a view fills in. With
+   * `prefetchIdleOnly` also on, prefetch waits for both conditions. Default
+   * `false`.
+   */
+  decodeBackpressure?: boolean;
+  /**
+   * Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass, not only
+   * when a node is inserted, so nodes that just left the screen are evicted
+   * right away if the cache is over budget. Default `false`.
+   */
+  strictCacheBudget?: boolean;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;
   /** Factor that converts the XY axis unit to meters. Auto-detected from the WKT when omitted. */
@@ -223,6 +281,15 @@ export interface CopcStats {
    *  the current view is fully resolved, which is the only externally visible
    *  signal a benchmark can use to know when to stop the clock. */
   pendingNodes: number;
+  /**
+   * The decode stage's queue, to tell a CPU-bound session (nodes wait for a
+   * worker: `waiting` stays high, `waitP50` grows past `runP50`) from a
+   * network-bound one (workers wait for nodes). `decode` timings below
+   * include the queue wait; `runP50` is the worker's own time alone.
+   */
+  decodeQueue: DecodeQueueStats;
+  /** The decoded-node cache against its `maxCacheNodes`/`maxCacheBytes` budget. */
+  cache: CacheStats;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */

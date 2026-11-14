@@ -188,8 +188,9 @@ interface CopcDataSourceOptions {
   proj?: string;
   projDef?: string | null;
   geoidOffset?: number;
-  concurrency?: number;
+  concurrency?: number | 'auto';
   maxConcurrentRequests?: number;
+  adaptiveMergeGap?: boolean;
   debounceMs?: number;
   maxCacheNodes?: number;
   maxCacheBytes?: number;
@@ -203,6 +204,9 @@ interface CopcDataSourceOptions {
   sseThreshold?: number;
   prefetchFrustumFactor?: number;
   maxPrefetchNodes?: number;
+  prefetchIdleOnly?: boolean;
+  decodeBackpressure?: boolean;
+  strictCacheBudget?: boolean;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -223,8 +227,9 @@ interface CopcDataSourceOptions {
 | `geoidOffset` | `0` | 모든 점의 높이에 더할 미터 값 — 파일의 수직 기준면이 이미 타원체 기준이 아니라면, 그 지점의 로컬 지오이드와 WGS84 타원체 간 차이. |
 | `zFactor` | 자동 감지 | 파일의 Z 단위를 미터로 변환하는 계수. `proj`/`projDef`를 직접 지정해도, WKT에 수직 단위 정보가 있으면 감지됩니다. |
 | `xyFactor` | 자동 감지 | 파일의 XY 단위를 미터로 변환하는 계수(bounding sphere 크기 계산에 사용). |
-| `concurrency` | `5` | 노드를 병렬로 디코딩하는 Worker 스레드 개수. `load()`에 `workerPool`을 넘기면 무시됨. |
+| `concurrency` | `5` | 노드를 병렬로 디코딩하는 Worker 스레드 개수. `'auto'`면 `navigator.hardwareConcurrency − 1`을 2~5 사이로 씁니다(브라우저가 알려 주지 않으면 4코어로 봅니다). `load()`에 `workerPool`을 넘기면 무시됨. |
 | `maxConcurrentRequests` | = `concurrency` | 동시에 진행할 HTTP Range Request 수. 네트워크는 지연 바운드, 디코드는 CPU 바운드라 포화하는 폭이 다릅니다. 할 일 없는 워커를 늘리지 않고 전송만 넓히려면 `concurrency` 대신 이쪽을 올리세요. |
+| `adaptiveMergeGap` | `false` | 이웃한 두 노드 사이에 쓰지 않는 바이트가 조금 있어도 한 요청으로 함께 받습니다. 요청이 빈 슬롯을 기다릴 때만 그렇게 합니다. 함께 받을 틈의 최대 크기는 링크에서 잽니다(첫 바이트 시간 × 수신 속도 ÷ `maxConcurrentRequests`, 0~256 KiB). 빠르고 지연이 큰 링크에서는 왕복을 줄이고, 느린 링크에서는 대역을 낭비하지 않습니다. 고정 간격으로는 둘을 함께 맞출 수 없습니다. 기본값은 꺼짐이며, 이어진 range만 묶습니다. |
 | `debounceMs` | `100` | 전체 LoD 재선택 패스 사이의 최소 간격. 더 가벼운 frustum 전용 가시성 체크는 매 프레임 계속 돕니다. |
 | `maxCacheNodes` | `150` | 메모리에 유지하는 최대 노드 수(LRU) — 초과하면 선택되지 않은 것 중 가장 오래 안 쓰인 노드부터 정리됩니다. |
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
@@ -232,6 +237,9 @@ interface CopcDataSourceOptions {
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
 | `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
 | `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
+| `prefetchIdleOnly` | `false` | 지금 화면의 노드 로드가 모두 시작될 때까지가 아니라 모두 끝날 때까지 프리페치를 미룹니다. 대역이 좁은 링크에서는 프리페치 바이트가 화면 노드를 늦추기 때문입니다. 카메라가 멈춰 있는 동안에는 프리페치가 그대로 진행됩니다. |
+| `decodeBackpressure` | `false` | 네트워크가 아니라 디코딩이 병목인 기기를 위한 옵션입니다. 한 바퀴 분량의 디코딩(worker당 노드 하나)이 worker를 기다리고 있으면, 그 화면의 나머지 다운로드를 미뤘다가 디코딩이 끝나는 대로 다시 시작합니다. 카메라가 지나간 노드는 버립니다. 프리페치는 디코드 대기열이 빌 때만 보내고 화면 노드 뒤에 디코딩합니다. `prefetchIdleOnly`도 켜면 두 조건을 모두 만족할 때만 프리페치합니다. 대기열 상태는 옵션과 관계없이 `stats.decodeQueue`에서 볼 수 있습니다. |
+| `strictCacheBudget` | `false` | `maxCacheNodes`/`maxCacheBytes`를 노드를 넣을 때만이 아니라 LoD 패스마다 다시 적용합니다. 화면을 막 떠난 노드가 바로 축출됩니다. 화면에 있는 노드는 축출하지 않으므로, 그것만으로도 예산을 넘을 수 있습니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
 | `pointSizeMode` | `'fixed'` | `'fixed'`는 모든 포인트를 `pixelSize`로 그립니다. `'attenuated'`는 카메라 거리에 따라 크기를 줄입니다(`attenuationFactor / sqrt(dist_m)`, `[minPixelSize, maxPixelSize]`로 클램프) — 가까이 갈 때 포인트 사이 빈틈이 보이지 않도록 합니다. `dataSource.pointSizeMode`로 실시간 조정 가능. |
 | `attenuationFactor` | `100` | 거리 감쇠 크기 공식의 분자값(pixel·√meters 단위). `pointSizeMode`가 `'attenuated'`일 때만 사용됩니다. 데이터셋 밀도에 맞게 조정하세요. `dataSource.attenuationFactor`로 실시간 조정 가능. |
@@ -347,6 +355,8 @@ console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴
 | `transferredBytes` | 실제로 수신한 바이트 — Range 지원 확인 요청, 헤더, 계층 구조 페이지, 노드 포인트 데이터를 모두 포함합니다. |
 | `requestCount` | 수신한 range 응답 수. 병합된 요청은 한 번으로 셉니다. |
 | `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
+| `decodeQueue` | 대기·실행 중인 디코드 작업 수(`waiting`/`running`), 작업이 worker를 기다린 시간(`waitP50`)과 worker에서 실행된 시간(`runP50`)의 중앙값(ms), `decodeBackpressure`가 미룬 로드 수(`deferredLoads`). 대기가 계속 많고 `waitP50`이 `runP50`보다 크면 네트워크가 아니라 디코딩이 병목입니다. |
+| `cache` | 들고 있는 노드 수(`nodes`), 추정 바이트(`estimatedBytes`, `pointCount × 21`이며 `maxCacheBytes`가 제한하는 값), 화면에 있어 축출되지 않는 노드 수(`pinned`), 지금까지의 축출 수(`evictions`). |
 | `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
 
 `upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.

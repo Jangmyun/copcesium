@@ -188,8 +188,9 @@ interface CopcDataSourceOptions {
   proj?: string;
   projDef?: string | null;
   geoidOffset?: number;
-  concurrency?: number;
+  concurrency?: number | 'auto';
   maxConcurrentRequests?: number;
+  adaptiveMergeGap?: boolean;
   debounceMs?: number;
   maxCacheNodes?: number;
   maxCacheBytes?: number;
@@ -203,6 +204,9 @@ interface CopcDataSourceOptions {
   sseThreshold?: number;
   prefetchFrustumFactor?: number;
   maxPrefetchNodes?: number;
+  prefetchIdleOnly?: boolean;
+  decodeBackpressure?: boolean;
+  strictCacheBudget?: boolean;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -223,8 +227,9 @@ interface CopcDataSourceOptions {
 | `geoidOffset` | `0` | Meters to add to every point's height — local geoid separation from the WGS84 ellipsoid, if the file's vertical datum isn't already ellipsoidal. |
 | `zFactor` | auto-detected | Factor converting the file's Z unit to meters. Detected from the WKT's vertical unit when present, even if `proj`/`projDef` is overridden. |
 | `xyFactor` | auto-detected | Factor converting the file's XY unit to meters (used for bounding-sphere sizing). |
-| `concurrency` | `5` | Number of Worker threads decoding nodes in parallel. Ignored if a `workerPool` is passed to `load()`. |
+| `concurrency` | `5` | Number of Worker threads decoding nodes in parallel. `'auto'` uses `navigator.hardwareConcurrency − 1`, kept between 2 and 5 (4 cores assumed if the browser doesn't say). Ignored if a `workerPool` is passed to `load()`. |
 | `maxConcurrentRequests` | = `concurrency` | HTTP Range Requests in flight at once. Fetching is latency-bound and decoding is CPU-bound, so they saturate at different widths; raise this instead of `concurrency` to widen fetching without spawning workers that have nothing to do. |
+| `adaptiveMergeGap` | `false` | Lets a request for one node also cover a small gap of unneeded bytes up to the next node, so the two go out as one request, but only while requests are waiting for a free slot. The largest gap worth covering is measured from the link: time to first byte × download rate ÷ `maxConcurrentRequests`, kept between 0 and 256 KiB. That saves round trips on fast, high-latency links without wasting bandwidth on slow ones, which no fixed gap does. Off by default: only contiguous ranges are merged. |
 | `debounceMs` | `100` | Minimum interval between full LoD re-selection passes. A lighter frustum-only visibility check still runs every frame. |
 | `maxCacheNodes` | `150` | Maximum nodes kept in memory (LRU) before the least-recently-used, currently-unselected ones are torn down. |
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
@@ -232,6 +237,9 @@ interface CopcDataSourceOptions {
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
 | `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
 | `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
+| `prefetchIdleOnly` | `false` | Holds prefetch loads back until every load for the current view has finished, instead of only until they have all been started. On a bandwidth-limited link, prefetch bytes otherwise delay the nodes on screen; prefetching still happens whenever the camera rests. |
+| `decodeBackpressure` | `false` | For devices where decoding, not the network, is the bottleneck. Once a full round of decoding (one node per worker) is waiting for a worker, further downloads for the view are held back and resume as decodes finish; nodes the camera has moved past are dropped. Prefetch waits until the decode queue is empty and decodes after visible nodes. With `prefetchIdleOnly` also on, prefetch waits for both conditions. `stats.decodeQueue` shows the queue either way. |
+| `strictCacheBudget` | `false` | Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass instead of only when a node is inserted, so nodes that just left the screen are evicted right away. Nodes on screen are never evicted, so they alone can still exceed the budget. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
 | `pointSizeMode` | `'fixed'` | `'fixed'` draws every point at `pixelSize`. `'attenuated'` scales size down with camera distance (`attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize, maxPixelSize]`) so close-up points don't show gaps. Live-adjustable via `dataSource.pointSizeMode`. |
 | `attenuationFactor` | `100` | Numerator of the attenuated-size formula, in pixel·√meters. Only used when `pointSizeMode` is `'attenuated'`. Tune per dataset density. Live-adjustable via `dataSource.attenuationFactor`. |
@@ -347,6 +355,8 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `transferredBytes` | Bytes actually received, across every path: the Range-support probe, the header, hierarchy pages, and node point data. |
 | `requestCount` | Range responses received. Fetches merged into one request count once. |
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
+| `decodeQueue` | `waiting`/`running` decode tasks, the median ms a task waited for a worker (`waitP50`) and ran on one (`runP50`), and `deferredLoads` held back by `decodeBackpressure`. Waiting that stays high, with `waitP50` above `runP50`, means decoding, not the network, is the bottleneck. |
+| `cache` | `nodes` held, their `estimatedBytes` (`pointCount × 21`, the figure `maxCacheBytes` limits), how many are `pinned` on screen (never evicted), and `evictions` so far. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.

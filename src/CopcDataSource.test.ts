@@ -32,6 +32,9 @@ const workerPoolRun = vi.fn();
 const workerPoolDestroy = vi.fn();
 /** Pool sizes requested, so what the data source derives from one can be checked. */
 const workerPoolSizes: number[] = [];
+/** What the mocked pool reports as waiting for a worker; tests set it to
+ *  stand in for a CPU-bound decode queue. */
+const workerPoolState = { backlog: 0 };
 vi.mock('./worker/WorkerPool', () => ({
   // `new`-able: mockImplementation's function must support construction, which
   // an arrow function cannot — returning an object from a regular function
@@ -45,6 +48,12 @@ vi.mock('./worker/WorkerPool', () => ({
       // it to size the range fetcher. Omitting it left that read undefined,
       // so the fetcher silently fell back to its own default in every test.
       concurrency: size,
+      get backlog() {
+        return workerPoolState.backlog;
+      },
+      get timing() {
+        return { waiting: workerPoolState.backlog, running: 0, waitP50: NaN, runP50: NaN };
+      },
     };
   }),
 }));
@@ -99,7 +108,7 @@ vi.mock('./lod/boundingVolume', async (importOriginal) => {
   };
 });
 
-const { CopcDataSource } = await import('./CopcDataSource');
+const { CopcDataSource, resolveWorkerCount } = await import('./CopcDataSource');
 
 /** A pending-forever cancellable promise, for tests that need to observe a
  *  load stuck mid-flight rather than resolving it. */
@@ -137,6 +146,7 @@ function rangeResponse(total = 1_000_000, status = 206) {
 beforeEach(() => {
   vi.clearAllMocks();
   workerPoolSizes.length = 0;
+  workerPoolState.backlog = 0;
   isInFrustumMock.mockReturnValue(true);
   fetchMock.mockResolvedValue(rangeResponse());
   vi.stubGlobal('fetch', fetchMock);
@@ -1123,6 +1133,359 @@ describe('CopcDataSource update loop', () => {
     // The shown node itself is still pinned and survives the evictions.
     const rootPrimitive = addPrimitive.mock.calls.find((call) => call[0].show)![0];
     expect(removePrimitive).not.toHaveBeenCalledWith(rootPrimitive);
+  });
+
+  describe('prefetchIdleOnly', () => {
+    const PREFETCH_NODE: Record<string, Hierarchy.Node> = {
+      '3-0-0-0': { pointCount: 1, pointDataOffset: 10, pointDataLength: 1 },
+    };
+
+    /** Root on screen, '3-0-0-0' a prefetch candidate; the root's bytes
+     *  arrive only when the returned `release` is called. */
+    function setUp() {
+      mockCopc(undefined, PREFETCH_NODE);
+      workerPoolRun.mockResolvedValue(renderData);
+      selectNodesMock.mockImplementation((opts: unknown) => {
+        (opts as { onPrefetchCandidate: (key: string) => void }).onPrefetchCandidate('3-0-0-0');
+        return ['0-0-0-0'];
+      });
+      let release!: () => void;
+      rangeFetcherFetch.mockImplementation((begin: number) => {
+        if (begin !== 0) return makeResolvedCancellable(new Uint8Array([0]));
+        const promise = new Promise<Uint8Array>((resolve) => {
+          release = () => resolve(new Uint8Array([0]));
+        }) as Promise<Uint8Array> & { cancel: () => void };
+        promise.cancel = vi.fn();
+        return promise;
+      });
+      return { release: () => release() };
+    }
+
+    const prefetchFetches = () => rangeFetcherFetch.mock.calls.filter((call) => call[0] === 10).length;
+
+    it('by default, prefetches while a visible load is still downloading', async () => {
+      setUp();
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(2));
+
+      expect(prefetchFetches()).toBe(1);
+    });
+
+    it('holds prefetch back until the visible load finishes, then starts it without another pass', async () => {
+      const { release } = setUp();
+      const { viewer, triggerUpdate, addPrimitive } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        prefetchIdleOnly: true,
+      });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(prefetchFetches()).toBe(0);
+
+      release();
+      await vi.waitFor(() => expect(prefetchFetches()).toBe(1));
+      await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(2));
+      expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('works alongside the adaptive gap', async () => {
+      const { release } = setUp();
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        adaptiveMergeGap: true,
+        prefetchIdleOnly: true,
+      });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(prefetchFetches()).toBe(0);
+      expect(rangeFetcherCtor.mock.calls[0]![5]).toEqual({});
+
+      release();
+      await vi.waitFor(() => expect(prefetchFetches()).toBe(1));
+    });
+  });
+
+  it('builds the fetcher with a fixed gap and no adaptive options by default', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+
+    expect(rangeFetcherCtor.mock.calls[0]![5]).toBeUndefined();
+    expect(workerPoolSizes).toEqual([5]);
+  });
+
+  describe('decodeBackpressure', () => {
+    const KEYS = ['0-0-0-0', '1-0-0-0', '1-1-1-1'];
+    const PREFETCH: Record<string, Hierarchy.Node> = {
+      ...EXTRA_NODES,
+      '3-0-0-0': { pointCount: 1, pointDataOffset: 10, pointDataLength: 1 },
+    };
+    const fetchedOffsets = () => rangeFetcherFetch.mock.calls.map((call) => call[0] as number);
+
+    /** The first node's load fills the decode queue (backlog 5, one per
+     *  worker) until `free()` empties it and lets that node's decode finish. */
+    function cpuBoundAfterFirstLoad() {
+      let finishDecode!: () => void;
+      rangeFetcherFetch.mockImplementation(() => {
+        workerPoolState.backlog = 5;
+        return makeResolvedCancellable(new Uint8Array([0]));
+      });
+      workerPoolRun.mockImplementationOnce(
+        () => new Promise((resolve) => (finishDecode = () => resolve(renderData))),
+      );
+      workerPoolRun.mockResolvedValue(renderData);
+      return {
+        free: () => {
+          workerPoolState.backlog = 0;
+          finishDecode();
+        },
+      };
+    }
+
+    function selectWithPrefetch(keys: string[]) {
+      selectNodesMock.mockImplementation((opts: unknown) => {
+        (opts as { onPrefetchCandidate: (key: string) => void }).onPrefetchCandidate('3-0-0-0');
+        return keys;
+      });
+    }
+
+    it('is off by default: a full decode queue holds nothing back, and decode calls are unchanged', async () => {
+      mockCopc(undefined, PREFETCH);
+      cpuBoundAfterFirstLoad();
+      selectWithPrefetch(KEYS);
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(4));
+
+      expect(fetchedOffsets()).toEqual([0, 1, 2, 10]);
+      await vi.waitFor(() => expect(workerPoolRun.mock.calls.length).toBeGreaterThan(0));
+      for (const call of workerPoolRun.mock.calls) expect(call).toHaveLength(2); // plain run(payload, transfer)
+    });
+
+    it('holds back visible loads and prefetch while a full round of decoding is queued', async () => {
+      mockCopc(undefined, PREFETCH);
+      cpuBoundAfterFirstLoad();
+      selectWithPrefetch(KEYS);
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        decodeBackpressure: true,
+      });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(fetchedOffsets()).toEqual([0]);
+      expect(ds.stats.decodeQueue).toMatchObject({ waiting: 5, deferredLoads: 2 });
+    });
+
+    it('starts the held-back loads, in selection order, once decoding catches up', async () => {
+      mockCopc(undefined, PREFETCH);
+      const { free } = cpuBoundAfterFirstLoad();
+      selectWithPrefetch(KEYS);
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        decodeBackpressure: true,
+      });
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+
+      rangeFetcherFetch.mockImplementation(() => makeResolvedCancellable(new Uint8Array([0])));
+      free();
+
+      await vi.waitFor(() => expect(fetchedOffsets().slice(0, 3)).toEqual([0, 1, 2]));
+      expect(ds.stats.decodeQueue.deferredLoads).toBe(0);
+    });
+
+    it('drops a held-back load the camera has since moved past', async () => {
+      mockCopc(undefined, PREFETCH);
+      const { free } = cpuBoundAfterFirstLoad();
+      selectWithPrefetch(KEYS);
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        decodeBackpressure: true,
+      });
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+
+      selectWithPrefetch(['0-0-0-0', '1-1-1-1']);
+      triggerUpdate();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetchedOffsets()).toEqual([0]);
+
+      rangeFetcherFetch.mockImplementation(() => makeResolvedCancellable(new Uint8Array([0])));
+      free();
+
+      await vi.waitFor(() => expect(fetchedOffsets()).toContain(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(fetchedOffsets()).not.toContain(1);
+    });
+
+    it('decodes prefetched nodes behind visible ones', async () => {
+      mockCopc(undefined, PREFETCH);
+      workerPoolRun.mockResolvedValue(renderData);
+      selectWithPrefetch(['0-0-0-0']);
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        decodeBackpressure: true,
+      });
+
+      triggerUpdate();
+      await vi.waitFor(() => expect(workerPoolRun).toHaveBeenCalledTimes(2));
+
+      const byNode = new Map(
+        workerPoolRun.mock.calls.map((call) => [(call[0] as { node: { pointDataOffset: number } }).node.pointDataOffset, call]),
+      );
+      expect(byNode.get(0)).toHaveLength(2); // visible: default priority
+      expect(byNode.get(10)![3]).toBe(-1); // prefetch: below it
+    });
+  });
+
+  describe('prefetchIdleOnly and decodeBackpressure together', () => {
+    const PREFETCH: Record<string, Hierarchy.Node> = {
+      '3-0-0-0': { pointCount: 1, pointDataOffset: 10, pointDataLength: 1 },
+    };
+    const prefetched = () => rangeFetcherFetch.mock.calls.some((call) => call[0] === 10);
+
+    /** Root on screen and loading until `releaseRoot()`; '3-0-0-0' a prefetch candidate. */
+    async function start() {
+      mockCopc(undefined, PREFETCH);
+      workerPoolRun.mockResolvedValue(renderData);
+      selectNodesMock.mockImplementation((opts: unknown) => {
+        (opts as { onPrefetchCandidate: (key: string) => void }).onPrefetchCandidate('3-0-0-0');
+        return ['0-0-0-0'];
+      });
+      let releaseRoot!: () => void;
+      rangeFetcherFetch.mockImplementation((begin: number) => {
+        if (begin !== 0) return makeResolvedCancellable(new Uint8Array([0]));
+        const promise = new Promise<Uint8Array>((resolve) => {
+          releaseRoot = () => resolve(new Uint8Array([0]));
+        }) as Promise<Uint8Array> & { cancel: () => void };
+        promise.cancel = vi.fn();
+        return promise;
+      });
+      const { viewer, triggerUpdate } = makeFakeViewer();
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        prefetchIdleOnly: true,
+        decodeBackpressure: true,
+      });
+      return { triggerUpdate, releaseRoot: () => releaseRoot() };
+    }
+
+    it('holds prefetch while the visible load is pending, even with an empty decode queue', async () => {
+      const { triggerUpdate } = await start();
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(prefetched()).toBe(false);
+    });
+
+    it('holds prefetch while decodes are queued, even after the visible load has finished', async () => {
+      const { triggerUpdate, releaseRoot } = await start();
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+
+      workerPoolState.backlog = 1; // someone else's decode is still waiting
+      releaseRoot();
+      await vi.waitFor(() => expect(workerPoolRun).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(prefetched()).toBe(false);
+
+      // Next pass with the queue drained: now both rules allow it.
+      workerPoolState.backlog = 0;
+      triggerUpdate();
+      await vi.waitFor(() => expect(prefetched()).toBe(true));
+    });
+
+    it('prefetches as soon as both conditions clear', async () => {
+      const { triggerUpdate, releaseRoot } = await start();
+      triggerUpdate();
+      await vi.waitFor(() => expect(rangeFetcherFetch).toHaveBeenCalledTimes(1));
+
+      releaseRoot();
+
+      await vi.waitFor(() => expect(prefetched()).toBe(true));
+    });
+  });
+
+  describe('strictCacheBudget', () => {
+    /** Two nodes on screen with room for one, then only the root. */
+    async function shrinkSelection(options: Record<string, unknown>) {
+      mockCopc(undefined, EXTRA_NODES);
+      workerPoolRun.mockResolvedValue(renderData);
+      selectNodesMock.mockReturnValue(['0-0-0-0', '1-0-0-0']);
+      const { viewer, triggerUpdate, addPrimitive } = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        maxCacheNodes: 1,
+        ...options,
+      });
+      triggerUpdate();
+      await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(2));
+      triggerUpdate(); // pins both now that they are cached
+      expect(ds.stats.cache).toMatchObject({ nodes: 2, pinned: 2, evictions: 0 });
+
+      selectNodesMock.mockReturnValue(['0-0-0-0']);
+      triggerUpdate();
+      return ds;
+    }
+
+    it('by default leaves the cache over budget until the next insert', async () => {
+      const ds = await shrinkSelection({});
+      expect(ds.stats.cache).toMatchObject({ nodes: 2, evictions: 0 });
+    });
+
+    it('evicts a node as soon as it leaves the screen when on', async () => {
+      const ds = await shrinkSelection({ strictCacheBudget: true });
+      expect(ds.stats.cache).toMatchObject({ nodes: 1, pinned: 1, evictions: 1 });
+    });
+  });
+
+  describe("concurrency: 'auto'", () => {
+    it('leaves one core for the page, between 2 and 5 workers', () => {
+      expect(resolveWorkerCount('auto', 16)).toBe(5);
+      expect(resolveWorkerCount('auto', 6)).toBe(5);
+      expect(resolveWorkerCount('auto', 4)).toBe(3);
+      expect(resolveWorkerCount('auto', 2)).toBe(2);
+      expect(resolveWorkerCount('auto', 1)).toBe(2);
+    });
+
+    it('assumes four cores when the browser does not say', () => {
+      expect(resolveWorkerCount('auto', 0)).toBe(3);
+      vi.stubGlobal('navigator', {});
+      expect(resolveWorkerCount('auto')).toBe(3);
+    });
+
+    it('passes a number through untouched', () => {
+      expect(resolveWorkerCount(7, 2)).toBe(7);
+    });
+
+    it('sizes the pool from the device when asked to', async () => {
+      vi.stubGlobal('navigator', { ...globalThis.navigator, hardwareConcurrency: 4 });
+      mockCopc(undefined);
+      const { viewer } = makeFakeViewer();
+
+      await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0, concurrency: 'auto' });
+
+      expect(workerPoolSizes).toEqual([3]);
+      expect(rangeFetcherCtor.mock.calls[0]![3]).toBe(3);
+    });
   });
 
   it('destroy() tears down the worker pool and node cache, and removes both listeners', async () => {

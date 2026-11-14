@@ -35,6 +35,7 @@ export class NodeCache {
   private pinned: ReadonlySet<string> = new Set();
   private destroyed = false;
   private bytes = 0;
+  private evictions = 0;
 
   constructor(
     private readonly maxNodes: number,
@@ -57,6 +58,34 @@ export class NodeCache {
 
   get size(): number {
     return this.nodes.size;
+  }
+
+  /** Estimated bytes held (`pointCount × 21` per node), the figure `maxBytes`
+   *  is compared against. */
+  get estimatedBytes(): number {
+    return this.bytes;
+  }
+
+  /** Nodes evicted to stay within budget so far; `destroy()` does not count. */
+  get evictionCount(): number {
+    return this.evictions;
+  }
+
+  /** How many cached nodes the current `pin()` set protects. */
+  get pinnedCount(): number {
+    let n = 0;
+    for (const key of this.pinned) if (this.nodes.has(key)) n++;
+    return n;
+  }
+
+  /**
+   * Evicts unpinned nodes until both budgets hold again. `set()` already does
+   * this on every insert; call it after `pin()` too when the budget should
+   * also be restored as soon as nodes leave the screen, rather than at the
+   * next insert (which may not come until the camera moves again).
+   */
+  trim(): void {
+    if (!this.destroyed) this._evictOverBudget();
   }
 
   set(key: string, node: LoadedNode): void {
@@ -134,6 +163,7 @@ export class NodeCache {
       const node = this.nodes.get(key)!;
       this.nodes.delete(key);
       this.bytes -= this._nodeBytes(node);
+      this.evictions++;
       this.onEvict(key, node);
     }
   }

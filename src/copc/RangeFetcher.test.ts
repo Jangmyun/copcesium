@@ -35,10 +35,99 @@ function makeSourceBytes(length: number): Uint8Array {
   return bytes;
 }
 
+/** The grouping `RangeFetcher` used before the adaptive gap and tail
+ *  bridging were added (1.4.1), as the Range headers it would send. */
+function legacyRanges(requests: [number, number][], gapBytes: number, maxGroupBytes: number): string[] {
+  const sorted = [...requests].sort((a, b) => a[0] - b[0]);
+  const groups: [number, number][][] = [];
+  for (const req of sorted) {
+    const group = groups[groups.length - 1];
+    const last = group?.[group.length - 1];
+    const spanIfAdded = group ? req[1] - group[0]![0] : 0;
+    if (last && req[0] - last[1] <= gapBytes && spanIfAdded <= maxGroupBytes) group.push(req);
+    else groups.push([req]);
+  }
+  return groups.map((g) => `bytes=${g[0]![0]}-${g[g.length - 1]![1] - 1}`);
+}
+
+/** Small deterministic PRNG, so a failing case can be replayed. */
+function lcg(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 1664525 + 1013904223) % 2 ** 32;
+    return s / 2 ** 32;
+  };
+}
+
 describe('RangeFetcher', () => {
+  describe('with the network options off', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    for (const gapBytes of [0, 4096]) {
+      it(`sends exactly the 1.4.1 requests for random batches (gapBytes ${gapBytes})`, async () => {
+        const rand = lcg(20261114 + gapBytes);
+        for (let round = 0; round < 50; round++) {
+          const fetchMock = vi.fn().mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+            const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+            return fakeResponse(new Uint8Array(Number(to) - Number(from) + 1));
+          });
+          vi.stubGlobal('fetch', fetchMock);
+          // Same constructor arguments CopcDataSource passes with both options off.
+          const fetcher = new RangeFetcher('https://example.com/f.copc.laz', gapBytes, undefined, 1000);
+          const requests: [number, number][] = [];
+          let at = 0;
+          for (let i = 0; i < 1 + Math.floor(rand() * 30); i++) {
+            at += Math.floor(rand() * 3) === 0 ? 0 : Math.floor(rand() * 8192);
+            const length = 1 + Math.floor(rand() * 200_000);
+            requests.push([at, at + length]);
+            at += length;
+          }
+          // Asked in a shuffled order; a slack end is passed for half of them
+          // and must change nothing while tailGapBytes is 0.
+          const asked = [...requests].sort(() => rand() - 0.5);
+          await Promise.all(asked.map(([b, e]) => (rand() < 0.5 ? fetcher.fetch(b, e, e + 50_000) : fetcher.fetch(b, e))));
+
+          const sent = fetchMock.mock.calls.map((call) => call[1].headers.Range);
+          expect(sent).toEqual(legacyRanges(requests, gapBytes, 512 * 1024));
+        }
+      });
+    }
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  // Found by RangeFetcher.property.test.ts: the group ended at its last
+  // member's end, which for a member inside an earlier one cut that earlier
+  // member's bytes short.
+  it('fetches to the furthest end when one request lies inside another', async () => {
+    const source = makeSourceBytes(100);
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+      const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+      return fakeResponse(source.slice(Number(from), Number(to) + 1));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+    const [outer, inner] = await Promise.all([fetcher.fetch(0, 100), fetcher.fetch(20, 30)]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-99');
+    expect(Array.from(outer)).toEqual(Array.from(source));
+    expect(Array.from(inner)).toEqual(Array.from(source.slice(20, 30)));
+  });
+
+  // Also found by the property test: alone, an empty range went out as
+  // `bytes=b-(b-1)` and was rejected with the server's 416.
+  it('resolves an empty range without a request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const fetcher = new RangeFetcher('https://example.com/file.copc.laz');
+
+    await expect(fetcher.fetch(50, 50)).resolves.toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('merges two adjacent requests queued in the same tick into one HTTP request', async () => {
@@ -394,6 +483,212 @@ describe('RangeFetcher', () => {
 
       await expect(queued).rejects.toThrow(/cancelled/);
       expect(fetchMock).toHaveBeenCalledTimes(1); // the queued group never actually fetched
+    });
+  });
+
+  describe('tail bridging', () => {
+    const url = 'https://example.com/file.copc.laz';
+
+    /** Serves whatever range is asked for out of one source buffer. */
+    function serveSource() {
+      const source = makeSourceBytes(1000);
+      const fetchMock = vi.fn().mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+        const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+        return fakeResponse(source.slice(Number(from), Number(to) + 1));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return { source, fetchMock };
+    }
+
+    it('re-fetches a skipped tail to keep its neighbor in the same request', async () => {
+      const { source, fetchMock } = serveSource();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, undefined, undefined, 32);
+
+      // A chunk at [0, 30) read only up to 10, then the next chunk.
+      const [a, b] = await Promise.all([fetcher.fetch(0, 10, 30), fetcher.fetch(30, 40)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-39');
+      expect(Array.from(a)).toEqual(Array.from(source.slice(0, 10)));
+      expect(Array.from(b)).toEqual(Array.from(source.slice(30, 40)));
+    });
+
+    it('bridges the hole between one chunk’s two ranges the same way', async () => {
+      const { fetchMock } = serveSource();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, undefined, undefined, 64);
+
+      await Promise.all([fetcher.fetch(0, 10, 100), fetcher.fetch(50, 100)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves an equally small gap alone when it is not a skipped tail', async () => {
+      const { fetchMock } = serveSource();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, undefined, undefined, 32);
+
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(30, 40)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves a tail wider than tailGapBytes alone', async () => {
+      const { fetchMock } = serveSource();
+      const fetcher = new RangeFetcher(url, 0, undefined, undefined, undefined, undefined, 32);
+
+      await Promise.all([fetcher.fetch(0, 10, 100), fetcher.fetch(100, 110)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('ignores slack when tailGapBytes is left at 0', async () => {
+      const { fetchMock } = serveSource();
+      const fetcher = new RangeFetcher(url);
+
+      await Promise.all([fetcher.fetch(0, 10, 30), fetcher.fetch(30, 40)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('adaptive gap', () => {
+    const url = 'https://example.com/file.copc.laz';
+
+    /** A fake link: every response takes `ttfbMs` to its headers and
+     *  `bodyMs` more to its body, on a clock the fetcher reads. */
+    function fakeLink(ttfbMs: number, bodyMs: number) {
+      let t = 0;
+      const fetchMock = vi.fn().mockImplementation(async (_url: string, init: { headers: { Range: string } }) => {
+        const [, from, to] = init.headers.Range.match(/bytes=(\d+)-(\d+)/)!;
+        const length = Number(to) - Number(from) + 1;
+        t += ttfbMs;
+        return {
+          status: 206,
+          arrayBuffer: async () => {
+            t += bodyMs;
+            return new Uint8Array(length).buffer;
+          },
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return { fetchMock, now: () => t };
+    }
+
+    /** Four timed 20 KB responses, one after another. */
+    async function warmUp(fetcher: RangeFetcher) {
+      for (let i = 0; i < 4; i++) await fetcher.fetch(i * 1_000_000, i * 1_000_000 + 20_000);
+    }
+
+    it('uses the fixed gapBytes until enough responses have been timed', async () => {
+      const { fetchMock, now } = fakeLink(100, 10);
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+
+      expect(fetcher.currentGapBytes).toBe(0);
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(20, 30)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('sizes the gap from time to first byte and link rate', async () => {
+      const { now } = fakeLink(100, 10); // 2,000 B/ms per response
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+
+      await warmUp(fetcher);
+
+      expect(fetcher.network!.ready).toBe(true);
+      expect(fetcher.currentGapBytes).toBe(200_000);
+    });
+
+    it('splits the link rate across maxConcurrent slots', async () => {
+      const { now } = fakeLink(100, 10); // one at a time, so 2,000 B/ms is the whole link
+      const fetcher = new RangeFetcher(url, 0, undefined, 4, undefined, { now });
+
+      await warmUp(fetcher);
+
+      expect(fetcher.currentGapBytes).toBe(50_000);
+    });
+
+    it('clamps the gap to maxGapBytes', async () => {
+      const { now } = fakeLink(100, 10);
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now, maxGapBytes: 50_000 });
+
+      await warmUp(fetcher);
+
+      expect(fetcher.currentGapBytes).toBe(50_000);
+    });
+
+    it('merges across a gap when the batch would otherwise queue for a slot', async () => {
+      const { fetchMock, now } = fakeLink(100, 10);
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+      await warmUp(fetcher);
+      fetchMock.mockClear();
+
+      const [a, b] = await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(1000, 1010)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![1].headers.Range).toBe('bytes=0-1009');
+      expect(a.length).toBe(10);
+      expect(b.length).toBe(10);
+    });
+
+    it('leaves gaps unbridged when every group fits in a free slot', async () => {
+      const { fetchMock, now } = fakeLink(100, 10);
+      const fetcher = new RangeFetcher(url, 0, undefined, 6, undefined, { now });
+      await warmUp(fetcher);
+      fetchMock.mockClear();
+
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(1000, 1010)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not bridge a gap wider than the measured one', async () => {
+      const { fetchMock, now } = fakeLink(100, 10); // gap 200,000
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+      await warmUp(fetcher);
+      fetchMock.mockClear();
+
+      await Promise.all([fetcher.fetch(0, 10), fetcher.fetch(300_010, 300_020)]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('lets a bridged group grow past the default 512 KiB cap', async () => {
+      const { fetchMock, now } = fakeLink(100, 10);
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+      await warmUp(fetcher);
+      fetchMock.mockClear();
+
+      // Three 300 KB chunks 100 KB apart: 1.1 MB span, under the 4 MiB adaptive cap.
+      await Promise.all([
+        fetcher.fetch(0, 300_000),
+        fetcher.fetch(400_000, 700_000),
+        fetcher.fetch(800_000, 1_100_000),
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not time a failed response', async () => {
+      let t = 0;
+      const now = () => t;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(async () => {
+          t += 100;
+          return statusResponse(404);
+        }),
+      );
+      const fetcher = new RangeFetcher(url, 0, undefined, 1, undefined, { now });
+
+      await expect(fetcher.fetch(0, 20_000)).rejects.toThrow(/404/);
+
+      expect(Number.isNaN(fetcher.network!.ttfbMs)).toBe(true);
+    });
+
+    it('reports no network estimate when not adaptive', () => {
+      const fetcher = new RangeFetcher(url, 4096);
+      expect(fetcher.network).toBeNull();
+      expect(fetcher.currentGapBytes).toBe(4096);
     });
   });
 
