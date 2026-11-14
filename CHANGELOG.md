@@ -66,6 +66,18 @@ All notable changes to this project are documented here. This project follows
 - **The EPSG-table fallback looked up the spheroid's code.** In WKT1 the first
   `AUTHORITY` is the SPHEROID's (e.g. 7019), so the projected CRS was never
   found. Only the root node's own `AUTHORITY`/`ID` is used now.
+- **A CRS proj4 can define but not evaluate failed node by node.** A
+  `+nadgrids` definition whose grid was never registered turned every point
+  into NaN. `load()` now transforms the middle of the data once and throws if
+  that is not finite.
+- **A non-finite `geoidOffset` blanked the cloud silently.** It is now rejected
+  before anything is fetched.
+- **Corrupt hierarchy entries reached the decoder.** An entry with more points
+  than the whole file, or with points but no bytes, is now treated as empty
+  (its children stay reachable) and logged.
+- **Geoid heights placed on the ellipsoid without notice.** A file whose CRS
+  includes a vertical datum, loaded without `geoidOffset`, now logs that its
+  heights will be off by the local geoid height.
 
 ## [1.4.1] - 2026-11-10
 

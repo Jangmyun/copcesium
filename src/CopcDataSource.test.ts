@@ -289,6 +289,54 @@ describe('CopcDataSource.load', () => {
     expect(() => ds.destroy()).not.toThrow();
   });
 
+  it('rejects a non-finite geoidOffset before fetching anything', async () => {
+    // No mockCopc(): load() must fail before it reads the file.
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, { geoidOffset: NaN }),
+    ).rejects.toThrow(/geoidOffset must be a finite number/);
+  });
+
+  it('refuses a CRS that cannot transform the data, such as a +nadgrids grid never registered', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {}); // proj4 logs the missing grid
+    mockCopc(undefined);
+
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, {
+        proj: 'TEST:nad27-grid',
+        projDef:
+          '+proj=tmerc +lat_0=0 +lon_0=-81 +k=0.9996 +x_0=500000 +y_0=0 +ellps=clrk66 +nadgrids=conus +units=m +no_defs',
+      }),
+    ).rejects.toThrow(/cannot transform this file's coordinates.*nadgrid/);
+    log.mockRestore();
+  });
+
+  describe('vertical datum', () => {
+    const compound =
+      'COMPD_CS["WGS 84 + NAVD88 height",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],' +
+      'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+      'VERT_CS["NAVD88 height",VERT_DATUM["North American Vertical Datum 1988",2005],UNIT["metre",1]]]';
+
+    it('warns that heights are geoid-relative when no geoidOffset is given', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockCopc(compound);
+
+      await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Pass `geoidOffset`/));
+      warn.mockRestore();
+    });
+
+    it('stays quiet once the caller supplies geoidOffset', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockCopc(compound);
+
+      await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, { geoidOffset: -30 });
+
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/geoidOffset/));
+      warn.mockRestore();
+    });
+  });
+
   it('refuses a file with no detectable CRS whose extent cannot be longitude/latitude', async () => {
     // UTM meters, which would otherwise be read as degrees.
     mockCopc(undefined, {}, { min: [500000, 4100000, 0], max: [501000, 4101000, 50] });

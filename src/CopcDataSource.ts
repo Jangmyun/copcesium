@@ -29,7 +29,7 @@ import type {
   PointSizeMode,
   StageTiming,
 } from './types';
-import { loadCopcHierarchy } from './copc/hierarchy';
+import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
 import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
@@ -350,6 +350,11 @@ export class CopcDataSource {
     workerPool?: WorkerPool,
   ): Promise<CopcDataSource> {
     const resolved: ResolvedOptions = { ...DEFAULT_OPTIONS, ...options };
+    // NaN would otherwise flow into every point's height and blank the cloud
+    // with no error.
+    if (!Number.isFinite(resolved.geoidOffset)) {
+      throw new Error(`[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`);
+    }
 
     const hierarchy = await loadCopcHierarchy(url);
 
@@ -390,6 +395,33 @@ export class CopcDataSource {
 
     const converter = resolved.proj !== 'EPSG:4326' ? proj4(resolved.proj, 'EPSG:4326') : null;
     const project = createProjector(converter, resolved.geoidOffset, resolved.zFactor);
+
+    // A CRS proj4 can define but not evaluate here — most often a +nadgrids
+    // definition whose grid file was never registered — turns every point
+    // into NaN and fails each node's decode one by one. Try the middle of
+    // the data once, up front, and say why instead.
+    if (converter) {
+      const { min, max } = hierarchy.copc.header;
+      const [lon, lat] = converter.forward([(min[0] + max[0]) / 2, (min[1] + max[1]) / 2]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: the CRS "${resolved.proj}" cannot transform this file's coordinates to WGS84 ` +
+            '(a +nadgrids definition needs its grid registered with proj4.nadgrid() first). ' +
+            'Pass a usable `projDef`.',
+        );
+      }
+    }
+
+    // A compound CRS gives heights against a vertical datum, which for
+    // nearly every survey is a geoid; Cesium places them on the WGS84
+    // ellipsoid. Without `geoidOffset` the cloud floats or sinks by the local
+    // geoid height, tens of meters in much of the world.
+    if (options.geoidOffset === undefined && /\b(?:VERT_CS|VERTCRS|VERTICALCRS)\s*[[(]/i.test(hierarchy.copc.wkt ?? '')) {
+      console.warn(
+        `[CopcDataSource] ${url}: heights are relative to a vertical datum (usually a geoid), not the WGS84 ` +
+          'ellipsoid Cesium uses. Pass `geoidOffset` (the local geoid height in meters) to place them correctly.',
+      );
+    }
 
     const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolved.concurrency);
 
@@ -738,6 +770,7 @@ export class CopcDataSource {
     try {
       const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
       if (this._destroyed) return;
+      emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
       Object.assign(this._nodes, nodes);
       for (const nodeKey of Object.keys(nodes)) {
         const depth = getDepth(nodeKey);
