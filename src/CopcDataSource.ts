@@ -36,6 +36,7 @@ import { createCountingGetter, type TransferCounter } from './copc/TransferCount
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { orderForLoading } from './lod/loadOrder';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
@@ -546,6 +547,7 @@ export class CopcDataSource {
 
       // Show/load the new selection first, so a just-arrived replacement
       // already counts as "ready" when the hide pass below checks for it.
+      const toLoad: string[] = [];
       for (const key of newSelectedKeys) {
         const node = this._nodeCache.peek(key);
         if (node) {
@@ -557,6 +559,9 @@ export class CopcDataSource {
           continue;
         }
         if (this._pendingKeys.has(key)) continue;
+        toLoad.push(key);
+      }
+      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
         void this._loadNode(key);
       }
 
@@ -1026,6 +1031,7 @@ export class CopcDataSource {
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
       pendingNodes: this._pendingKeys.size,
+      waste: this._counter.waste,
       fetch: this._stageTiming('fetch'),
       decode: this._stageTiming('decode'),
       upload: this._stageTiming('upload'),
