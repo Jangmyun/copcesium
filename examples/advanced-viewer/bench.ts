@@ -49,6 +49,7 @@ const TUNING_PARAMS = [
   'maxCacheBytes',
   'maxVisibleNodes',
   'maxPoints',
+  'viewAxisBias',
   'debounceMs',
   'lodHysteresis',
   'prefetchFrustumFactor',

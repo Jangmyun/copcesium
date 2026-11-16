@@ -4,7 +4,7 @@
 
 # [copcesium](https://github.com/Jangmyun/copcesium)
 
-[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-96.01%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.4%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
@@ -196,6 +196,7 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
@@ -235,6 +236,7 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
+| `viewAxisBias` | `2` | How far the centre of the view outranks its corners when `maxVisibleNodes` or `maxPoints` cuts the selection: priority is scaled from `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views that fit the budget select the same nodes either way. `0` ranks by screen-space error alone. |
 | `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
 | `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `prefetchIdleOnly` | `false` | Holds prefetch loads back until every load for the current view has finished, instead of only until they have all been started. On a bandwidth-limited link, prefetch bytes otherwise delay the nodes on screen; prefetching still happens whenever the camera rests. |
@@ -338,6 +340,25 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 `pickPoint()` respects the current render set: a point hidden by `classificationFilter`, culled by the view frustum, or belonging to a not-yet-loaded node can't be picked. The returned `nodeKey`/`pointIndex` identify the point only while its node stays cached — they aren't stable across a reload or eviction, so don't persist them.
 
 The pick pass depth-tests only this data source's own points, so a point hidden behind terrain or 3D Tiles can still be picked. If that matters, compare the result against `scene.pickPosition()` (or `scene.pick()`) at the same screen position.
+
+### Measuring
+
+`measureSegment(a, b)` and `measurePath(points)` turn picked positions into distances. They are pure functions, with no scene or drawing involved, so any UI can use them:
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference: all in meters
+```
+
+| Value | Meaning |
+| --- | --- |
+| `distance` | Straight line between the two ECEF points. |
+| `horizontalDistance` | Geodesic between the points' footprints on the WGS84 ellipsoid. It doesn't depend on their heights. |
+| `heightDifference` | Ellipsoidal height of the end point minus the start point. This is not the difference in ECEF Z, and not a geoid (orthometric) height difference. |
+
+`measurePath()` also returns `length`, `horizontalLength`, `totalAscent`/`totalDescent`, and each segment. Use `dataPosition` rather than `position` so a measurement doesn't depend on the live `heightOffset`. A load-time `geoidOffset` shifts every point equally, so it cancels out of `heightDifference`.
 
 ### Measuring transfer
 

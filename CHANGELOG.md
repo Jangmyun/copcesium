@@ -5,6 +5,48 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in network, decode and cache options, all off by default.** With
+  them off, requests and decode calls are unchanged.
+  - `adaptiveMergeGap`: while requests queue for a fetch slot, nearby ranges
+    are merged across gaps sized from the measured time to first byte and
+    link rate (0–256 KiB).
+  - `prefetchIdleOnly`: prefetch waits until every load for the current view
+    has finished.
+  - `decodeBackpressure`: while a full round of decoding waits for a worker,
+    further loads are held back and resume in load order; prefetch decodes
+    after visible nodes.
+  - `concurrency: 'auto'`: worker count from `hardwareConcurrency − 1`,
+    clamped to 2–5. The default stays `5`.
+  - `strictCacheBudget`: re-applies `maxCacheNodes`/`maxCacheBytes` after
+    every LoD pass, so nodes that just left the screen are evicted right away
+    when the cache is over budget.
+  - `stats.decodeQueue` and `stats.cache` report decode-queue wait/run times
+    and cache size, pinned nodes and evictions.
+
+- **Distance measurement between picked points.** `measureSegment(a, b)`
+  returns the straight-line distance, the horizontal (geodesic) distance and
+  the ellipsoidal height difference, and `measurePath(points)` sums them
+  along a path with total ascent and descent. `PickedPoint.dataPosition`
+  gives the picked point without the display `heightOffset`, so measurements
+  reflect the data. The advanced viewer's measuring UI is not wired up yet.
+  (#215)
+
+### Changed
+
+- **The centre of the view is refined first when a budget cuts the
+  selection.** Selection ranked nodes by screen-space error alone, which only
+  knows how near a node is. Looking out at a shallow angle, the ground under
+  the camera filled `maxVisibleNodes` before the distant middle of the screen,
+  so the centre stayed coarse even after loading settled. The traversal order
+  now scales a node's priority from `1 + viewAxisBias` on the view axis down
+  to 1 at the screen corner (`viewAxisBias`, default `2`; `0` restores the old
+  order). The SSE threshold is unchanged, so a view that fits the budget
+  selects the same nodes. On a recorded low-pitch pass over Montréal, the
+  centre half of the screen went from 0.50 to 0.97 SSIM against an
+  unbudgeted reference, at the same bytes.
+
 ## [1.4.2] - 2026-11-14
 
 1.4.1 also shipped three changes its notes left out: point-level picking with

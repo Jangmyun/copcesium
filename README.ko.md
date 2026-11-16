@@ -196,6 +196,7 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
@@ -235,6 +236,7 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
 | `maxVisibleNodes` | `100` | 한 번의 LoD 패스에서 렌더링용으로 선택하는 최대 노드 수. |
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
+| `viewAxisBias` | `2` | `maxVisibleNodes`나 `maxPoints`가 선택을 잘라야 할 때 화면 중앙을 모서리보다 얼마나 우선할지 정합니다. 우선순위에 시선축에서 `1 + viewAxisBias`, 화면 모서리에서 1을 곱합니다. 예산 안에 들어오는 시점은 값과 무관하게 같은 노드를 선택합니다. `0`이면 screen-space error만으로 순위를 매깁니다. |
 | `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
 | `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
 | `prefetchIdleOnly` | `false` | 지금 화면의 노드 로드가 모두 시작될 때까지가 아니라 모두 끝날 때까지 프리페치를 미룹니다. 대역이 좁은 링크에서는 프리페치 바이트가 화면 노드를 늦추기 때문입니다. 카메라가 멈춰 있는 동안에는 프리페치가 그대로 진행됩니다. |
@@ -338,6 +340,25 @@ handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) =
 `pickPoint()`는 현재 렌더링 상태를 그대로 따릅니다 — `classificationFilter`로 숨겨졌거나, 뷰 프러스텀에 잘렸거나, 아직 로드되지 않은 노드에 속한 점은 선택할 수 없습니다. 반환된 `nodeKey`/`pointIndex`는 해당 노드가 캐시에 남아있는 동안에만 그 점을 식별합니다 — 재로드나 축출 이후에는 유효하지 않으므로 별도로 저장해두지 마세요.
 
 pick 패스는 이 데이터소스의 점끼리만 깊이 테스트를 하므로, 지형이나 3D Tiles 뒤에 가려진 점도 선택될 수 있습니다. 이것이 문제라면 같은 화면 위치의 `scene.pickPosition()`(또는 `scene.pick()`) 결과와 비교해 걸러내세요.
+
+### 측정
+
+`measureSegment(a, b)`와 `measurePath(points)`는 선택한 점의 위치로 거리를 계산합니다. 장면이나 그리기와 무관한 순수 함수라 어떤 UI에서도 쓸 수 있습니다.
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference — 모두 미터
+```
+
+| 값 | 뜻 |
+| --- | --- |
+| `distance` | 두 ECEF 점 사이의 직선거리. |
+| `horizontalDistance` | 두 점을 WGS84 타원체 면에 내린 위치 사이의 측지선 거리. 점의 높이와 무관합니다. |
+| `heightDifference` | 끝점의 타원체고에서 시작점의 타원체고를 뺀 값. ECEF Z의 차이가 아니고, 지오이드 기준 정표고의 차이도 아닙니다. |
+
+`measurePath()`는 `length`, `horizontalLength`, `totalAscent`/`totalDescent`와 구간별 결과도 돌려줍니다. 측정이 실시간 `heightOffset`에 따라 바뀌지 않게 하려면 `position` 대신 `dataPosition`을 쓰세요. 로드할 때 준 `geoidOffset`은 모든 점에 같은 값을 더하므로 `heightDifference`에서 소거됩니다.
 
 ### 전송량 측정
 
