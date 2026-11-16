@@ -3,6 +3,183 @@
 All notable changes to this project are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
+  (default off), `eyeDomeLightingStrength` (default `1`) and
+  `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how
+  far its screen neighbours sit in front of it, which brings out edges and
+  shape on clouds without colour. Only these points are shaded; terrain and
+  other scene objects still occlude them. Points drawn with `opacity < 1`
+  skip it, and without WebGL2 (or `WEBGL_draw_buffers` + `EXT_frag_depth`)
+  the points draw unshaded with one warning. Like Cesium's own point-cloud
+  EDL, the points render single-sampled while it is on, so they lose MSAA
+  edge smoothing. Clipping applies on the EDL path as well. (#210)
+
+- **Distance measurement between picked points.** `measureSegment(a, b)`
+  returns the straight-line distance, the horizontal (geodesic) distance and
+  the ellipsoidal height difference, and `measurePath(points)` sums them
+  along a path with total ascent and descent. `PickedPoint.dataPosition`
+  gives the picked point without the display `heightOffset`, so measurements
+  reflect the data. The advanced viewer's measuring UI is not wired up yet.
+  (#215)
+
+### Changed
+
+- **The centre of the view is refined first when a budget cuts the
+  selection.** Selection ranked nodes by screen-space error alone, which only
+  knows how near a node is. Looking out at a shallow angle, the ground under
+  the camera filled `maxVisibleNodes` before the distant middle of the screen,
+  so the centre stayed coarse even after loading settled. The traversal order
+  now scales a node's priority from `1 + viewAxisBias` on the view axis down
+  to 1 at the screen corner (`viewAxisBias`, default `2`; `0` restores the old
+  order). The SSE threshold is unchanged, so a view that fits the budget
+  selects the same nodes. On a recorded low-pitch pass over Montréal, the
+  centre half of the screen went from 0.50 to 0.97 SSIM against an
+  unbudgeted reference, at the same bytes.
+
+## [1.4.2] - 2026-11-14
+
+1.4.1 also shipped three changes its notes left out: point-level picking with
+coordinate and attribute lookup (#213), plane and box clipping (#214), and
+holding on-screen nodes across budget cuts while the camera moves, which
+stopped LoD flicker during tilts (#192).
+
+### Added
+
+- **`stats.waste` counts work that was thrown away.** `requestCount` and
+  `transferredBytes` only ever counted completed responses. `CopcStats.waste`
+  (`FetchWaste`) now also reports, for node point data:
+  - attempts aborted by `cancel()`/`destroy()`, before or after the headers;
+  - attempts that failed, and the retries actually sent;
+  - bytes inside completed responses that no node used (merge gaps, members
+    cancelled in flight);
+  - requests dropped before any fetch.
+
+  Byte counts for incomplete attempts are the requested span. Hierarchy page
+  fetches are not covered yet.
+
+### Changed
+
+- **Nodes are requested shallowest first, then closest to the screen centre.**
+  Screen-space error says how large a node appears but not where, so within a
+  depth the part of the view filling in first had nothing to do with where a
+  viewer was looking. Selection, budgets, and bytes transferred are unchanged;
+  only the order of one pass's requests is.
+- **Reprojection in the decode worker is about twice as fast, with identical
+  output.** `proj4(...).forward()` cost nearly as much as the LAZ decode itself, almost
+  none of it projection math: every point was cloned, checked, and copied into
+  a fresh object at each step, then passed through a datum step that did
+  nothing. For a projected CRS whose datum needs no shift to WGS84, the worker
+  now calls the projection's own `inverse()` directly; any other CRS still goes
+  through `forward()`. On 5.1M points from five public datasets the results
+  match `forward()` bit for bit, and the decode stage's median per node drops
+  14-16% in the browser.
+- **First points one or two round trips sooner.** Opening a file sent the
+  Range probe, then (in a browser, where `Content-Range` is unreadable) a
+  HEAD, then the header read, then the root hierarchy page, each waiting for
+  the last. The probe and the header read now go out together and the HEAD
+  runs off the critical path, so only the header and the root page are in
+  series. At 50 ms per request the hierarchy loads in 157 ms instead of
+  261 ms. The probe's error for a server that ignores `Range` is unchanged,
+  and a non-206 body is now cancelled instead of left streaming.
+
+### Fixed
+
+- **Nodes loaded in file order instead of the order the view needed them.**
+  `selectNodes()` ranks nodes by screen-space error, but `RangeFetcher` sorted
+  each batch by byte offset to find mergeable neighbors and then queued the
+  merged groups in that order. Once the batch exceeded `maxConcurrent`, the
+  file's layout decided what appeared first, so fine nodes could land before
+  the coarse nodes covering the same view, showing up as scattered patches.
+  Groups now dispatch in request order, each placed by its earliest member;
+  which ranges get merged is unchanged.
+- **A stalled Range request held its fetch slot forever.** Each attempt is now
+  abandoned and retried after 20 s with no data from the server — measured
+  from the last chunk received, so a large group that keeps arriving is never
+  cut off.
+- **A non-206 response's body was left open.** A server ignoring `Range`
+  answers 200 with the whole file; that stream is now cancelled.
+- **A short body reached the decoder.** A response with fewer bytes than the
+  requested range is now rejected (and retried) instead of being decoded as a
+  truncated chunk.
+- **A worker that timed out was handed the next task.** It was still busy
+  with the one that timed out, so the next task queued behind it. It is now
+  replaced, like a crashed worker.
+- **Points hundreds of meters off on datums proj4 does not know.** A WKT
+  that names such a datum without a TOWGS84 (common for Korean 1985, Tokyo,
+  DHDN) was converted with no datum shift at all: 362 m, 463 m and 144 m off
+  respectively. The local EPSG table's definition, which carries the
+  published shift, is now used when it has one; otherwise `load()` warns.
+  Datums on the WGS84/GRS80 ellipsoid (NAD83, ETRS89, Korea 2000) are
+  unaffected.
+- **A file with no detectable CRS was read as degrees.** Projected
+  coordinates then landed nowhere near the data, with no error. `load()` now
+  throws when the CRS is unknown and the extent cannot be longitude/latitude,
+  asking for `proj`/`projDef`.
+- **The EPSG-table fallback looked up the spheroid's code.** In WKT1 the first
+  `AUTHORITY` is the SPHEROID's (e.g. 7019), so the projected CRS was never
+  found. Only the root node's own `AUTHORITY`/`ID` is used now.
+- **A CRS proj4 can define but not evaluate failed node by node.** A
+  `+nadgrids` definition whose grid was never registered turned every point
+  into NaN. `load()` now transforms the middle of the data once and throws if
+  that is not finite.
+- **A non-finite `geoidOffset` blanked the cloud silently.** It is now rejected
+  before anything is fetched.
+- **Corrupt hierarchy entries reached the decoder.** An entry with more points
+  than the whole file, or with points but no bytes, is now treated as empty
+  (its children stay reachable) and logged.
+- **Geoid heights placed on the ellipsoid without notice.** A file whose CRS
+  includes a vertical datum, loaded without `geoidOffset`, now logs that its
+  heights will be off by the local geoid height.
+- **A range inside another one cut the outer one's bytes short.**
+  `RangeFetcher` ended a merged group at its last member in offset order, so
+  a request lying wholly inside an earlier one shortened the earlier one's
+  bytes. The group now ends at its furthest-ending member. An empty range on
+  its own is resolved without a request instead of being sent as an invalid
+  `Range` and failing with 416. Neither happens with a well-formed COPC file.
+
+## [1.4.1] - 2026-11-10
+
+### Added
+
+- **Distance-based point sizing.** `gl_PointSize` was always the fixed
+  `pixelSize`, so gaps opened up between points as the camera approached the
+  cloud. `pointSizeMode: 'attenuated'` scales size with camera distance —
+  `attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize,
+  maxPixelSize]` (defaults `100`, `1`, `6`) — so near points grow to cover
+  the gaps while distant, already-dense nodes don't overdraw. All four are
+  options and live setters, validated on both paths (`RangeError` for a
+  non-positive `attenuationFactor` or `minPixelSize > maxPixelSize`). The
+  default `'fixed'` keeps the previous behaviour. (#209)
+- **Prefetching of nodes just outside the view.** Selection only ever looked
+  inside the actual camera frustum, so a fast pan revealed regions whose
+  nodes hadn't started loading. `selectNodes()` now also walks a frustum
+  widened by `prefetchFrustumFactor` (default `1.8`, scaling the near-plane
+  projected width and height rather than the raw FOV angle), and reports
+  populated nodes found only there as prefetch candidates, at the same SSE
+  rule the visible walk uses — up to `maxPrefetchNodes` (default `50`) per
+  pass, outside the `maxVisibleNodes`/`maxPoints` budget. They're loaded and
+  cached but never shown until a later pass finds them on screen. Visible
+  loads are dispatched first, and prefetch loads only fill spare worker-pool
+  capacity, so they never delay on-screen detail; a pending prefetch load
+  isn't cancelled for being off-screen. Prefetched nodes get an LRU recency
+  bump rather than a pin, so they stay evictable and the cache still honours
+  `maxCacheNodes`/`maxCacheBytes`. Set `prefetchFrustumFactor: 1` to
+  disable. Prefetching costs bandwidth: on the example viewer's benchmark
+  routes it transferred 26–65% more bytes, in exchange for 42% less missing
+  detail during a pan on a 2 GB file and nearly none on an 81 MB one. (#212)
+
+### Changed
+
+- **The README documents bundler-free usage via an import map**, resolving
+  `cesium` and `copcesium` to their published jsDelivr `/npm/` files. ESM
+  CDNs that rebuild packages are called out as unsupported: esm.sh resolves
+  Cesium's `@cesium/engine` to the latest release, so an older Cesium fails
+  to load with a `SyntaxError` about a missing export. (#199)
+
 ## [1.4.0] - 2026-08-18
 
 ### Added

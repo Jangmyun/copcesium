@@ -7,6 +7,7 @@ import * as Cesium from 'cesium';
 // submitted when, not the pixels it produces.
 const framebufferUpdate = vi.fn();
 const framebufferDestroy = vi.fn();
+const clearExecute = vi.fn();
 let currentFramebuffer: object = {};
 vi.mock('cesium', async (importOriginal) => {
   const actual = await importOriginal<typeof import('cesium')>();
@@ -23,7 +24,7 @@ vi.mock('cesium', async (importOriginal) => {
       };
     }),
     ClearCommand: vi.fn(function () {
-      return { kind: 'clear', framebuffer: undefined };
+      return { kind: 'clear', framebuffer: undefined, execute: clearExecute };
     }),
     ShaderSource: Object.assign(
       vi.fn(function () {
@@ -244,6 +245,28 @@ describe('EyeDomeLighting', () => {
     // The derived command and the clear both follow the new target.
     expect(derived.framebuffer).toBe(currentFramebuffer);
     expect((frame.commandList[1] as Record<string, unknown>).framebuffer).toBe(currentFramebuffer);
+  });
+
+  // A new target's depth starts at 0, so without an immediate clear nearly
+  // every point failed the depth test on the first EDL frame — and with
+  // requestRenderMode that frame stayed on screen.
+  it('clears a newly created target before its first frame, and only then', () => {
+    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const context = makeContext();
+    const cmd = makeCommand();
+
+    edl.apply(makeFrame(context, 1), cmd);
+    expect(clearExecute).toHaveBeenCalledTimes(1);
+    expect(clearExecute).toHaveBeenLastCalledWith(context);
+    edl.apply(makeFrame(context, 2), cmd);
+    expect(clearExecute).toHaveBeenCalledTimes(1);
+
+    // Disable/re-enable (or a resize) gives a new target, which is cleared again.
+    edl.enabled = false;
+    currentFramebuffer = {};
+    edl.enabled = true;
+    edl.apply(makeFrame(context, 3), cmd);
+    expect(clearExecute).toHaveBeenCalledTimes(2);
   });
 
   it('destroy() releases the framebuffer and the composite shader', () => {

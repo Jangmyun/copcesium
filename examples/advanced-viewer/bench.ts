@@ -1,5 +1,15 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import * as Cesium from 'cesium';
 import type { CopcDataSource } from 'copcesium';
+import { escapeHtml } from './html';
 
 /**
  * The shape this harness needs, declared locally rather than imported.
@@ -39,8 +49,10 @@ const TUNING_PARAMS = [
   'maxCacheBytes',
   'maxVisibleNodes',
   'maxPoints',
+  'viewAxisBias',
   'debounceMs',
   'lodHysteresis',
+  'prefetchFrustumFactor',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {
@@ -61,6 +73,48 @@ function asStatsCapable(ds: CopcDataSource): StatsCapable | null {
   return candidate.stats && typeof candidate.stats.pendingNodes === 'number'
     ? (candidate as StatsCapable)
     : null;
+}
+
+/**
+ * The loader state the visible-node metrics read, reached privately for the
+ * same reason as `_getSphere` below. `stats.pendingNodes` also counts
+ * off-screen prefetch loads, so it can't say when the *view* finished (#212).
+ */
+interface LoadInternals {
+  _selectedKeys: Set<string>;
+  _pendingKeys: Set<string>;
+  _nodeCache: { peek(key: string): unknown };
+  _copc: { info: { cube: number[] }; header: { max: number[] } };
+  _options: { zFactor?: number };
+}
+
+/**
+ * The root sphere moved down to the top of the data.
+ *
+ * The root sphere is centred on the octree's cube, and the cube is as tall as
+ * the dataset is wide, so on flat terrain that centre floats hundreds of metres
+ * up in the air. A view framed on it never gets close enough to the points for
+ * a sideways pan to need new nodes.
+ */
+function dataTopSphere(root: Cesium.BoundingSphere, internals: LoadInternals): Cesium.BoundingSphere {
+  const { info, header } = internals._copc;
+  const drop = ((info.cube[2]! + info.cube[5]!) / 2 - header.max[2]!) * (internals._options.zFactor ?? 1);
+  const up = Cesium.Cartesian3.normalize(root.center, new Cesium.Cartesian3());
+  const center = Cesium.Cartesian3.subtract(
+    root.center,
+    Cesium.Cartesian3.multiplyByScalar(up, drop, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
+  );
+  return new Cesium.BoundingSphere(center, root.radius);
+}
+
+/** Selected nodes still in flight: what the camera wants but can't show yet. */
+function visiblePending(internals: LoadInternals): number {
+  let count = 0;
+  for (const key of internals._selectedKeys) {
+    if (internals._pendingKeys.has(key)) count++;
+  }
+  return count;
 }
 
 /**
@@ -117,6 +171,26 @@ function flightSeconds(fromFactor: number, toFactor: number): number {
   const octaves = Math.abs(Math.log2(toFactor / fromFactor));
   return Math.max(MIN_FLIGHT_SECONDS, octaves * SECONDS_PER_OCTAVE);
 }
+
+/**
+ * The `?route=pan` sweep: stops at `PAN_START`, then drags sideways in bursts.
+ *
+ * The walk waits for every stop to settle, so it can't show what prefetching
+ * is for — content already being there when a pan reveals it. Bursts with
+ * pauses are how a mouse drag actually moves, and the pauses are the only time
+ * spare worker capacity exists to prefetch with.
+ */
+const PAN_BURSTS = 6;
+const PAN_BURST_SECONDS = 1;
+const PAN_PAUSE_SECONDS = 1;
+/** Sideways speed during a burst, as a fraction of the root sphere's radius.
+ *  Six bursts cover 0.36 radii: about two screen widths from `PAN_START`, and
+ *  short of the edge of the data, where the selection would only shrink. */
+const PAN_RADII_PER_SECOND = 0.06;
+/** Framed on `dataTopSphere`, because from `close` the coarse nodes already
+ *  selected span the whole sweep. */
+const PAN_START: Waypoint = { label: 'pan-start', headingDeg: 0, pitchDeg: -45, rangeFactor: 0.1 };
+const PAN_APPROACH_STOPS = 3;
 /** How long `pendingNodes` must stay at 0 before a view counts as settled. A
  *  single zero reading isn't enough: the LoD pass runs on a `debounceMs`
  *  timer, so there's a gap between one batch draining and the next starting. */
@@ -135,6 +209,9 @@ export interface StopResult {
    *  constant is the same every stop, so leaving it in dilutes whatever
    *  difference a configuration change makes by about half (#194). */
   loadMs: number;
+  /** Arrival until the last selected node finished loading, ignoring
+   *  off-screen prefetch traffic. 0 when everything was already there. */
+  visibleLoadMs: number;
   /** Bytes, requests, and decoded nodes this stop alone added. */
   bytesDelta: number;
   requestsDelta: number;
@@ -162,6 +239,21 @@ export interface StopResult {
   timedOut: boolean;
 }
 
+export interface PanResult {
+  /** Time, from the first burst until settled, with any selected node missing. */
+  gapMs: number;
+  /** `gapMs` weighted by how many nodes were missing, so one late node and
+   *  twenty late nodes don't read the same. */
+  gapNodeMs: number;
+  /** Nodes that entered the selection during the pan. */
+  selectedNew: number;
+  /** How many of those were already cached when selected. */
+  selectedHits: number;
+  bytesDelta: number;
+  requestsDelta: number;
+  timedOut: boolean;
+}
+
 export interface BenchResult {
   url: string;
   /** Tuning options this run resolved to, so two pasted results can be told
@@ -172,6 +264,10 @@ export interface BenchResult {
   /** Sum of every stop's `loadMs` — the headline for comparing two
    *  configurations over the same walk. */
   totalLoadMs: number;
+  /** Sum of every stop's `visibleLoadMs` — what a viewer waits for. */
+  totalVisibleLoadMs: number;
+  /** Only on `?route=pan`, measured after the stops. */
+  pan: PanResult | null;
   fileBytes: number;
   transferredBytes: number;
   requestCount: number;
@@ -262,7 +358,7 @@ class BenchPanel {
           return (
             `<tr style="border-top:1px solid var(--border)">` +
             `<td style="padding:4px 6px 4px 0;color:var(--dim)">${k}</td>` +
-            cells.map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`).join('') +
+            cells.map((c) => `<td style="padding:4px 6px 4px 0">${escapeHtml(c)}</td>`).join('') +
             `</tr>`
           );
         })
@@ -277,12 +373,13 @@ class BenchPanel {
         (s) =>
           `<tr style="border-top:1px solid var(--border)">` +
           [
-            s.label + (s.timedOut ? ' &#9888;' : ''),
+            escapeHtml(s.label) + (s.timedOut ? ' &#9888;' : ''),
+            String(s.visibleLoadMs),
             String(s.loadMs),
-            formatSize(s.bytesDelta),
+            escapeHtml(formatSize(s.bytesDelta)),
             String(s.requestsDelta),
             String(s.nodesDelta),
-            s.bytesPerSec > 0 ? `${formatSize(s.bytesPerSec)}/s` : '—',
+            s.bytesPerSec > 0 ? escapeHtml(`${formatSize(s.bytesPerSec)}/s`) : '—',
           ]
             .map((c) => `<td style="padding:4px 6px 4px 0">${c}</td>`)
             .join('') +
@@ -294,7 +391,7 @@ class BenchPanel {
       `<div class="sec-label" style="margin:14px 0 6px">fixed walk — per stop</div>` +
       `<table style="width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:10.5px">` +
       `<tr style="color:var(--dim);text-align:left">` +
-      ['stop', 'load ms', 'bytes', 'reqs', 'nodes', 'rate']
+      ['stop', 'visible ms', 'load ms', 'bytes', 'reqs', 'nodes', 'rate']
         .map((h) => `<th style="padding:0 6px 4px 0;font-weight:500">${h}</th>`)
         .join('') +
       `</tr>${rows}</table>`;
@@ -324,9 +421,9 @@ function formatSize(n: number): string {
 function statBlock(label: string, value: string, accent = false): string {
   return (
     `<div style="margin-bottom:9px">` +
-    `<div style="font-size:10.5px;color:var(--dim)">${label}</div>` +
+    `<div style="font-size:10.5px;color:var(--dim)">${escapeHtml(label)}</div>` +
     `<div style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;` +
-    `color:${accent ? 'var(--accent)' : 'inherit'}">${value}</div></div>`
+    `color:${accent ? 'var(--accent)' : 'inherit'}">${escapeHtml(value)}</div></div>`
   );
 }
 
@@ -349,6 +446,90 @@ async function flyTo(
       complete: () => resolve(),
     });
   });
+}
+
+/**
+ * Sweeps the camera sideways in bursts from wherever it is now, sampling every
+ * frame how much of the current selection is missing.
+ *
+ * The camera is placed from elapsed time rather than stepped per frame, so a
+ * slower frame rate can't shorten the distance covered.
+ */
+async function runPan(
+  viewer: Cesium.Viewer,
+  ds: StatsCapable,
+  internals: LoadInternals,
+  radius: number,
+): Promise<PanResult> {
+  const camera = viewer.scene.camera;
+  const origin = Cesium.Cartesian3.clone(camera.position);
+  const direction = Cesium.Cartesian3.clone(camera.direction);
+  const up = Cesium.Cartesian3.clone(camera.up);
+  const right = Cesium.Cartesian3.clone(camera.right);
+  const periodSeconds = PAN_BURST_SECONDS + PAN_PAUSE_SECONDS;
+  const durationSeconds = PAN_BURSTS * periodSeconds - PAN_PAUSE_SECONDS;
+
+  const movingSecondsAt = (t: number): number =>
+    Math.floor(t / periodSeconds) * PAN_BURST_SECONDS + Math.min(t % periodSeconds, PAN_BURST_SECONDS);
+
+  const bytesBefore = ds.stats.transferredBytes;
+  const requestsBefore = ds.stats.requestCount;
+  const seen = new Set(internals._selectedKeys);
+  let gapMs = 0;
+  let gapNodeMs = 0;
+  let selectedNew = 0;
+  let selectedHits = 0;
+  let sampling = true;
+
+  const startedAt = performance.now();
+  let lastFrameAt = startedAt;
+  const swept = new Promise<void>((resolve) => {
+    const frame = (): void => {
+      if (!sampling) return;
+      const now = performance.now();
+      const missing = visiblePending(internals);
+      if (missing > 0) {
+        gapMs += now - lastFrameAt;
+        gapNodeMs += missing * (now - lastFrameAt);
+      }
+      lastFrameAt = now;
+      for (const key of internals._selectedKeys) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+        selectedNew++;
+        if (internals._nodeCache.peek(key)) selectedHits++;
+      }
+
+      const elapsedSeconds = Math.min((now - startedAt) / 1000, durationSeconds);
+      const distance = movingSecondsAt(elapsedSeconds) * PAN_RADII_PER_SECOND * radius;
+      camera.setView({
+        destination: Cesium.Cartesian3.add(
+          origin,
+          Cesium.Cartesian3.multiplyByScalar(right, distance, new Cesium.Cartesian3()),
+          new Cesium.Cartesian3(),
+        ),
+        orientation: { direction, up },
+      });
+      viewer.scene.requestRender();
+      if (elapsedSeconds >= durationSeconds) resolve();
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  });
+
+  await swept;
+  const timedOut = await waitUntilSettled(ds);
+  sampling = false;
+
+  return {
+    gapMs: Math.round(gapMs),
+    gapNodeMs: Math.round(gapNodeMs),
+    selectedNew,
+    selectedHits,
+    bytesDelta: ds.stats.transferredBytes - bytesBefore,
+    requestsDelta: ds.stats.requestCount - requestsBefore,
+    timedOut,
+  };
 }
 
 /** Resolves once nothing has been in flight for `SETTLE_MS`, or on timeout. */
@@ -391,22 +572,31 @@ async function runWalk(
     '0-0-0-0',
   );
 
+  const internals = dataSource as unknown as LoadInternals;
+  const panRoute = new URLSearchParams(window.location.search).get('route') === 'pan';
+  const waypoints = panRoute ? [...WAYPOINTS.slice(0, PAN_APPROACH_STOPS), PAN_START] : WAYPOINTS;
+
   const stops: StopResult[] = [];
   let prevBytes = ds.stats.transferredBytes;
   let prevRequests = ds.stats.requestCount;
   let prevNodes = ds.stats.decode.count;
 
   let prevFactor = WAYPOINTS[0]!.rangeFactor;
-  for (const [i, wp] of WAYPOINTS.entries()) {
+  for (const [i, wp] of waypoints.entries()) {
     const seconds = flightSeconds(prevFactor, wp.rangeFactor);
     prevFactor = wp.rangeFactor;
-    panel.setStatus(`Stop ${i + 1}/${WAYPOINTS.length} — ${wp.label} · flying`);
-    await flyTo(viewer, rootSphere, wp, seconds);
+    panel.setStatus(`Stop ${i + 1}/${waypoints.length} — ${wp.label} · flying`);
+    await flyTo(viewer, wp === PAN_START ? dataTopSphere(rootSphere, internals) : rootSphere, wp, seconds);
 
     const startedAt = performance.now();
+    // The last moment anything selected was still loading, rather than the
+    // first moment nothing was: a hierarchy page landing mid-settle can add
+    // selected nodes after an earlier zero reading.
+    let lastVisibleAt: number | null = null;
     const timedOut = await waitUntilSettled(ds, (pending) => {
+      if (visiblePending(internals) > 0) lastVisibleAt = performance.now();
       panel.setStatus(
-        `Stop ${i + 1}/${WAYPOINTS.length} — ${wp.label} · ` +
+        `Stop ${i + 1}/${waypoints.length} — ${wp.label} · ` +
           (pending > 0 ? `loading ${pending} node${pending === 1 ? '' : 's'}` : 'settling'),
       );
     });
@@ -420,6 +610,7 @@ async function runWalk(
       // period, and a few milliseconds of loop overhead must not read as
       // negative work.
       loadMs: Math.max(0, Math.round(convergeMs - SETTLE_MS)),
+      visibleLoadMs: lastVisibleAt === null ? 0 : Math.round(lastVisibleAt - startedAt),
       bytesDelta: s.transferredBytes - prevBytes,
       requestsDelta: s.requestCount - prevRequests,
       nodesDelta: s.decode.count - prevNodes,
@@ -442,12 +633,20 @@ async function runWalk(
     prevNodes = s.decode.count;
   }
 
+  let pan: PanResult | null = null;
+  if (panRoute) {
+    panel.setStatus('Panning');
+    pan = await runPan(viewer, ds, internals, rootSphere.radius);
+  }
+
   const final = ds.stats;
   const result: BenchResult = {
     url,
     options: tuningOptions(),
     totalConvergeMs: stops.reduce((sum, stop) => sum + stop.convergeMs, 0),
     totalLoadMs: stops.reduce((sum, stop) => sum + stop.loadMs, 0),
+    totalVisibleLoadMs: stops.reduce((sum, stop) => sum + stop.visibleLoadMs, 0),
+    pan,
     fileBytes: final.fileBytes,
     transferredBytes: final.transferredBytes,
     requestCount: final.requestCount,
@@ -463,6 +662,7 @@ async function runWalk(
       `  fraction        ${(result.transferredFraction * 100).toFixed(3)}% of the file`,
   );
   console.table(stops);
+  if (pan) console.log('[bench] pan', pan);
   panel.setStatus('Fixed walk complete');
   panel.renderWalk(result);
   (window as unknown as { __copcesiumBench?: BenchResult }).__copcesiumBench = result;

@@ -2,7 +2,7 @@
 
 A fuller reference viewer built on the published `copcesium` npm package: a
 collapsible sidebar with tabbed sections (Data / Global / Appearance /
-Filter / Points / Info / Help), preset datasets, per-color-mode legends, a
+Filter / Points / Clip / Info / Help), preset datasets, per-color-mode legends, a
 classification filter panel, terrain/imagery pickers, a camera/FPS HUD, and
 light/dark theming.
 
@@ -22,6 +22,36 @@ cp .env.example .env   # set VITE_CESIUM_TOKEN for Cesium Ion terrain/imagery �
                         # throws off the camera's rotate/tilt pivot near the loaded dataset
 npm run dev
 ```
+
+To try a dataset that isn't in the preset list, paste a COPC URL into the
+Data tab's URL field and press **Load**. The Info tab then shows
+"Custom URL — no credit on file" in place of a preset's attribution. This
+small one (~6 MB, buildings around the CN Tower, Toronto) has its CRS in the
+file, so it loads with no extra options:
+
+```
+https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz
+```
+
+## Clipping
+
+The **Clip** tab drives `clipBoxes`, `clipPlanes` and `clipMode` from a
+click on the cloud, so plane and box clipping can be tried without building
+`Cesium.Plane` / `Cesium.Matrix4` values by hand.
+
+- **Box**: click a point to center a box on it, aligned to that point's local
+  east/north/up. Width, depth and height are in meters; a cyan outline shows
+  the box.
+- **Plane**: click a point to cut through it, then choose which side to keep.
+- **Inside / Outside** picks which side of the region is drawn, and **Clear**
+  removes it.
+
+Clicks do nothing while the tool is **Off**. The click goes through
+`pickPoint()`, which skips clipped points, so with **Inside** you can't click
+outside the current region — press **Clear** first. Regions stay where they
+were placed in world space, so moving the Points tab's height offset
+afterwards slides the cloud through them. Loading another dataset clears
+them.
 
 ## Benchmark
 
@@ -58,6 +88,16 @@ http://localhost:5173/?bench=montreal   # 51.9 GB
 
 Results also go to the console and `window.__copcesiumBench`.
 
+Each stop reports `visibleLoadMs` alongside `loadMs`. `loadMs` waits for
+everything in flight, off-screen prefetch loads included, so use
+`visibleLoadMs` for how long a viewer actually waits.
+
+`&route=pan` replaces the last stops with a low view over the data and a
+sideways drag in bursts, which the walk can't measure because it waits for
+every stop to settle. Results land under `pan`: `gapMs` and `gapNodeMs` for how
+long selected nodes were missing, `selectedHits` of `selectedNew` for how many
+were already cached when the view reached them.
+
 ### Tuning options
 
 Options with no UI can be set from the query string, so a sweep needs no edit
@@ -74,7 +114,7 @@ checked — a second run over the same walk otherwise serves from the HTTP
 cache and reads as a win for whichever setting went second.
 
 `concurrency`, `maxConcurrentRequests`, `maxCacheNodes`, `maxCacheBytes`,
-`maxVisibleNodes`, `maxPoints`, `debounceMs`, and `lodHysteresis` are accepted; anything
+`maxVisibleNodes`, `maxPoints`, `viewAxisBias`, `debounceMs`, `lodHysteresis`, and `prefetchFrustumFactor` are accepted; anything
 non-numeric is ignored with a console warning. `sseThreshold` is deliberately
 not here — it has a slider, and two sources for one value would fight. The
 values in effect are recorded in the walk's JSON under `options`, so two

@@ -1,4 +1,17 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
+import type * as Cesium from 'cesium';
+import type { FetchWaste } from './copc/TransferCounter';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
+
+export type { FetchWaste };
 
 /**
  * How a point's colour is chosen.
@@ -19,6 +32,13 @@ export type ColorMode = 'rgb' | 'intensity' | 'classification' | 'elevation';
  * camera without inflating (and overdrawing) distant, already-dense nodes.
  */
 export type PointSizeMode = 'fixed' | 'attenuated';
+
+/**
+ * Which side of the clip regions is drawn. `'inside'` keeps points that are
+ * on the kept side of every `clipPlanes` plane and inside at least one
+ * `clipBoxes` box; `'outside'` keeps everything else.
+ */
+export type ClipMode = 'inside' | 'outside';
 
 /** Public options for CopcDataSource */
 export interface CopcDataSourceOptions {
@@ -59,6 +79,14 @@ export interface CopcDataSourceOptions {
    * of `maxVisibleNodes`. Default 5,000,000.
    */
   maxPoints?: number;
+  /**
+   * How far the centre of the view outranks its corners when `maxVisibleNodes`
+   * or `maxPoints` cuts the selection: a node's priority is scaled from
+   * `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views
+   * that fit the budget select the same nodes either way. Default `2`; `0`
+   * ranks by screen-space error alone.
+   */
+  viewAxisBias?: number;
   pixelSize?: number;
   /** How `gl_PointSize` is computed. Default `'fixed'`. */
   pointSizeMode?: PointSizeMode;
@@ -131,6 +159,24 @@ export interface CopcDataSourceOptions {
    * 0-65535 mapping would render most files nearly black.
    */
   intensityRange?: [number, number];
+  /**
+   * Clipping planes in world (ECEF) coordinates, at most 6. A point is on a
+   * plane's kept side when `Cesium.Plane.getPointDistance(plane, point) >= 0`
+   * — i.e. the side the normal points to; `Cesium.Plane.fromPointNormal`
+   * builds one from a point on it. Tested against the drawn position, after
+   * `heightOffset`.
+   */
+  clipPlanes?: Cesium.Plane[];
+  /**
+   * Clipping boxes, at most 4. Each matrix maps the unit cube
+   * `[-0.5, 0.5]^3` to world (ECEF) coordinates — e.g.
+   * `Matrix4.multiplyByScale(Transforms.eastNorthUpToFixedFrame(center),
+   * dimensions, new Matrix4())` for an axis-aligned local box. Boundaries
+   * count as inside.
+   */
+  clipBoxes?: Cesium.Matrix4[];
+  /** Which side of `clipPlanes`/`clipBoxes` to draw. Default `'inside'`. */
+  clipMode?: ClipMode;
 }
 
 /** Result of auto-detecting a CRS from a WKT VLR */
@@ -143,6 +189,13 @@ export interface CrsDetectionResult {
   zFactor: number;
   /** Factor that converts the XY axis unit to meters */
   xyFactor: number;
+  /**
+   * Set when the CRS was recognised but positions may still be wrong, e.g. a
+   * datum whose shift to WGS84 neither the WKT nor the local EPSG table
+   * gives, which proj4 then applies as no shift at all (hundreds of meters
+   * for Tokyo, Korean 1985, DHDN). `CopcDataSource.load()` logs it.
+   */
+  warning?: string;
 }
 
 /**
@@ -204,6 +257,9 @@ export interface CopcStats {
    *  the current view is fully resolved, which is the only externally visible
    *  signal a benchmark can use to know when to stop the clock. */
   pendingNodes: number;
+  /** Node point-data fetches that were aborted, failed or retried, and bytes
+   *  received that no node used — what `transferredBytes` leaves out. */
+  waste: FetchWaste;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */
@@ -222,4 +278,30 @@ export interface LoadedNode {
   key: string;
   primitive: PointCloudPrimitive;
   pointCount: number;
+}
+
+/**
+ * Result of `CopcDataSource.pickPoint()`. `nodeKey`/`pointIndex` identify the
+ * point within the currently-loaded hierarchy — they are only meaningful
+ * while that node stays resident; once evicted from the cache (or replaced by
+ * a LoD transition), the same indices may point at different data or nothing
+ * at all, so don't persist them across a reload or a long idle period.
+ */
+export interface PickedPoint {
+  /** Octree key of the node the point belongs to, e.g. `"2-1-0-3"`. */
+  nodeKey: string;
+  /** Index of the point within its node's buffers (`gl_VertexID` at draw time). */
+  pointIndex: number;
+  /** World-space (ECEF) position, including the live `heightOffset` shift. */
+  position: Cesium.Cartesian3;
+  /**
+   * The same point with `heightOffset` at 0, i.e. where the data itself puts
+   * it. Keep this, not `position`, when a measurement should outlive later
+   * `heightOffset` changes (see `measureSegment()`).
+   */
+  dataPosition: Cesium.Cartesian3;
+  /** Raw LAS classification code (0-255). */
+  classification: number;
+  /** Raw LAS intensity, or 0 for a file with no such dimension. */
+  intensity: number;
 }

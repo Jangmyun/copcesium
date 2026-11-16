@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun), 김선교 (seongyooo)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * LoD stage. Walks the loaded octree on each (debounced) LoD pass, deciding
  * which nodes are visible and worth their screen-space error given the
@@ -8,6 +17,7 @@ import * as Cesium from 'cesium';
 import type { Hierarchy } from 'copc';
 import { getChildKeys } from '../copc/node';
 import { getCullingVolume, getExpandedCullingVolume, isInFrustum } from './boundingVolume';
+import { viewAlignment } from './loadOrder';
 import { computeScreenSpaceError } from './screenSpaceError';
 
 // Camera.frustum is PerspectiveFrustum | PerspectiveOffCenterFrustum | OrthographicFrustum;
@@ -133,6 +143,30 @@ export interface SelectNodesOptions {
    * and cache it ahead of time.
    */
   onPrefetchCandidate?: (key: string) => void;
+  /**
+   * Keys currently on screen. Their heap priority is multiplied by
+   * `incumbentBonus`, so when a budget cuts the traversal mid-heap, a visible
+   * node is only displaced by a candidate that is clearly better rather than
+   * one that merely edges ahead on camera noise. Without this, the nodes
+   * straddling the cut swap places on almost every pass while the camera
+   * moves, and the same patch of ground pulses in and out of detail (#192).
+   * Only the traversal order is affected — the SSE threshold test still uses
+   * the raw value.
+   */
+  incumbents?: ReadonlySet<string>;
+  /** Priority multiplier for `incumbents`. Defaults to 1 (no bonus). */
+  incumbentBonus?: number;
+  /**
+   * How far the centre of the view outranks its corners when a budget cuts the
+   * traversal: heap priority is scaled from `1 + viewAxisBias` on the view axis
+   * down to 1 at the screen corner and beyond. Screen-space error only knows
+   * how near a node is, so looking out at a shallow angle would otherwise spend
+   * the budget on the ground under the camera before the distant middle of the
+   * screen, whose error barely clears the threshold. Only the traversal order
+   * is affected — the SSE threshold test still uses the raw value, so a view
+   * that fits the budget selects the same nodes. Defaults to 0 (no bias).
+   */
+  viewAxisBias?: number;
 }
 
 /**
@@ -177,6 +211,9 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     prefetchFrustumFactor,
     maxPrefetchNodes = 50,
     onPrefetchCandidate,
+    incumbents,
+    incumbentBonus = 1,
+    viewAxisBias = 0,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
@@ -200,14 +237,31 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const sseOf = (key: string): number =>
     computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
 
-  const heap = new MaxHeap<{ key: string; sse: number }>((entry) => entry.sse);
+  // The angle from the view axis to a corner of the screen.
+  const aspectRatio =
+    camera.frustum instanceof Cesium.PerspectiveFrustum ? (camera.frustum.aspectRatio ?? 1) : 1;
+  const tanHalfFovy = Math.tan(fovy / 2);
+  const halfDiagonal = Math.atan(Math.hypot(tanHalfFovy, tanHalfFovy * aspectRatio));
+
+  const viewAxisFactor = (key: string): number => {
+    if (viewAxisBias === 0) return 1;
+    const alignment = viewAlignment(getSphere(key).center, camera.positionWC, camera.directionWC);
+    return 1 + viewAxisBias * Math.max(0, 1 - Cesium.Math.acosClamped(alignment) / halfDiagonal);
+  };
+
+  const heap = new MaxHeap<{ key: string; priority: number }>((entry) => entry.priority);
   // The root's priority never matters — it's the only entry until popped.
-  heap.push({ key: '0-0-0-0', sse: Infinity });
+  heap.push({ key: '0-0-0-0', priority: Infinity });
 
   const expandChildren = (key: string): void => {
     for (const childKey of getChildKeys(key)) {
       if (nodes[childKey]) {
-        heap.push({ key: childKey, sse: sseOf(childKey) });
+        const sse = sseOf(childKey);
+        heap.push({
+          key: childKey,
+          priority:
+            (incumbents?.has(childKey) ? sse * incumbentBonus : sse) * viewAxisFactor(childKey),
+        });
       } else if (pages[childKey]) {
         onPageNeeded?.(childKey);
       }

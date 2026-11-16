@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { View } from 'copc';
 
@@ -19,6 +28,9 @@ function proj4Mock(..._args: unknown[]) {
   return { forward: proj4Forward };
 }
 proj4Mock.defs = (...args: unknown[]) => proj4Defs(...args);
+// A geographic Proj keeps lonLatTransform on `forward()`, which these tests
+// script; its direct path is covered against real proj4 in its own tests.
+proj4Mock.Proj = () => ({ projName: 'longlat', inverse: () => null });
 vi.mock('proj4', () => ({ default: proj4Mock }));
 
 const { convertNode, lonLatAltToEcef } = await import('./worker');

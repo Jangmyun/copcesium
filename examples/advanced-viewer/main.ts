@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun), 김선교 (seongyooo)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 // Advanced example: the same public API `examples/basic-viewer` exercises
 // (`CopcDataSource.load()`, live setters, `destroy()`), driving a fuller
 // viewer UI — sidebar tabs, preset datasets, per-color-mode legends, a
@@ -5,11 +14,14 @@
 // HUD. See `examples/basic-viewer` for the minimal reference; this is the
 // "what a real app looks like" companion (see issue for scope notes: no
 // `onProgress` or per-node stats — neither exists on `CopcDataSource` today).
+// The Clip tab lives in clip.ts.
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
 import { autoRunWalk, benchRequested, mountBenchTab, tuningOptions } from './bench';
+import { mountClipTab } from './clip';
+import { escapeHtml } from './html';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -47,6 +59,10 @@ interface PresetConfig {
   url: string;
   size: string;
   options?: CopcDataSourceOptions;
+  // Color mode to switch to when this preset is picked. Only set where the
+  // viewer's default (intensity) would mislead: a file with no intensity
+  // values renders every point black under that ramp.
+  colorMode?: ColorMode;
   // One-line attribution shown in the Info tab. Full writeup with
   // verification method: examples/DATA_SOURCES.md.
   credit: string;
@@ -71,6 +87,8 @@ const PRESETS: Record<string, PresetConfig> = {
     label: 'Red Rocks (Large)',
     url: 'https://s3.amazonaws.com/hobu-lidar/redrocks.large.copc.laz',
     size: '~13.2 MB',
+    // Photogrammetry-style capture: RGB on every point, intensity all zero.
+    colorMode: 'rgb',
     credit: 'Red Rocks Amphitheatre, Morrison, CO — original capture source unconfirmed',
   },
   kate: {
@@ -169,6 +187,7 @@ const opacitySlider = document.getElementById('opacitySlider') as HTMLInputEleme
 const opacityDisplay = document.getElementById('opacityDisplay')!;
 const heightOffsetSlider = document.getElementById('heightOffsetSlider') as HTMLInputElement;
 const heightOffsetDisplay = document.getElementById('heightOffsetDisplay')!;
+const heightOffsetReset = document.getElementById('heightOffsetReset') as HTMLButtonElement;
 const pixelSizeDisplay = document.getElementById('pixelSizeDisplay')!;
 
 const infoName = document.getElementById('infoName')!;
@@ -200,6 +219,7 @@ const PANEL_TITLES: Record<string, string> = {
   appearance: 'Appearance',
   filter: 'Filter',
   points: 'Points',
+  clip: 'Clip',
   info: 'Info',
   help: 'Help',
   bench: 'Benchmark',
@@ -330,11 +350,19 @@ opacitySlider.addEventListener('input', () => {
 // Corrects a geoid/vertical-datum mismatch that leaves the cloud floating
 // above or buried under the globe surface. A model-matrix shift per node, so
 // dragging this costs nothing beyond a re-render.
-heightOffsetSlider.addEventListener('input', () => {
-  const v = parseFloat(heightOffsetSlider.value);
+function setHeightOffset(v: number): void {
+  heightOffsetSlider.value = String(v);
   heightOffsetDisplay.textContent = `${v.toFixed(1)} m`;
+  heightOffsetReset.disabled = v === 0;
   if (currentDs) currentDs.heightOffset = v;
-});
+}
+heightOffsetSlider.addEventListener('input', () =>
+  setHeightOffset(parseFloat(heightOffsetSlider.value)),
+);
+// Landing exactly on 0 by dragging is fiddly, so both the button and a
+// double-click on the slider snap straight back to it.
+heightOffsetReset.addEventListener('click', () => setHeightOffset(0));
+heightOffsetSlider.addEventListener('dblclick', () => setHeightOffset(0));
 
 // ── Appearance: color mode ──────────────────────────────────
 // Matches renderer/shaders.ts's `elevationColor()` ramp stops exactly, so
@@ -363,7 +391,8 @@ function updateColorLegend(mode: ColorMode): void {
           <span>High</span>
           <span>Low</span>
         </div>
-      </div>`;
+      </div>
+      <div style="font-size:11.5px;color:var(--dim);margin-top:8px">A file with no intensity values renders all black here — switch to RGB.</div>`;
     return;
   }
   if (mode === 'classification') {
@@ -376,14 +405,18 @@ function updateColorLegend(mode: ColorMode): void {
   colorLegend.innerHTML = `<div style="font-size:11.5px;color:var(--dim)">Uses the file's own RGB, falling back to the classification palette, then flat gray.</div>`;
 }
 
+function setActiveColorMode(mode: ColorMode): void {
+  colorModeGrid
+    .querySelectorAll<HTMLElement>('.color-btn')
+    .forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  if (currentDs) currentDs.colorMode = mode;
+  updateColorLegend(mode);
+}
+
 colorModeGrid.addEventListener('click', (e) => {
   const btn = (e.target as HTMLElement).closest('.color-btn') as HTMLElement | null;
   if (!btn) return;
-  colorModeGrid.querySelectorAll('.color-btn').forEach((b) => b.classList.remove('active'));
-  btn.classList.add('active');
-  const mode = (btn.dataset.mode ?? 'rgb') as ColorMode;
-  if (currentDs) currentDs.colorMode = mode;
-  updateColorLegend(mode);
+  setActiveColorMode((btn.dataset.mode ?? 'rgb') as ColorMode);
 });
 
 // ── Classification filter ───────────────────────────────────
@@ -450,11 +483,12 @@ function renderPresetList(activeKey: string | null): void {
     btn.className = `dataset-row${activeKey === key ? ' active' : ''}`;
     btn.innerHTML =
       `<span class="dataset-dot"></span>` +
-      `<span class="dataset-name">${p.label}</span>` +
-      `<span class="dataset-pts">${p.size}</span>`;
+      `<span class="dataset-name">${escapeHtml(p.label)}</span>` +
+      `<span class="dataset-pts">${escapeHtml(p.size)}</span>`;
     btn.addEventListener('click', () => {
       setActivePreset(key);
       urlInput.value = p.url;
+      if (p.colorMode) setActiveColorMode(p.colorMode);
       void loadCopc(p.url, p.options ?? {}, p.label);
     });
     presetList.appendChild(btn);
@@ -463,6 +497,7 @@ function renderPresetList(activeKey: string | null): void {
 
 // ── Current load state ──────────────────────────────────────
 let currentDs: CopcDataSource | null = null;
+const clipTab = mountClipTab(viewer, () => currentDs);
 let currentUrl: string | null = null;
 let currentOptions: CopcDataSourceOptions = {};
 let activeLabel: string | null = null;
@@ -484,7 +519,7 @@ function updateInfoPanel(name: string, rows: [string, string][]): void {
   infoMeta.innerHTML = rows
     .map(
       ([k, v]) =>
-        `<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`,
+        `<div class="meta-row"><span class="meta-key">${escapeHtml(k)}</span><span class="meta-val">${escapeHtml(v)}</span></div>`,
     )
     .join('');
 }
@@ -552,6 +587,7 @@ async function loadCopc(
 
   if (currentDs) {
     stopStatsPolling();
+    clipTab.reset();
     currentDs.destroy();
     currentDs = null;
   }
@@ -586,6 +622,7 @@ async function loadCopc(
       sseThreshold: parseInt(sseSlider.value, 10),
       colorMode: activeMode,
       opacity: parseFloat(opacitySlider.value),
+      clipMode: clipTab.clipMode(),
       classificationFilter: Object.values(_classOn).every((v) => v)
         ? undefined
         : Object.entries(_classOn)

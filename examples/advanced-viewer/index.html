@@ -1,4 +1,12 @@
 <!DOCTYPE html>
+<!--
+ Copyright 2026 copcesium contributors. All Rights Reserved.
+ Author 2026 추인규 (Jangmyun), 김선교 (seongyooo)
+
+ Licensed under the MIT License.
+ See the LICENSE file in the project root for details.
+ SPDX-License-Identifier: MIT
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -167,6 +175,13 @@
       font-family: 'IBM Plex Mono', monospace;
       font-size: 11px; color: var(--dim);
     }
+    .slider-header .val-group { display: flex; align-items: baseline; gap: 8px; }
+    .val-reset {
+      background: none; border: 1px solid var(--border); border-radius: 5px;
+      padding: 1px 7px; font: inherit; font-size: 11px;
+      color: var(--accent); cursor: pointer;
+    }
+    .val-reset:disabled { color: var(--dim); opacity: .5; cursor: default; }
 
     /* ── Dataset rows ───────────────────────────────────────── */
     .dataset-row {
@@ -205,6 +220,7 @@
     }
     .url-row button:hover { filter: brightness(1.08); }
     .url-row button:disabled { opacity: .5; cursor: default; }
+    #clipClearBtn:disabled { opacity: .5; cursor: default; }
 
     /* ── Class filter rows ──────────────────────────────────── */
     .cls-row {
@@ -412,6 +428,11 @@
           <circle cx="6" cy="7" r="2.4"/><circle cx="17" cy="6" r="2.4"/><circle cx="12" cy="15" r="2.4"/><circle cx="18" cy="16" r="2.4"/>
         </svg>
       </button>
+      <button class="rail-btn" data-tab="clip" title="Clip">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>
+        </svg>
+      </button>
       <button class="rail-btn" data-tab="info" title="Info">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>
@@ -549,10 +570,64 @@
           <div class="slider-row">
             <div class="slider-header">
               <span class="label">Height offset</span>
-              <span class="val" id="heightOffsetDisplay">0.0 m</span>
+              <span class="val-group">
+                <span class="val" id="heightOffsetDisplay">0.0 m</span>
+                <button class="val-reset" id="heightOffsetReset" title="Reset to 0 m (or double-click the slider)" disabled>Reset</button>
+              </span>
             </div>
             <input type="range" id="heightOffsetSlider" min="-100" max="100" step="0.5" value="0">
           </div>
+        </div>
+
+        <!-- ========== CLIP ========== -->
+        <div class="panel-section" id="sec-clip">
+          <div class="sec-label">Tool</div>
+          <div class="color-grid" id="clipToolGrid" style="grid-template-columns:1fr 1fr 1fr">
+            <button class="color-btn active" data-tool="off">Off</button>
+            <button class="color-btn" data-tool="box">Box</button>
+            <button class="color-btn" data-tool="plane">Plane</button>
+          </div>
+          <div id="clipHint" style="font-size:11.5px;color:var(--dim);margin:10px 2px 0;line-height:1.6"></div>
+
+          <div id="clipBoxFields" style="display:none">
+            <div class="divider"></div>
+            <div class="sec-label">Box size (m)</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+              <label style="font-size:11px;color:var(--dim)">Width (E–W)<input id="clipBoxE" type="number" min="0.1" step="any" value="150" style="margin-top:4px"></label>
+              <label style="font-size:11px;color:var(--dim)">Depth (N–S)<input id="clipBoxN" type="number" min="0.1" step="any" value="100" style="margin-top:4px"></label>
+              <label style="font-size:11px;color:var(--dim)">Height<input id="clipBoxU" type="number" min="0.1" step="any" value="80" style="margin-top:4px"></label>
+            </div>
+          </div>
+
+          <div id="clipPlaneFields" style="display:none">
+            <div class="divider"></div>
+            <div style="font-size:12.5px;margin-bottom:7px">Keep the side</div>
+            <div class="sel-wrap">
+              <select id="clipPlaneSide">
+                <option value="E">East of the point</option>
+                <option value="W">West of the point</option>
+                <option value="N">North of the point</option>
+                <option value="S">South of the point</option>
+                <option value="U">Above the point</option>
+                <option value="D">Below the point</option>
+              </select>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--dim)" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="sec-label">Clip mode</div>
+          <div class="color-grid" id="clipModeGrid">
+            <button class="color-btn active" data-mode="inside">Inside</button>
+            <button class="color-btn" data-mode="outside">Outside</button>
+          </div>
+          <div style="font-size:11.5px;color:var(--dim);margin:8px 2px 0;line-height:1.6">Inside draws the box, or the kept side of the plane. Outside draws everything else.</div>
+
+          <div class="divider"></div>
+          <button id="clipClearBtn" class="url-row" style="justify-content:center;width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:9px;cursor:pointer;color:var(--text);font-family:inherit;font-size:12.5px" disabled>
+            Clear
+          </button>
+          <div style="margin-top:12px;font-size:11px;color:var(--faint);line-height:1.6">Regions are fixed in world space where you clicked. Moving the Height offset slider afterwards slides the cloud through them.</div>
         </div>
 
         <!-- ========== INFO ========== -->

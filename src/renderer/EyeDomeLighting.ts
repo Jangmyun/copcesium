@@ -250,8 +250,16 @@ export class EyeDomeLighting {
       pass: CesiumAny.Pass.OPAQUE,
       owner: this,
     });
-    // A resize or a disable/re-enable recreates the framebuffer.
-    this._clearCommand.framebuffer = this._framebuffer.framebuffer;
+    // A resize or a disable/re-enable recreates the framebuffer. A new target's
+    // depth starts at 0, not the cleared 1, and the end-of-frame clear below
+    // only runs after this frame's point draws, so clear it now: otherwise
+    // nearly every point fails the depth test on the first EDL frame, and with
+    // requestRenderMode that frame stays on screen until something else
+    // requests a render.
+    if (this._clearCommand.framebuffer !== this._framebuffer.framebuffer) {
+      this._clearCommand.framebuffer = this._framebuffer.framebuffer;
+      (this._clearCommand as unknown as { execute(context: unknown): void }).execute(context);
+    }
 
     this._radiusAndStrength.x = this.radius * pixelRatio;
     this._radiusAndStrength.y = this.strength;

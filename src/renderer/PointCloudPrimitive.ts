@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun), 김선교 (seongyooo)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * Rendering stage. Not a `Cesium.Primitive` subclass — a standalone class
  * built on Cesium's low-level DrawCommand API (custom vertex/fragment
@@ -8,7 +17,13 @@
  * place.
  */
 import * as Cesium from 'cesium';
-import { vertexShaderSource, fragmentShaderSource } from './shaders';
+import {
+  vertexShaderSource,
+  fragmentShaderSource,
+  pickVertexShaderSource,
+  pickFragmentShaderSource,
+} from './shaders';
+import { MAX_CLIP_BOXES, MAX_CLIP_PLANES, writeLocalClipUniforms, type ClipState } from './clipping';
 import type { EyeDomeLighting } from './EyeDomeLighting';
 import type { NodeRenderData } from '../types';
 
@@ -44,13 +59,45 @@ export interface PointStyle {
    * doesn't need touching.
    */
   heightOffset: number;
+  /** Spatial clip regions in world (ECEF) coordinates — see `./clipping`. */
+  clip: ClipState;
+}
+
+/** A Cesium `Buffer` (vertex buffer wrapper); `_buffer` is its raw
+ *  `WebGLBuffer`, read directly by `readPointAttributes()`'s `getBufferSubData`
+ *  calls — Cesium's own wrapper exposes no public readback method. */
+interface CesiumBufferLike {
+  _buffer: WebGLBuffer;
+  destroy(): void;
+}
+
+/** The subset of Cesium's `Context` this file reaches into directly for
+ *  `readPointAttributes()`'s raw `gl.getBufferSubData` calls. */
+interface CesiumContextLike {
+  _gl: WebGL2RenderingContext;
+}
+
+/** One point's attributes as read back by `readPointAttributes()`. */
+export interface PickedPointAttributes {
+  /** World-space (ECEF) position, including the live `heightOffset` shift. */
+  position: Cesium.Cartesian3;
+  /** The same point with `heightOffset` at 0: where the data itself puts it. */
+  dataPosition: Cesium.Cartesian3;
+  /** Raw LAS classification code (0-255). */
+  classification: number;
+  /** Raw LAS intensity, or 0 for a file with no such dimension. */
+  intensity: number;
 }
 
 // Cesium's low-level GPU API (Buffer/VertexArray/ShaderProgram/DrawCommand) has no
 // public type declarations, so only the members this file uses are declared here.
 interface CesiumInternal {
   Buffer: {
-    createVertexBuffer(opts: { context: unknown; typedArray: ArrayBufferView; usage: unknown }): unknown;
+    createVertexBuffer(opts: {
+      context: unknown;
+      typedArray: ArrayBufferView;
+      usage: unknown;
+    }): CesiumBufferLike;
   };
   BufferUsage: { STATIC_DRAW: unknown };
   VertexArray: new (opts: { context: unknown; attributes: unknown[] }) => { destroy(): void };
@@ -75,6 +122,10 @@ interface DrawCommandLike {
   modelMatrix: Cesium.Matrix4;
   pass: unknown;
   renderState: unknown;
+  /** Off-screen target; only set on the pick command, and re-set on every
+   *  pick call since `CopcDataSource`'s shared `PickFramebuffer` is rebuilt
+   *  (a new Cesium `Framebuffer` object) whenever the canvas resizes. */
+  framebuffer: unknown;
 }
 
 // Cesium.Primitive allocates a JS object per point; this DrawCommand-based
@@ -88,6 +139,14 @@ export class PointCloudPrimitive {
   private _up: Cesium.Cartesian3;
   private _appliedHeightOffset: number;
   private _appliedOpaque: boolean;
+  /** `-1` forces the first build; then the `clip.version` last applied. */
+  private _appliedClipVersion: number;
+  // Node-local clip uniforms, rebuilt whenever the clip regions or this
+  // node's origin (heightOffset) change. Fixed-length: the shader declares
+  // MAX_* slots and reads only the first `count`.
+  private readonly _clipPlanes = Array.from({ length: MAX_CLIP_PLANES }, () => new Cesium.Cartesian4());
+  private readonly _clipBoxes = Array.from({ length: MAX_CLIP_BOXES }, () => new Cesium.Matrix4());
+  private _clipUniforms = { mode: 0, planeCount: 0, boxCount: 0 };
   private _colors: Uint8Array | null;
   private _intensities: Uint16Array | null;
   private _classifications: Uint8Array | null;
@@ -103,6 +162,21 @@ export class PointCloudPrimitive {
   private _sp: { destroy(): void } | null;
   /** Fired once, after the first successful `_initGpu()`, then dropped. */
   private _onGpuInit: ((startedAt: number, endedAt: number) => void) | null;
+  // Raw buffer handles retained past `_initGpu()` (unlike the CPU TypedArrays,
+  // which are freed) so `readPointAttributes()` can read a single point's
+  // worth of bytes back from the GPU on demand, without keeping a full CPU
+  // copy of every loaded node around for the sake of picking.
+  private _positionBuffer: CesiumBufferLike | null;
+  private _intensityBuffer: CesiumBufferLike | null;
+  private _classificationBuffer: CesiumBufferLike | null;
+  // Built lazily on first pick, from a WebGL2-only shader (reads
+  // `gl_VertexID`) — see CopcDataSource.pickPoint().
+  private _pickVa: { destroy(): void } | null;
+  private _pickSp: { destroy(): void } | null;
+  private _pickCmd: DrawCommandLike | null;
+  /** Set by `preparePickCommand()` just before the caller draws it; read by
+   *  the pick command's own `u_nodeSlot` uniform. */
+  private _pickNodeSlot: number;
 
   constructor(
     renderData: NodeRenderData,
@@ -119,6 +193,7 @@ export class PointCloudPrimitive {
     );
     this._appliedHeightOffset = 0;
     this._appliedOpaque = true;
+    this._appliedClipVersion = -1;
     this._colors = renderData.colors;
     this._intensities = renderData.intensities;
     this._classifications = renderData.classifications;
@@ -133,6 +208,13 @@ export class PointCloudPrimitive {
     this._va = null;
     this._sp = null;
     this._onGpuInit = onGpuInit ?? null;
+    this._positionBuffer = null;
+    this._intensityBuffer = null;
+    this._classificationBuffer = null;
+    this._pickVa = null;
+    this._pickSp = null;
+    this._pickCmd = null;
+    this._pickNodeSlot = 0;
   }
 
   // Called by PrimitiveCollection every frame.
@@ -157,10 +239,7 @@ export class PointCloudPrimitive {
     } else {
       // Cheap enough to compare every frame; the underlying rebuilds only
       // happen on the frames where the relevant style field actually changed.
-      if (this._style.heightOffset !== this._appliedHeightOffset) {
-        this._cmd.modelMatrix = this._modelMatrix(this._style.heightOffset);
-        this._appliedHeightOffset = this._style.heightOffset;
-      }
+      this._syncOriginAndClip();
       const opaque = this._style.opacity >= 1;
       if (opaque !== this._appliedOpaque) {
         this._cmd.pass = opaque ? CesiumAny.Pass.OPAQUE : CesiumAny.Pass.TRANSLUCENT;
@@ -185,6 +264,24 @@ export class PointCloudPrimitive {
         });
   }
 
+  /** Applies a changed `heightOffset` to the main command's origin, then
+   *  rebuilds the node-local clip uniforms if either it or the clip changed. */
+  private _syncOriginAndClip(): void {
+    if (this._style.heightOffset !== this._appliedHeightOffset) {
+      this._cmd!.modelMatrix = this._modelMatrix(this._style.heightOffset);
+      this._appliedHeightOffset = this._style.heightOffset;
+      this._appliedClipVersion = -1; // the node origin moved under the clip
+    }
+    if (this._style.clip.version !== this._appliedClipVersion) this._updateClipUniforms();
+  }
+
+  /** Re-expresses the world-space clip regions relative to this node's current origin. */
+  private _updateClipUniforms(): void {
+    const origin = Cesium.Matrix4.getTranslation(this._cmd!.modelMatrix, new Cesium.Cartesian3());
+    this._clipUniforms = writeLocalClipUniforms(this._style.clip, origin, this._clipPlanes, this._clipBoxes);
+    this._appliedClipVersion = this._style.clip.version;
+  }
+
   /** Node origin shifted `heightOffset` meters along the node's local "up". */
   private _modelMatrix(heightOffset: number): Cesium.Matrix4 {
     const origin = new Cesium.Cartesian3(this._origin[0], this._origin[1], this._origin[2]);
@@ -203,12 +300,22 @@ export class PointCloudPrimitive {
     let va: { destroy(): void } | null = null;
     let sp: { destroy(): void } | null = null;
     try {
+      // Retained on `this` (not just local vars) for position/intensity/
+      // classification — readPointAttributes() reads them back directly by
+      // pointIndex on a pick hit, instead of keeping a full CPU copy of every
+      // loaded node around just in case it's picked.
+      const positionBuffer = mkVBuf(this._positions!);
+      const colorBuffer = mkVBuf(this._colors!);
+      const intensityBuffer = mkVBuf(this._intensities!);
+      const classificationBuffer = mkVBuf(this._classifications!);
+      const elevationBuffer = mkVBuf(this._elevations!);
+
       va = new CesiumAny.VertexArray({
         context,
         attributes: [
           {
             index: 0, // position (node-relative offset)
-            vertexBuffer: mkVBuf(this._positions!),
+            vertexBuffer: positionBuffer,
             componentsPerAttribute: 3,
             componentDatatype: Cesium.ComponentDatatype.FLOAT,
             offsetInBytes: 0,
@@ -216,7 +323,7 @@ export class PointCloudPrimitive {
           },
           {
             index: 1, // color
-            vertexBuffer: mkVBuf(this._colors!),
+            vertexBuffer: colorBuffer,
             componentsPerAttribute: 4,
             componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
             normalize: true,
@@ -225,7 +332,7 @@ export class PointCloudPrimitive {
           },
           {
             index: 2, // intensity
-            vertexBuffer: mkVBuf(this._intensities!),
+            vertexBuffer: intensityBuffer,
             componentsPerAttribute: 1,
             componentDatatype: Cesium.ComponentDatatype.UNSIGNED_SHORT,
             normalize: true,
@@ -234,7 +341,7 @@ export class PointCloudPrimitive {
           },
           {
             index: 3, // classification
-            vertexBuffer: mkVBuf(this._classifications!),
+            vertexBuffer: classificationBuffer,
             componentsPerAttribute: 1,
             componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
             normalize: true,
@@ -243,7 +350,7 @@ export class PointCloudPrimitive {
           },
           {
             index: 4, // elevation
-            vertexBuffer: mkVBuf(this._elevations!),
+            vertexBuffer: elevationBuffer,
             componentsPerAttribute: 1,
             componentDatatype: Cesium.ComponentDatatype.UNSIGNED_SHORT,
             normalize: true,
@@ -252,6 +359,9 @@ export class PointCloudPrimitive {
           },
         ],
       });
+      this._positionBuffer = positionBuffer;
+      this._intensityBuffer = intensityBuffer;
+      this._classificationBuffer = classificationBuffer;
 
       const style = this._style;
 
@@ -293,10 +403,16 @@ export class PointCloudPrimitive {
           u_intensityRange: () => style.intensityRange,
           u_classMask: () => style.classMask,
           u_opacity: () => style.opacity,
+          u_clipMode: () => this._clipUniforms.mode,
+          u_clipPlaneCount: () => this._clipUniforms.planeCount,
+          u_clipPlanes: () => this._clipPlanes,
+          u_clipBoxCount: () => this._clipUniforms.boxCount,
+          u_clipBoxes: () => this._clipBoxes,
         },
       }) as DrawCommandLike;
       this._appliedHeightOffset = this._style.heightOffset;
       this._appliedOpaque = opaque;
+      this._updateClipUniforms();
     } catch (err) {
       try {
         if (va) va.destroy();
@@ -321,6 +437,147 @@ export class PointCloudPrimitive {
     this._elevations = null;
   }
 
+  /**
+   * Builds (once) and returns this node's pick-pass `DrawCommand`, or `null`
+   * if the node isn't currently showing — a hidden/off-screen node has
+   * nothing on screen to click, so it must not be pickable (matches the main
+   * pass's rendered visibility). `nodeSlot` must be `>= 1`; the caller assigns
+   * one per currently-visible primitive for a single `pickPoint()` call (see
+   * `decodePickColor()` in `./shaders` for why `0` is reserved).
+   *
+   * WebGL2-only: the pick vertex shader reads `gl_VertexID`. Callers must
+   * check `Cesium.FeatureDetection.supportsWebgl2(scene)` before ever reaching
+   * this (`CopcDataSource.pickPoint()` does).
+   */
+  preparePickCommand(context: unknown, nodeSlot: number, framebuffer: unknown): DrawCommandLike | null {
+    if (!this.show || this._destroyed || !this._cmd || !this._positionBuffer || !this._classificationBuffer) {
+      return null;
+    }
+    this._pickNodeSlot = nodeSlot;
+    // The pick pass shares the main pass's clip uniforms, so bring them up to
+    // date in case the clip or heightOffset changed since the last render.
+    this._syncOriginAndClip();
+    if (this._pickCmd) {
+      this._pickCmd.framebuffer = framebuffer;
+      // heightOffset may have changed since this command was built; update()
+      // keeps _cmd's modelMatrix in sync the same way for the main pass.
+      this._pickCmd.modelMatrix = this._modelMatrix(this._style.heightOffset);
+      return this._pickCmd;
+    }
+
+    const pickVa = new CesiumAny.VertexArray({
+      context,
+      attributes: [
+        {
+          index: 0, // position (node-relative offset) — same buffer as the main VA's
+          vertexBuffer: this._positionBuffer,
+          componentsPerAttribute: 3,
+          componentDatatype: Cesium.ComponentDatatype.FLOAT,
+          offsetInBytes: 0,
+          strideInBytes: 12,
+        },
+        {
+          index: 1, // classification — same buffer as the main VA's, for the same allow-list cull
+          vertexBuffer: this._classificationBuffer,
+          componentsPerAttribute: 1,
+          componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
+          normalize: true,
+          offsetInBytes: 0,
+          strideInBytes: 1,
+        },
+      ],
+    });
+    const pickSp = CesiumAny.ShaderProgram.fromCache({
+      context,
+      vertexShaderSource: pickVertexShaderSource,
+      fragmentShaderSource: pickFragmentShaderSource,
+      attributeLocations: { position: 0, classification: 1 },
+    });
+
+    const style = this._style;
+    this._pickVa = pickVa;
+    this._pickSp = pickSp;
+    this._pickCmd = new CesiumAny.DrawCommand({
+      vertexArray: pickVa,
+      primitiveType: Cesium.PrimitiveType.POINTS,
+      shaderProgram: pickSp,
+      // Always opaque depth test/write, independent of the style's live
+      // opacity: blending two points' encoded IDs together would decode to
+      // neither, and a decisive nearest-wins hit is exactly what picking wants.
+      renderState: CesiumAny.RenderState.fromCache({ depthTest: { enabled: true }, depthMask: true }),
+      boundingVolume: this._boundingSphere,
+      count: this._pointCount,
+      modelMatrix: this._modelMatrix(this._style.heightOffset),
+      framebuffer,
+      uniformMap: {
+        u_pixelSize: () => style.pixelSize,
+        u_sizeMode: () => style.sizeMode,
+        u_attenuationFactor: () => style.attenuationFactor,
+        u_minPixelSize: () => style.minPixelSize,
+        u_maxPixelSize: () => style.maxPixelSize,
+        u_classMask: () => style.classMask,
+        u_nodeSlot: () => this._pickNodeSlot,
+        u_clipMode: () => this._clipUniforms.mode,
+        u_clipPlaneCount: () => this._clipUniforms.planeCount,
+        u_clipPlanes: () => this._clipPlanes,
+        u_clipBoxCount: () => this._clipUniforms.boxCount,
+        u_clipBoxes: () => this._clipBoxes,
+      },
+    }) as DrawCommandLike;
+    return this._pickCmd;
+  }
+
+  /**
+   * Reads one point's position/classification/intensity directly off the
+   * GPU buffers via `gl.getBufferSubData` (WebGL2-only) — a targeted few-byte
+   * read, not a full-buffer download, since the CPU-side copies were freed
+   * once uploaded (see `_initGpu()`). `pointIndex` is `gl_VertexID` as decoded
+   * from a pick hit; out-of-range values throw.
+   */
+  readPointAttributes(pointIndex: number, context: unknown): PickedPointAttributes {
+    if (pointIndex < 0 || pointIndex >= this._pointCount) {
+      throw new RangeError(`pointIndex ${pointIndex} is out of range for a node with ${this._pointCount} points`);
+    }
+    if (!this._positionBuffer || !this._intensityBuffer || !this._classificationBuffer) {
+      throw new Error('readPointAttributes() called before this node reached the GPU');
+    }
+    const gl = (context as CesiumContextLike)._gl;
+    // Restored below: Cesium caches its own GL bindings, and a binding changed
+    // behind its back could otherwise leak into its next draw.
+    const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
+
+    const positionBytes = new Float32Array(3);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._positionBuffer._buffer);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex * 12, positionBytes);
+
+    const intensityBytes = new Uint16Array(1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._intensityBuffer._buffer);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex * 2, intensityBytes);
+
+    const classificationBytes = new Uint8Array(1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._classificationBuffer._buffer);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex, classificationBytes);
+    gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer);
+
+    const offset = new Cesium.Cartesian3(positionBytes[0], positionBytes[1], positionBytes[2]);
+    const position = Cesium.Matrix4.multiplyByPoint(
+      this._modelMatrix(this._style.heightOffset),
+      offset,
+      new Cesium.Cartesian3(),
+    );
+    // The shift is applied per node along that node's own "up", so only this
+    // primitive can undo it exactly; a caller holding just `position` could
+    // only guess the direction.
+    const dataPosition = Cesium.Matrix4.multiplyByPoint(this._modelMatrix(0), offset, new Cesium.Cartesian3());
+
+    return {
+      position,
+      dataPosition,
+      classification: classificationBytes[0]!,
+      intensity: intensityBytes[0]!,
+    };
+  }
+
   /** The shared style object this primitive's uniforms read through. */
   get style(): PointStyle {
     return this._style;
@@ -334,6 +591,11 @@ export class PointCloudPrimitive {
     if (!this._destroyed) {
       if (this._va) this._va.destroy();
       if (this._sp) this._sp.destroy();
+      // _pickVa shares its position/classification buffers with _va, already
+      // destroyed above; VertexArray.destroy() skips an already-destroyed
+      // buffer, so this is safe to call unconditionally after it.
+      if (this._pickVa) this._pickVa.destroy();
+      if (this._pickSp) this._pickSp.destroy();
       this._destroyed = true;
     }
     return Cesium.destroyObject(this);

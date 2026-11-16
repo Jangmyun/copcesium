@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * Decode stage, main-thread side. Owns a pool of reused Web Workers (running
  * `worker.ts`) and routes conversion requests to an idle one, so LAZ
@@ -167,7 +176,10 @@ export class WorkerPool {
       if (pending !== task) continue;
       this.pending.delete(worker);
       task.reject(new Error('WorkerPool: task timed out waiting for a worker response'));
-      this._release(worker);
+      // The worker is still inside that task — 30 s into one decode is stuck,
+      // not slow — so handing it the next task would queue that task behind
+      // it. Replace it the way a crashed worker is replaced.
+      this._replaceWorker(worker);
       return;
     }
     const queueIndex = this.queue.indexOf(task);

@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * Decode stage, worker-thread side. Runs inside each `WorkerPool` worker:
  * decompresses a node's LAZ chunk via `laz-perf` (WASM), reprojects points,
@@ -17,6 +26,7 @@ import type { WorkerCancelRequest, WorkerRequest, WorkerResponse } from './Worke
 import type { NodeConversionPayload } from './messages';
 import type { NodeRenderData } from '../types';
 import { CLASSIFICATION_COLORS, DEFAULT_CLASS_COLOR } from '../style/classificationColors';
+import { createLonLatTransform } from './lonLatTransform';
 // laz-perf.wasm, embedded as base64 by vite-plugins/lazPerfWasmInline.ts — see
 // getLazPerf() below for why this worker can't fetch it as a sibling file.
 import lazPerfWasmBase64 from 'virtual:laz-perf-wasm-base64';
@@ -176,7 +186,8 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
 
   registerProjIfNeeded(proj, projDef);
   const needsProj = proj !== 'EPSG:4326';
-  const converter = needsProj ? proj4(proj, 'EPSG:4326') : null;
+  const toLonLat = needsProj ? createLonLatTransform(proj) : null;
+  const lonLat = new Float64Array(2);
 
   const { rgbRaw, maxColor } = hasRGB ? readRgbRaw(n, getR!, getG!, getB!) : { rgbRaw: null, maxColor: 0 };
   const colorScale = maxColor > 255 ? 65535 : 255;
@@ -210,8 +221,10 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
 
     let lon: number;
     let lat: number;
-    if (needsProj && converter) {
-      [lon, lat] = converter.forward([x, y]);
+    if (toLonLat) {
+      toLonLat(x, y, lonLat);
+      lon = lonLat[0]!;
+      lat = lonLat[1]!;
       if (!isFinite(lon) || !isFinite(lat)) {
         throw new Error(`proj4 transform produced a non-finite coordinate at point ${i}: x=${x}, y=${y}`);
       }

@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Cesium from 'cesium';
 import type { NodeRenderData } from '../types';
@@ -20,8 +29,14 @@ vi.mock('cesium', async (importOriginal) => {
       return { destroy: vi.fn() };
     }),
     ShaderProgram: { fromCache: vi.fn(() => ({ destroy: vi.fn() })) },
-    DrawCommand: vi.fn(function () {
-      return { modelMatrix: actual.Matrix4.IDENTITY, pass: 0, renderState: {} };
+    DrawCommand: vi.fn(function (opts: { framebuffer?: unknown; uniformMap?: Record<string, () => unknown> }) {
+      return {
+        modelMatrix: actual.Matrix4.IDENTITY,
+        pass: 0,
+        renderState: {},
+        framebuffer: opts?.framebuffer,
+        uniformMap: opts?.uniformMap,
+      };
     }),
     RenderState: { fromCache: vi.fn(() => ({})) },
     Pass: { OPAQUE: 0, TRANSLUCENT: 1 },
@@ -30,6 +45,7 @@ vi.mock('cesium', async (importOriginal) => {
 });
 
 const { PointCloudPrimitive } = await import('./PointCloudPrimitive');
+const { createClipState } = await import('./clipping');
 
 const renderData: NodeRenderData = {
   positions: new Float32Array([0, 0, 0]),
@@ -53,6 +69,7 @@ const style = {
   classMask: [new Cesium.Cartesian4(-1, -1, -1, -1), new Cesium.Cartesian4(-1, -1, -1, -1)],
   opacity: 1,
   heightOffset: 0,
+  clip: createClipState(undefined, undefined, 'inside'),
 };
 
 const sphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(6378137, 0, 0), 10);
@@ -97,6 +114,196 @@ describe('PointCloudPrimitive GPU-init timing', () => {
     primitive.update(frame());
 
     expect(onGpuInit).not.toHaveBeenCalled();
+  });
+});
+
+describe('PointCloudPrimitive.preparePickCommand', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns null before the node has reached the GPU', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    expect(primitive.preparePickCommand({}, 1, {})).toBeNull();
+  });
+
+  it('returns null while the node is hidden, even after reaching the GPU', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+    primitive.show = false;
+    expect(primitive.preparePickCommand({}, 1, {})).toBeNull();
+  });
+
+  it('builds a pick command once GPU-initialized and shown, reading the assigned node slot live', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+
+    const cmd = primitive.preparePickCommand({}, 1, {}) as unknown as {
+      uniformMap: { u_nodeSlot(): number };
+    };
+    expect(cmd).not.toBeNull();
+    expect(cmd.uniformMap.u_nodeSlot()).toBe(1);
+
+    // Same call reused, not rebuilt, with the new slot reflected live.
+    const vertexArrayCallsBefore = vi.mocked(Cesium.VertexArray).mock.calls.length;
+    const cmd2 = primitive.preparePickCommand({}, 2, {});
+    expect(cmd2).toBe(cmd);
+    expect(cmd.uniformMap.u_nodeSlot()).toBe(2);
+    expect(vi.mocked(Cesium.VertexArray).mock.calls.length).toBe(vertexArrayCallsBefore);
+  });
+
+  it('points the pick command at the given framebuffer, updated on every call', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+
+    const fbA = { id: 'a' };
+    const fbB = { id: 'b' };
+    const cmd = primitive.preparePickCommand({}, 1, fbA) as unknown as { framebuffer: unknown };
+    expect(cmd.framebuffer).toBe(fbA);
+
+    primitive.preparePickCommand({}, 1, fbB);
+    expect(cmd.framebuffer).toBe(fbB);
+  });
+});
+
+describe('PointCloudPrimitive.readPointAttributes', () => {
+  const PREVIOUS_BUFFER = { previous: true };
+  function fakeGpuContext() {
+    const gl = {
+      ARRAY_BUFFER: 'ARRAY_BUFFER',
+      ARRAY_BUFFER_BINDING: 'ARRAY_BUFFER_BINDING',
+      getParameter: vi.fn(() => PREVIOUS_BUFFER),
+      bindBuffer: vi.fn(),
+      getBufferSubData: vi.fn((_target: unknown, _offset: number, dst: ArrayBufferView) => {
+        if (dst instanceof Float32Array) {
+          dst[0] = 1;
+          dst[1] = 2;
+          dst[2] = 3;
+        } else if (dst instanceof Uint16Array) {
+          dst[0] = 500;
+        } else if (dst instanceof Uint8Array) {
+          dst[0] = 6;
+        }
+      }),
+    };
+    return { _gl: gl };
+  }
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('throws for a point index outside the node', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+    expect(() => primitive.readPointAttributes(-1, fakeGpuContext())).toThrow(RangeError);
+    expect(() => primitive.readPointAttributes(renderData.pointCount, fakeGpuContext())).toThrow(RangeError);
+  });
+
+  it('throws if called before the node has reached the GPU', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    expect(() => primitive.readPointAttributes(0, fakeGpuContext())).toThrow();
+  });
+
+  it('reads position (origin + node-relative offset), classification, and intensity off the GPU buffers', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+
+    const attrs = primitive.readPointAttributes(0, fakeGpuContext());
+
+    // origin [6378137, 0, 0] + the fake offset [1, 2, 3] read back above, with heightOffset 0.
+    expect(attrs.position.x).toBeCloseTo(6378138);
+    expect(attrs.position.y).toBeCloseTo(2);
+    expect(attrs.position.z).toBeCloseTo(3);
+    expect(attrs.classification).toBe(6);
+    expect(attrs.intensity).toBe(500);
+  });
+
+  it('reports the point without the live heightOffset as dataPosition', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, { ...style, heightOffset: 10 });
+    primitive.update(frame());
+
+    const attrs = primitive.readPointAttributes(0, fakeGpuContext());
+
+    // The node's "up" at origin [6378137, 0, 0] is +X, so the shift is +10 in X.
+    expect(attrs.position.x).toBeCloseTo(6378148);
+    expect(attrs.dataPosition.x).toBeCloseTo(6378138);
+    expect(attrs.dataPosition.y).toBeCloseTo(2);
+    expect(attrs.dataPosition.z).toBeCloseTo(3);
+  });
+
+  it('restores the ARRAY_BUFFER binding it found, so Cesium\'s cached GL state stays accurate', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, style);
+    primitive.update(frame());
+    const context = fakeGpuContext();
+
+    primitive.readPointAttributes(0, context);
+
+    expect(context._gl.bindBuffer).toHaveBeenLastCalledWith('ARRAY_BUFFER', PREVIOUS_BUFFER);
+  });
+});
+
+describe('PointCloudPrimitive clipping uniforms', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** The uniformMap handed to the (mocked) DrawCommand constructor. */
+  function uniforms(): Record<string, () => unknown> {
+    const opts = vi.mocked(
+      Cesium.DrawCommand as unknown as (o: { uniformMap: Record<string, () => unknown> }) => void,
+    ).mock.calls[0]![0];
+    return opts.uniformMap;
+  }
+
+  it('re-expresses the clip relative to the node origin, and rebuilds it on change', () => {
+    const clipStyle = { ...style, clip: createClipState(undefined, undefined, 'inside') };
+    // The DrawCommand mock's model matrix is the identity, so the node origin is (0, 0, 0).
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+    expect(uniforms().u_clipMode!()).toBe(0); // nothing to clip against
+
+    clipStyle.clip.planes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)];
+    clipStyle.clip.version++;
+    primitive.update(frame());
+    expect(uniforms().u_clipMode!()).toBe(1);
+    expect(uniforms().u_clipPlaneCount!()).toBe(1);
+    expect((uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]).toEqual(
+      new Cesium.Cartesian4(1, 0, 0, -10),
+    );
+  });
+
+  it('rebuilds the clip uniforms when heightOffset moves the node origin', () => {
+    const clipStyle = {
+      ...style,
+      clip: createClipState([new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)], undefined, 'inside'),
+    };
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+    const before = (uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]!.w;
+
+    clipStyle.heightOffset = 50;
+    primitive.update(frame());
+
+    // The mocked DrawCommand started at an identity model matrix (origin 0);
+    // heightOffset rebuilt it as the real node origin (6378137, 0, 0) shifted
+    // 50 m along its "up" (+X), and the plane's node-local w followed.
+    expect((uniforms().u_clipPlanes!() as Cesium.Cartesian4[])[0]!.w).toBeCloseTo(
+      before + 6378137 + 50,
+    );
+  });
+
+  it('gives the pick command the same clip uniforms, current even without a render in between', () => {
+    const clipStyle = { ...style, clip: createClipState(undefined, undefined, 'inside') };
+    const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);
+    primitive.update(frame());
+
+    // Changed after the last update(), with no frame rendered before the pick.
+    clipStyle.clip.planes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, -10)];
+    clipStyle.clip.version++;
+    const pickCmd = primitive.preparePickCommand({}, 1, {}) as unknown as {
+      uniformMap: Record<string, () => unknown>;
+    };
+
+    expect(pickCmd.uniformMap.u_clipMode!()).toBe(1);
+    expect(pickCmd.uniformMap.u_clipPlaneCount!()).toBe(1);
+    expect(pickCmd.uniformMap.u_clipPlanes!()).toBe(uniforms().u_clipPlanes!());
+    expect(pickCmd.uniformMap.u_clipBoxCount!()).toBe(0);
+    expect(pickCmd.uniformMap.u_clipBoxes!()).toBe(uniforms().u_clipBoxes!());
   });
 });
 

@@ -67,6 +67,8 @@ WGS84 타원체와 OpenStreetMap 배경지도로 시작하므로 Cesium Ion 토�
 
 ## 설치
 
+이미 있는 프로젝트에 설치한다고 가정합니다(아래 예시는 Vite 기준). 빈 폴더에서 시작한다면 먼저 프로젝트를 만드세요(`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`). 현재 폴더에 `package.json`이 없으면 `npm install`은 상위 폴더를 거슬러 올라가 `package.json`이나 `node_modules`가 있는 가장 가까운 폴더에 설치합니다. 그래서 에러 없이 끝나지만 프로젝트 폴더는 비어 있게 됩니다. 번들러 없이 쓴다면 `npm install` 없이 import map으로 두 패키지를 CDN에서 불러올 수 있습니다. [셋업](#셋업) 끝부분을 참고하세요.
+
 ```bash
 npm install copcesium cesium
 ```
@@ -100,7 +102,7 @@ export default defineConfig({ plugins: [cesium()] });
 </style>
 
 <div id="cesiumContainer"></div>
-<script type="module" src="/main.ts"></script>
+<script type="module" src="/src/main.ts"></script>
 ```
 
 다른 번들러를 쓴다면 같은 두 가지를 직접 해주면 됩니다. `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}`를 정적 출력 경로로 복사하고, 첫 `import` 전에 Cesium이 그곳을 보도록 지정합니다:
@@ -143,6 +145,7 @@ window.CESIUM_BASE_URL = '/cesium/';
 ## 빠른 시작
 
 ```ts
+// src/main.ts
 import * as Cesium from 'cesium';
 import { CopcDataSource } from 'copcesium';
 
@@ -153,6 +156,8 @@ const dataSource = await CopcDataSource.load(
   viewer,
 );
 ```
+
+`npm run dev`(Vite 스캐폴드가 만들어 주는 스크립트)로 실행한 뒤, 출력된 로컬 URL을 브라우저에서 여세요.
 
 이게 전부입니다 — `load()`가 COPC 계층 구조를 가져오고, 파일의 WKT가 있으면 원본 좌표계를 자동 감지하고, 카메라를 데이터셋 위치로 이동시킨 뒤, 카메라가 움직이는 대로 노드를 스트리밍하기 시작합니다. URL 입력창, 실시간 `pixelSize`/`sseThreshold` 슬라이더, 에러 처리까지 포함된 조금 더 완전한 예제는 [`examples/basic-viewer/main.ts`](./examples/basic-viewer/main.ts)를 참고하세요.
 
@@ -190,12 +195,15 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
   minPixelSize?: number;
   maxPixelSize?: number;
   sseThreshold?: number;
+  prefetchFrustumFactor?: number;
+  maxPrefetchNodes?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -206,6 +214,9 @@ interface CopcDataSourceOptions {
   eyeDomeLightingRadius?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
+  clipPlanes?: Cesium.Plane[];
+  clipBoxes?: Cesium.Matrix4[];
+  clipMode?: 'inside' | 'outside';
 }
 ```
 
@@ -223,6 +234,9 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
 | `maxVisibleNodes` | `100` | 한 번의 LoD 패스에서 렌더링용으로 선택하는 최대 노드 수. |
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
+| `viewAxisBias` | `2` | `maxVisibleNodes`나 `maxPoints`가 선택을 잘라야 할 때 화면 중앙을 모서리보다 얼마나 우선할지 정합니다. 우선순위에 시선축에서 `1 + viewAxisBias`, 화면 모서리에서 1을 곱합니다. 예산 안에 들어오는 시점은 값과 무관하게 같은 노드를 선택합니다. `0`이면 screen-space error만으로 순위를 매깁니다. |
+| `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
+| `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
 | `pointSizeMode` | `'fixed'` | `'fixed'`는 모든 포인트를 `pixelSize`로 그립니다. `'attenuated'`는 카메라 거리에 따라 크기를 줄입니다(`attenuationFactor / sqrt(dist_m)`, `[minPixelSize, maxPixelSize]`로 클램프) — 가까이 갈 때 포인트 사이 빈틈이 보이지 않도록 합니다. `dataSource.pointSizeMode`로 실시간 조정 가능. |
 | `attenuationFactor` | `100` | 거리 감쇠 크기 공식의 분자값(pixel·√meters 단위). `pointSizeMode`가 `'attenuated'`일 때만 사용됩니다. 데이터셋 밀도에 맞게 조정하세요. `dataSource.attenuationFactor`로 실시간 조정 가능. |
@@ -237,6 +251,9 @@ interface CopcDataSourceOptions {
 | `eyeDomeLightingRadius` | `1` | EDL이 주변 포인트를 샘플링하는 거리(CSS 픽셀), `0`보다 커야 함. `dataSource.eyeDomeLightingRadius`로 실시간 조정 가능. |
 | `classificationFilter` | 전체 | 그릴 LAS 분류 코드 목록. 나머지는 그리지 않습니다. `dataSource.classificationFilter`로 실시간 조정 가능. |
 | `intensityRange` | 자동 | `'intensity'` 램프의 양 끝에 대응하는 원시 intensity 값. 생략하면 노드가 로드될 때마다 `[0, 지금까지 본 최댓값]`으로 넓어집니다. |
+| `clipPlanes` | 없음 | 월드 좌표(ECEF) `Cesium.Plane` 최대 6개. [Clipping](#clipping) 참고. `dataSource.clipPlanes`로 실시간 조정 가능. |
+| `clipBoxes` | 없음 | 박스 최대 4개. 각각 단위 정육면체 `[-0.5, 0.5]³`를 월드 좌표로 옮기는 `Cesium.Matrix4`. [Clipping](#clipping) 참고. `dataSource.clipBoxes`로 실시간 조정 가능. |
+| `clipMode` | `'inside'` | clip 영역 안의 포인트(`'inside'`)를 그릴지, 나머지(`'outside'`)를 그릴지. `dataSource.clipMode`로 실시간 조정 가능. |
 
 ## API 레퍼런스
 
@@ -266,12 +283,16 @@ class CopcDataSource {
   eyeDomeLightingRadius: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
+  clipPlanes: Cesium.Plane[];
+  clipBoxes: Cesium.Matrix4[];
+  clipMode: 'inside' | 'outside';
   heightOffset: number;
   readonly maxDepth: number;
   readonly nodeCount: number;
   readonly cacheSize: number;
   readonly stats: CopcStats;
   zoomTo(): Promise<void>;
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels?: number): PickedPoint | undefined;
   destroy(): void;
 }
 ```
@@ -291,13 +312,57 @@ class CopcDataSource {
 | `eyeDomeLightingRadius` | get/set. 유한한 양수가 아니면 `RangeError`를 던집니다. |
 | `classificationFilter` | get/set. `undefined`를 넣으면 다시 전부 그립니다. 0-255 범위를 벗어난 값에는 `RangeError`를 던집니다. |
 | `intensityRange` | get/set. `undefined`를 넣으면 다시 자동 범위로 돌아갑니다. |
+| `clipPlanes` / `clipBoxes` | get/set. `undefined`나 `[]`를 넣으면 해제됩니다. 대입할 때 복사하므로, 이후 원본 객체를 바꿔도 다시 대입하기 전까지는 반영되지 않습니다. 개수 초과, 유한하지 않은 평면, 길이가 0인 축을 가진 박스에는 `RangeError`를 던집니다. |
+| `clipMode` | get/set. |
 | `heightOffset` | get/set. 로드된 모든 포인트에 적용되는 수직 오프셋(미터). 로드 후 지오이드/수직 기준면 불일치를 손으로 보정할 때 씁니다. 지오메트리가 아니라 모델 행렬을 옮기므로 재로드 없이 즉시 반영됩니다. 기본값 `0`. |
 | `maxDepth` | 읽기 전용. 로드된 계층 구조에 존재하는 가장 깊은 옥트리 레벨. |
 | `nodeCount` | 읽기 전용. 계층 구조 내 전체 노드 수(로드 여부 무관). |
 | `cacheSize` | 읽기 전용. LRU 캐시에 현재 남아있는 노드 수. |
 | `stats` | 읽기 전용. 이 데이터소스가 지금까지 얼마나 전송했고 각 단계가 얼마나 걸렸는지에 대한 스냅샷 — [전송량 측정](#전송량-측정) 참고. |
 | `zoomTo()` | 카메라를 데이터셋의 루트 bounding sphere로 비행시킵니다. `autoFrame`이 켜져 있으면 `load()`가 내부적으로 호출하며, 나중에 다시 프레이밍하고 싶으면 직접 호출하면 됩니다. |
+| `pickPoint()` | 화면 좌표(예: `ScreenSpaceEventHandler`) 아래에서 가장 가까운 현재 화면에 보이는 점을 찾습니다. [Picking](#picking) 참고. |
 | `destroy()` | Worker 풀(외부에서 주입된 게 아니라면)과 노드 캐시, 로드된 모든 프리미티브를 정리합니다. 여러 번 호출해도 안전합니다. |
+
+### Picking
+
+`pickPoint()`는 화면 위치 아래에서 가장 가까운 점을 찾아 위치와 속성을 반환합니다.
+
+```ts
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+  const picked = ds.pickPoint(click.position);
+  if (picked) {
+    console.log(picked.position, picked.classification, picked.intensity);
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+```
+
+`tolerancePixels`(기본값 `4`)는 정확한 픽셀 주변으로 탐색 범위를 넓힙니다 — 포인트는 면적이 거의 0인 점이라, 정확히 한 픽셀만 검사하면 채워진 도형을 검사할 때보다 훨씬 자주 놓칩니다.
+
+**WebGL2가 필요합니다.** 어떤 점이 클릭됐는지 식별할 때 `gl_VertexID`를 읽고, 위치·분류·intensity를 가져올 때 GPU 버퍼에서 몇 바이트만 직접 읽습니다(`gl.getBufferSubData`) — picking을 위해 로드된 모든 노드의 전체 CPU 사본을 유지하는 대신 이 방식을 택했습니다. WebGL1로 폴백된 컨텍스트(구형 브라우저, 또는 `contextOptions: { requestWebgl1: true }`로 생성한 `Viewer`)에서는 `pickPoint()`가 경고를 한 번만 출력하고 항상 `undefined`를 반환합니다 — 렌더링을 포함한 라이브러리의 다른 모든 기능은 그 환경에서도 정상 동작합니다.
+
+`pickPoint()`는 현재 렌더링 상태를 그대로 따릅니다 — `classificationFilter`로 숨겨졌거나, 뷰 프러스텀에 잘렸거나, 아직 로드되지 않은 노드에 속한 점은 선택할 수 없습니다. 반환된 `nodeKey`/`pointIndex`는 해당 노드가 캐시에 남아있는 동안에만 그 점을 식별합니다 — 재로드나 축출 이후에는 유효하지 않으므로 별도로 저장해두지 마세요.
+
+pick 패스는 이 데이터소스의 점끼리만 깊이 테스트를 하므로, 지형이나 3D Tiles 뒤에 가려진 점도 선택될 수 있습니다. 이것이 문제라면 같은 화면 위치의 `scene.pickPosition()`(또는 `scene.pick()`) 결과와 비교해 걸러내세요.
+
+### 측정
+
+`measureSegment(a, b)`와 `measurePath(points)`는 선택한 점의 위치로 거리를 계산합니다. 장면이나 그리기와 무관한 순수 함수라 어떤 UI에서도 쓸 수 있습니다.
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference — 모두 미터
+```
+
+| 값 | 뜻 |
+| --- | --- |
+| `distance` | 두 ECEF 점 사이의 직선거리. |
+| `horizontalDistance` | 두 점을 WGS84 타원체 면에 내린 위치 사이의 측지선 거리. 점의 높이와 무관합니다. |
+| `heightDifference` | 끝점의 타원체고에서 시작점의 타원체고를 뺀 값. ECEF Z의 차이가 아니고, 지오이드 기준 정표고의 차이도 아닙니다. |
+
+`measurePath()`는 `length`, `horizontalLength`, `totalAscent`/`totalDescent`와 구간별 결과도 돌려줍니다. 측정이 실시간 `heightOffset`에 따라 바뀌지 않게 하려면 `position` 대신 `dataPosition`을 쓰세요. 로드할 때 준 `geoidOffset`은 모든 점에 같은 값을 더하므로 `heightDifference`에서 소거됩니다.
 
 ### 전송량 측정
 
@@ -315,6 +380,7 @@ console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴
 | `transferredBytes` | 실제로 수신한 바이트 — Range 지원 확인 요청, 헤더, 계층 구조 페이지, 노드 포인트 데이터를 모두 포함합니다. |
 | `requestCount` | 수신한 range 응답 수. 병합된 요청은 한 번으로 셉니다. |
 | `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
+| `waste` | 위 합계가 빠뜨리는 노드 포인트 데이터 쪽 수치입니다. 중단된 시도(`abortedRequests`, 그중 본문 도중에 끊긴 것은 `abortedAfterHeaders`), 실패한 시도(`failedRequests`), 재시도(`retries`)를 셉니다. 중단·실패한 시도가 **요청한** 바이트는 `abortedBytes`, `failedBytes`입니다. `unusedBytes`는 받았지만 아무 노드도 쓰지 않은 바이트(병합 틈, 받는 도중 취소된 노드)이며, 이미 `transferredBytes`에 들어 있습니다. `cancelledBeforeSend`는 보내기 전에 취소된 요청 수입니다. |
 | `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
 
 `upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.
@@ -368,6 +434,30 @@ ds.eyeDomeLightingRadius = 2;     // CSS 픽셀, 기본값 1
 - WebGL2(또는 `WEBGL_draw_buffers`, `EXT_frag_depth` 확장)가 필요합니다. 없으면 음영 없이 그리고 경고를 한 번 출력합니다.
 - EDL을 켠 데이터 소스마다 화면 크기의 오프스크린 버퍼를 하나씩 따로 두며, EDL을 끄면 해제합니다.
 - Cesium의 점군 EDL과 마찬가지로 EDL용 렌더링은 단일 샘플이라, EDL을 켜 두는 동안 포인트에 MSAA 가장자리 보정이 적용되지 않습니다. 그래서 `eyeDomeLightingStrength = 0`이어도 포인트 가장자리가 더 각져 보입니다. `viewer.scene.msaaSamples = 1`이면 strength `0`과 EDL 끔이 정확히 같습니다.
+
+### Clipping
+
+Clipping 평면과 박스로 관심 영역만 남기거나 단면을 볼 수 있습니다. vertex 셰이더에서 이 데이터 소스의 포인트에만 적용되며, 필터처럼 재요청 없이 uniform만 갱신됩니다.
+
+```ts
+const center = Cesium.Cartesian3.fromDegrees(-123.07, 44.05, 120);
+const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+// `center`를 중심으로 200m x 100m x 80m(동 x 북 x 위) 박스
+ds.clipBoxes = [Cesium.Matrix4.multiplyByScale(enu, new Cesium.Cartesian3(200, 100, 80), new Cesium.Matrix4())];
+
+// `center`의 동쪽만 남기기: 평면은 법선이 가리키는 쪽을 남깁니다.
+const east = Cesium.Matrix4.multiplyByPointAsVector(enu, Cesium.Cartesian3.UNIT_X, new Cesium.Cartesian3());
+ds.clipPlanes = [Cesium.Plane.fromPointNormal(center, east)];
+
+ds.clipMode = 'outside';  // 그 영역을 *제외한* 나머지를 그림
+ds.clipBoxes = undefined; // 해제
+```
+
+- 좌표는 월드 좌표(ECEF)이며, `heightOffset`이 적용된 뒤 실제로 그려지는 위치를 기준으로 판정합니다.
+- 영역은 **모든** 평면의 남기는 쪽에 있고, 박스가 하나라도 있으면 그중 **하나 이상**의 안에 있는 포인트입니다. `'inside'`는 그 영역을, `'outside'`는 나머지를 그립니다. 평면과 박스가 하나도 없으면 전부 그립니다.
+- 경계는 안쪽으로 칩니다. 영역을 노드별 로컬 좌표로 배정밀도 변환해 넘기므로, 지구 중심 좌표 규모에서 Float32의 약 0.5m 단위로 뭉개지지 않고 센티미터 수준으로 정확합니다.
+- 평면은 최대 6개, 박스는 최대 4개입니다.
 
 ## 요구사항: HTTP Range Request와 CORS
 

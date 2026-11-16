@@ -1,4 +1,14 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as Cesium from 'cesium';
 import type { Viewer } from 'cesium';
 import type { Hierarchy } from 'copc';
 import type { NodeRenderData } from './types';
@@ -137,6 +147,7 @@ afterEach(() => vi.unstubAllGlobals());
 function makeFakeViewer() {
   let updateCallback: (() => void) | undefined;
   let moveEndCallback: (() => void) | undefined;
+  let moveStartCallback: (() => void) | undefined;
   const addPrimitive = vi.fn();
   const removePrimitive = vi.fn();
   const removeUpdateListener = vi.fn();
@@ -152,10 +163,18 @@ function makeFakeViewer() {
       },
       primitives: { add: addPrimitive, remove: removePrimitive },
       camera: {
+        positionWC: new Cesium.Cartesian3(0, 0, 0),
+        directionWC: new Cesium.Cartesian3(0, 0, -1),
         moveEnd: {
           addEventListener: vi.fn((cb: () => void) => {
             moveEndCallback = cb;
             return removeMoveEndListener;
+          }),
+        },
+        moveStart: {
+          addEventListener: vi.fn((cb: () => void) => {
+            moveStartCallback = cb;
+            return () => {};
           }),
         },
         // Resolves zoomTo()'s promise immediately (real geometry isn't needed —
@@ -175,6 +194,7 @@ function makeFakeViewer() {
     requestRender,
     triggerUpdate: () => updateCallback!(),
     triggerMoveEnd: () => moveEndCallback!(),
+    triggerMoveStart: () => moveStartCallback!(),
   };
 }
 
@@ -207,7 +227,11 @@ const fakeViewer = makeFakeViewer().viewer;
  *   invented but the hierarchy never actually had. Left empty by default so
  *   nodeCount/maxDepth assertions against the single real root node hold.
  */
-function mockCopc(wkt: string | undefined, extraNodes: Record<string, Hierarchy.Node> = {}) {
+function mockCopc(
+  wkt: string | undefined,
+  extraNodes: Record<string, Hierarchy.Node> = {},
+  header = { min: [0, 0, 0], max: [10, 10, 10] },
+) {
   create.mockResolvedValueOnce({
     info: {
       cube: [0, 0, 0, 10, 10, 10],
@@ -215,7 +239,7 @@ function mockCopc(wkt: string | undefined, extraNodes: Record<string, Hierarchy.
     },
     // The elevation colour ramp normalizes each point's Z over the header's
     // range, so _loadNode() reads header.min/max on every dispatch.
-    header: { min: [0, 0, 0], max: [10, 10, 10] },
+    header,
     wkt,
   });
   loadHierarchyPage.mockResolvedValueOnce({
@@ -263,6 +287,90 @@ describe('CopcDataSource.load', () => {
     mockCopc(undefined);
     const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
     expect(() => ds.destroy()).not.toThrow();
+  });
+
+  it('rejects a non-finite geoidOffset before fetching anything', async () => {
+    // No mockCopc(): load() must fail before it reads the file.
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, { geoidOffset: NaN }),
+    ).rejects.toThrow(/geoidOffset must be a finite number/);
+  });
+
+  it('refuses a CRS that cannot transform the data, such as a +nadgrids grid never registered', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {}); // proj4 logs the missing grid
+    mockCopc(undefined);
+
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, {
+        proj: 'TEST:nad27-grid',
+        projDef:
+          '+proj=tmerc +lat_0=0 +lon_0=-81 +k=0.9996 +x_0=500000 +y_0=0 +ellps=clrk66 +nadgrids=conus +units=m +no_defs',
+      }),
+    ).rejects.toThrow(/cannot transform this file's coordinates.*nadgrid/);
+    log.mockRestore();
+  });
+
+  describe('vertical datum', () => {
+    const compound =
+      'COMPD_CS["WGS 84 + NAVD88 height",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],' +
+      'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+      'VERT_CS["NAVD88 height",VERT_DATUM["North American Vertical Datum 1988",2005],UNIT["metre",1]]]';
+
+    it('warns that heights are geoid-relative when no geoidOffset is given', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockCopc(compound);
+
+      await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Pass `geoidOffset`/));
+      warn.mockRestore();
+    });
+
+    it('stays quiet once the caller supplies geoidOffset', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockCopc(compound);
+
+      await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, { geoidOffset: -30 });
+
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/geoidOffset/));
+      warn.mockRestore();
+    });
+  });
+
+  it('refuses a file with no detectable CRS whose extent cannot be longitude/latitude', async () => {
+    // UTM meters, which would otherwise be read as degrees.
+    mockCopc(undefined, {}, { min: [500000, 4100000, 0], max: [501000, 4101000, 50] });
+
+    await expect(CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer)).rejects.toThrow(
+      /no CRS could be determined.*Pass `proj` and `projDef`/,
+    );
+  });
+
+  it('accepts that same extent once the caller supplies the CRS', async () => {
+    mockCopc(undefined, {}, { min: [500000, 4100000, 0], max: [501000, 4101000, 50] });
+
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer, {
+        proj: 'EPSG:32652',
+        projDef: '+proj=utm +zone=52 +datum=WGS84 +units=m +no_defs',
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('logs the detection warning when the datum shift is unknown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const wkt =
+      'PROJCS["Tokyo / Japan Plane Rectangular CS IX",GEOGCS["Tokyo",DATUM["Tokyo",' +
+      'SPHEROID["Bessel 1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],' +
+      'PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",36],' +
+      'PARAMETER["central_meridian",139.8333333333333],PARAMETER["scale_factor",0.9999],' +
+      'PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1]]';
+    mockCopc(wkt);
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no datum shift/));
+    warn.mockRestore();
   });
 
   it('applies zFactor/xyFactor auto-detected from a non-meter WKT', async () => {
@@ -983,6 +1091,52 @@ describe('CopcDataSource update loop', () => {
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
   });
 
+  // Nodes straddling the budget cut used to trade places on every pass while
+  // the camera moved (#192). The bonus that holds them steady must be
+  // released once the camera settles, or the view settles on whatever drifted
+  // in during the move instead of the exact selection.
+  it('gives on-screen nodes an incumbent bonus only while the camera is moving', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, triggerUpdate, triggerMoveStart, triggerMoveEnd } = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    const lastOptions = () =>
+      selectNodesMock.mock.lastCall![0] as { incumbents: Set<string>; incumbentBonus: number };
+
+    triggerUpdate();
+    expect(lastOptions().incumbentBonus).toBe(1);
+
+    triggerMoveStart();
+    triggerUpdate();
+    expect(lastOptions().incumbentBonus).toBeGreaterThan(1);
+    expect(lastOptions().incumbents).toEqual(new Set(['0-0-0-0']));
+
+    triggerMoveEnd();
+    expect(lastOptions().incumbentBonus).toBe(1);
+  });
+
+  it('passes viewAxisBias to node selection, on by default', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValue(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const lastBias = () => (selectNodesMock.mock.lastCall![0] as { viewAxisBias: number }).viewAxisBias;
+
+    const byDefault = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', byDefault.viewer, { debounceMs: 0 });
+    byDefault.triggerUpdate();
+    expect(lastBias()).toBe(2);
+
+    mockCopc(undefined);
+    const disabled = makeFakeViewer();
+    await CopcDataSource.load('https://example.com/sample.copc.laz', disabled.viewer, {
+      debounceMs: 0,
+      viewAxisBias: 0,
+    });
+    disabled.triggerUpdate();
+    expect(lastBias()).toBe(0);
+  });
+
   // `count` used to be the length of the percentile window, which stops at
   // STAGE_SAMPLE_WINDOW — so every session past that point reported the same
   // number and two different datasets looked identical (#194).
@@ -1101,6 +1255,147 @@ describe('CopcDataSource update loop', () => {
     expect(workerPoolDestroy).toHaveBeenCalledTimes(1);
     expect(rangeFetcherDestroy).toHaveBeenCalledTimes(1);
     expect(removePrimitive).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CopcDataSource.pickPoint', () => {
+  beforeEach(() => {
+    selectNodesMock.mockReturnValue([]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns undefined and warns once on a WebGL1-only context, without repeating the warning', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(ds.pickPoint(new Cesium.Cartesian2(1, 1))).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('WebGL2');
+  });
+
+  /** Loads one visible root node and stubs every GPU-touching piece of the
+   *  pick pass, leaving a real camera pose/frustum for the near/far math. The
+   *  camera sits `distance` m before the root sphere's center along its view
+   *  direction (0 = camera at the center, i.e. inside the node). */
+  async function setupPick(opts: { distance: number; heightOffset?: number; mode?: Cesium.SceneMode }) {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    if (opts.heightOffset !== undefined) ds.heightOffset = opts.heightOffset;
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    const { PickFramebuffer } = await import('./renderer/PickFramebuffer');
+    const { PointCloudPrimitive } = await import('./renderer/PointCloudPrimitive');
+    vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2').mockReturnValue(true);
+    vi.spyOn(PickFramebuffer.prototype, 'ensure').mockReturnValue({ framebuffer: {}, passState: {} } as never);
+    vi.spyOn(PickFramebuffer.prototype, 'clear').mockImplementation(() => {});
+    vi.spyOn(PickFramebuffer.prototype, 'readPixels').mockImplementation(() => new Uint8Array(9 * 9 * 4));
+    vi.spyOn(PointCloudPrimitive.prototype, 'preparePickCommand').mockReturnValue({} as never);
+    vi.spyOn(Cesium.SceneTransforms as unknown as Record<string, () => unknown>, 'transformWindowToDrawingBuffer').mockReturnValue(
+      new Cesium.Cartesian2(50, 50),
+    );
+
+    const sphere = (ds as unknown as { _getSphere(key: string): Cesium.BoundingSphere })._getSphere('0-0-0-0');
+    // Looking straight down at the node from above (Earth-center-inward).
+    const direction = Cesium.Cartesian3.negate(
+      Cesium.Cartesian3.normalize(sphere.center, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    const position = Cesium.Cartesian3.subtract(
+      sphere.center,
+      Cesium.Cartesian3.multiplyByScalar(direction, opts.distance, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    const frustum = new Cesium.PerspectiveFrustum({ fov: 1, aspectRatio: 1, near: 0.1, far: 1e10 });
+
+    const calls: string[] = [];
+    const updateFrustum = vi.fn((_f: Cesium.PerspectiveFrustum) => calls.push('updateFrustum'));
+    const scene = viewer.scene as unknown as Record<string, unknown>;
+    scene.drawingBufferWidth = 100;
+    scene.drawingBufferHeight = 100;
+    scene.mode = opts.mode ?? Cesium.SceneMode.SCENE3D;
+    Object.assign(scene.camera as object, { positionWC: position, directionWC: direction, frustum });
+    scene.context = {
+      uniformState: { updateCamera: vi.fn(() => calls.push('updateCamera')), updateFrustum },
+      draw: vi.fn(() => calls.push('draw')),
+    };
+    return { ds, sphere, frustum, calls, updateFrustum };
+  }
+
+  // Cesium leaves czm_* view/projection uniforms at whatever the last draw set
+  // — e.g. the Viewer's own scene.pick() off-center frustum — so pickPoint()
+  // must re-sync them to the live camera (then tighten near/far) before its
+  // own draws.
+  it('re-syncs the uniform state to the current camera before drawing the pick pass', async () => {
+    const { ds, calls } = await setupPick({ distance: 5000 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    expect(calls).toEqual(['updateCamera', 'updateFrustum', 'draw']);
+  });
+
+  // The pick target's depth can't order points across the camera's full
+  // 0.1 m–1e10 m range, so near/far are narrowed to the drawn nodes' spheres.
+  it("tightens the pick frustum's near/far to the drawn nodes' bounding spheres", async () => {
+    const { ds, sphere, frustum, updateFrustum } = await setupPick({ distance: 5000 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened).not.toBe(frustum); // cloned — the camera's own frustum is untouched
+    expect(frustum.near).toBe(0.1);
+    expect(frustum.far).toBe(1e10);
+    expect(tightened.near).toBeCloseTo(5000 - sphere.radius, 3);
+    expect(tightened.far).toBeCloseTo(5000 + sphere.radius, 3);
+  });
+
+  it('clamps near to 1 m when the camera is inside a drawn node', async () => {
+    const { ds, sphere, updateFrustum } = await setupPick({ distance: 0 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened.near).toBe(1);
+    expect(tightened.far).toBeCloseTo(sphere.radius, 3);
+  });
+
+  // heightOffset shifts drawn positions but not the cached spheres.
+  it('widens the depth range by |heightOffset|', async () => {
+    const { ds, sphere, updateFrustum } = await setupPick({ distance: 5000, heightOffset: -50 });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    const tightened = updateFrustum.mock.calls[0]![0];
+    expect(tightened.near).toBeCloseTo(5000 - sphere.radius - 50, 3);
+    expect(tightened.far).toBeCloseTo(5000 + sphere.radius + 50, 3);
+  });
+
+  it('leaves the frustum alone outside 3D scene mode', async () => {
+    const { ds, calls, updateFrustum } = await setupPick({ distance: 5000, mode: Cesium.SceneMode.SCENE2D });
+
+    ds.pickPoint(new Cesium.Cartesian2(50, 50));
+
+    expect(updateFrustum).not.toHaveBeenCalled();
+    expect(calls).toEqual(['updateCamera', 'draw']);
+  });
+
+  it('returns undefined after destroy(), without touching FeatureDetection', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    const supportsWebgl2 = vi.spyOn(Cesium.FeatureDetection, 'supportsWebgl2');
+    ds.destroy();
+
+    expect(ds.pickPoint(new Cesium.Cartesian2(0, 0))).toBeUndefined();
+    expect(supportsWebgl2).not.toHaveBeenCalled();
   });
 });
 
@@ -1285,6 +1580,66 @@ describe('CopcDataSource runtime API', () => {
     mockCopc(undefined);
     await expect(
       CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { eyeDomeLightingRadius: 0 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it('clip planes/boxes/mode are live-settable, copied, and clearable', async () => {
+    mockCopc(undefined);
+    const { viewer, requestRender } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    requestRender.mockClear(); // ignore the render(s) requested during load()
+
+    expect(ds.clipPlanes).toEqual([]);
+    expect(ds.clipBoxes).toEqual([]);
+    expect(ds.clipMode).toBe('inside');
+
+    const plane = new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, -5);
+    const box = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(2, 2, 2));
+    ds.clipPlanes = [plane];
+    ds.clipBoxes = [box];
+    ds.clipMode = 'outside';
+    expect(requestRender).toHaveBeenCalledTimes(3);
+
+    plane.distance = 99; // mutating the caller's object afterwards has no effect
+    box[12] = 99;
+    expect(ds.clipPlanes[0]!.distance).toBe(-5);
+    expect(ds.clipBoxes[0]![12]).toBe(0);
+    expect(ds.clipMode).toBe('outside');
+
+    ds.clipPlanes = undefined;
+    ds.clipBoxes = [];
+    expect(ds.clipPlanes).toEqual([]);
+    expect(ds.clipBoxes).toEqual([]);
+  });
+
+  it('clip setters and load() reject invalid regions', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer);
+    const singular = Cesium.Matrix4.fromScale(new Cesium.Cartesian3(1, 0, 1));
+
+    expect(() => {
+      ds.clipBoxes = [singular];
+    }).toThrow(RangeError);
+    expect(() => {
+      ds.clipPlanes = Array(7).fill(new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0));
+    }).toThrow(RangeError);
+
+    ds.clipMode = 'outside';
+    expect(() => {
+      ds.clipMode = 'foo' as never;
+    }).toThrow(RangeError);
+    expect(ds.clipMode).toBe('outside'); // state unchanged after the throw
+
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { clipBoxes: [singular] }),
+    ).rejects.toThrow(RangeError);
+    mockCopc(undefined);
+    await expect(
+      CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        clipMode: 'foo' as never,
+      }),
     ).rejects.toThrow(RangeError);
   });
 

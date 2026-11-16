@@ -4,7 +4,7 @@
 
 # [copcesium](https://github.com/Jangmyun/copcesium)
 
-[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.98%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.4%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
@@ -67,6 +67,8 @@ Every dataset it streams is public, and credited individually in [`examples/DATA
 
 ## Installation
 
+Install into an existing project (the examples below use Vite). From an empty folder, scaffold one first (`npm create vite@latest my-app -- --template vanilla-ts && cd my-app`) — with no `package.json` in the directory, `npm install` walks up the tree and installs into the nearest ancestor with a `package.json` or `node_modules`, leaving your project folder empty and reporting no error. Without a bundler you can skip `npm install` entirely and load both packages from a CDN through an import map — see the end of [Setup](#setup).
+
 ```bash
 npm install copcesium cesium
 ```
@@ -100,7 +102,7 @@ Cesium also renders into an element you provide, which needs an explicit height 
 </style>
 
 <div id="cesiumContainer"></div>
-<script type="module" src="/main.ts"></script>
+<script type="module" src="/src/main.ts"></script>
 ```
 
 On another bundler, do the same two things by hand: copy `node_modules/cesium/Build/Cesium/{Assets,ThirdParty,Widgets,Workers}` into your static output, and point Cesium at them before the first `import`:
@@ -143,6 +145,7 @@ Load both from the npm files as published (jsDelivr's `/npm/` paths above) rathe
 ## Quick start
 
 ```ts
+// src/main.ts
 import * as Cesium from 'cesium';
 import { CopcDataSource } from 'copcesium';
 
@@ -153,6 +156,8 @@ const dataSource = await CopcDataSource.load(
   viewer,
 );
 ```
+
+Run it with `npm run dev` (the script a Vite scaffold creates) and open the printed local URL.
 
 That's it — `load()` fetches the COPC hierarchy, auto-detects the source coordinate system from the file's WKT (when present), flies the camera to the dataset, and starts streaming nodes as the camera moves. See [`examples/basic-viewer/main.ts`](./examples/basic-viewer/main.ts) for a slightly larger example with a URL input, live `pixelSize`/`sseThreshold` sliders, and error handling.
 
@@ -190,12 +195,15 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
   minPixelSize?: number;
   maxPixelSize?: number;
   sseThreshold?: number;
+  prefetchFrustumFactor?: number;
+  maxPrefetchNodes?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -206,6 +214,9 @@ interface CopcDataSourceOptions {
   eyeDomeLightingRadius?: number;
   classificationFilter?: number[];
   intensityRange?: [number, number];
+  clipPlanes?: Cesium.Plane[];
+  clipBoxes?: Cesium.Matrix4[];
+  clipMode?: 'inside' | 'outside';
 }
 ```
 
@@ -223,6 +234,9 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
+| `viewAxisBias` | `2` | How far the centre of the view outranks its corners when `maxVisibleNodes` or `maxPoints` cuts the selection: priority is scaled from `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views that fit the budget select the same nodes either way. `0` ranks by screen-space error alone. |
+| `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
+| `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
 | `pointSizeMode` | `'fixed'` | `'fixed'` draws every point at `pixelSize`. `'attenuated'` scales size down with camera distance (`attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize, maxPixelSize]`) so close-up points don't show gaps. Live-adjustable via `dataSource.pointSizeMode`. |
 | `attenuationFactor` | `100` | Numerator of the attenuated-size formula, in pixel·√meters. Only used when `pointSizeMode` is `'attenuated'`. Tune per dataset density. Live-adjustable via `dataSource.attenuationFactor`. |
@@ -237,6 +251,9 @@ interface CopcDataSourceOptions {
 | `eyeDomeLightingRadius` | `1` | Distance in CSS pixels at which EDL samples each point's neighbours, `> 0`. Live-adjustable via `dataSource.eyeDomeLightingRadius`. |
 | `classificationFilter` | all codes | LAS classification codes to draw; everything else is dropped. Live-adjustable via `dataSource.classificationFilter`. |
 | `intensityRange` | auto | Raw intensity values at the two ends of the `'intensity'` ramp. Grows to `[0, highest seen]` as nodes load when omitted. |
+| `clipPlanes` | none | Up to 6 world-space (ECEF) `Cesium.Plane`s. See [Clipping](#clipping). Live-adjustable via `dataSource.clipPlanes`. |
+| `clipBoxes` | none | Up to 4 boxes, each a `Cesium.Matrix4` mapping the unit cube `[-0.5, 0.5]³` to world space. See [Clipping](#clipping). Live-adjustable via `dataSource.clipBoxes`. |
+| `clipMode` | `'inside'` | Draw the points inside the clip region (`'inside'`) or everything else (`'outside'`). Live-adjustable via `dataSource.clipMode`. |
 
 ## API reference
 
@@ -266,12 +283,16 @@ class CopcDataSource {
   eyeDomeLightingRadius: number;
   classificationFilter: number[] | undefined;
   intensityRange: [number, number];
+  clipPlanes: Cesium.Plane[];
+  clipBoxes: Cesium.Matrix4[];
+  clipMode: 'inside' | 'outside';
   heightOffset: number;
   readonly maxDepth: number;
   readonly nodeCount: number;
   readonly cacheSize: number;
   readonly stats: CopcStats;
   zoomTo(): Promise<void>;
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels?: number): PickedPoint | undefined;
   destroy(): void;
 }
 ```
@@ -291,13 +312,57 @@ class CopcDataSource {
 | `eyeDomeLightingRadius` | Get/set. Throws `RangeError` if not a positive finite number. |
 | `classificationFilter` | Get/set. Assign `undefined` to draw everything again. Throws `RangeError` on a value outside 0-255. |
 | `intensityRange` | Get/set. Assign `undefined` to hand the range back to auto. |
+| `clipPlanes` / `clipBoxes` | Get/set. Assign `undefined` or `[]` to clear. Copied on assignment, so mutating the objects afterwards has no effect until you assign again. Throws `RangeError` on too many regions, a non-finite plane, or a box with a zero-length axis. |
+| `clipMode` | Get/set. |
 | `heightOffset` | Get/set. Vertical offset in meters applied to every loaded point, for manually correcting a geoid/vertical-datum mismatch after load — moves the model matrix, not the geometry, so it updates immediately with no reload. Defaults to `0`. |
 | `maxDepth` | Read-only. Deepest octree level present in the loaded hierarchy. |
 | `nodeCount` | Read-only. Total nodes in the hierarchy (loaded or not). |
 | `cacheSize` | Read-only. Nodes currently retained in the LRU cache. |
 | `stats` | Read-only. Snapshot of what this data source has transferred and how long each pipeline stage took — see [Measuring transfer](#measuring-transfer). |
 | `zoomTo()` | Flies the camera to the dataset's root bounding sphere. Called internally by `load()` when `autoFrame` is enabled; call it again yourself to re-frame later. |
+| `pickPoint()` | Finds the nearest currently-visible point under `windowPosition` (screen coordinates, e.g. from a `ScreenSpaceEventHandler`); see [Picking](#picking). |
 | `destroy()` | Tears down the Worker pool (unless it was externally provided), the node cache, and every loaded primitive. Idempotent. |
+
+### Picking
+
+`pickPoint()` identifies the nearest on-screen point under a screen position and returns its position and attributes:
+
+```ts
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+handler.setInputAction((click: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+  const picked = ds.pickPoint(click.position);
+  if (picked) {
+    console.log(picked.position, picked.classification, picked.intensity);
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+```
+
+`tolerancePixels` (default `4`) widens the search around the exact pixel — points are near-zero-area dots, so an exact-pixel-only test misses far more often than it would against a filled shape.
+
+**Requires WebGL2.** Identifying which point was hit reads `gl_VertexID`, and fetching its position/classification/intensity reads a few bytes directly off the GPU buffers (`gl.getBufferSubData`) rather than keeping a full CPU copy of every loaded node around just in case it's picked. On a WebGL1 fallback context — an older browser, or a `Viewer` built with `contextOptions: { requestWebgl1: true }` — `pickPoint()` logs one warning and always returns `undefined`; every other part of this library (including rendering) still works fine there.
+
+`pickPoint()` respects the current render set: a point hidden by `classificationFilter`, culled by the view frustum, or belonging to a not-yet-loaded node can't be picked. The returned `nodeKey`/`pointIndex` identify the point only while its node stays cached — they aren't stable across a reload or eviction, so don't persist them.
+
+The pick pass depth-tests only this data source's own points, so a point hidden behind terrain or 3D Tiles can still be picked. If that matters, compare the result against `scene.pickPosition()` (or `scene.pick()`) at the same screen position.
+
+### Measuring
+
+`measureSegment(a, b)` and `measurePath(points)` turn picked positions into distances. They are pure functions, with no scene or drawing involved, so any UI can use them:
+
+```ts
+import { measureSegment } from 'copcesium';
+
+const m = measureSegment(first.dataPosition, second.dataPosition);
+// m.distance, m.horizontalDistance, m.heightDifference: all in meters
+```
+
+| Value | Meaning |
+| --- | --- |
+| `distance` | Straight line between the two ECEF points. |
+| `horizontalDistance` | Geodesic between the points' footprints on the WGS84 ellipsoid. It doesn't depend on their heights. |
+| `heightDifference` | Ellipsoidal height of the end point minus the start point. This is not the difference in ECEF Z, and not a geoid (orthometric) height difference. |
+
+`measurePath()` also returns `length`, `horizontalLength`, `totalAscent`/`totalDescent`, and each segment. Use `dataPosition` rather than `position` so a measurement doesn't depend on the live `heightOffset`. A load-time `geoidOffset` shifts every point equally, so it cancels out of `heightDifference`.
 
 ### Measuring transfer
 
@@ -315,6 +380,7 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `transferredBytes` | Bytes actually received, across every path: the Range-support probe, the header, hierarchy pages, and node point data. |
 | `requestCount` | Range responses received. Fetches merged into one request count once. |
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
+| `waste` | What the totals above leave out, for node point data. Attempts that were aborted (`abortedRequests`, with `abortedAfterHeaders` for those cut off mid-body), attempts that failed (`failedRequests`), and `retries`. The bytes those aborted and failed attempts *asked for* (`abortedBytes`, `failedBytes`). `unusedBytes`: received bytes that no node used, such as merge gaps and nodes cancelled while their request was in flight; these are already part of `transferredBytes`. `cancelledBeforeSend`: requests dropped before anything was sent. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.
@@ -382,6 +448,37 @@ ds.eyeDomeLightingRadius = 2;     // CSS pixels, default 1
   point-cloud EDL, so they lose MSAA edge smoothing while it is on: point
   edges look harder even at `eyeDomeLightingStrength = 0`. With
   `viewer.scene.msaaSamples = 1`, strength `0` matches EDL off exactly.
+
+### Clipping
+
+Clipping planes and boxes isolate a region or cut a section, applied in the
+vertex shader to this data source's points only — like a filter, a change is a
+uniform update with no refetch.
+
+```ts
+const center = Cesium.Cartesian3.fromDegrees(-123.07, 44.05, 120);
+const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+
+// A 200 m x 100 m x 80 m box (east x north x up) around `center`.
+ds.clipBoxes = [Cesium.Matrix4.multiplyByScale(enu, new Cesium.Cartesian3(200, 100, 80), new Cesium.Matrix4())];
+
+// Keep only what's east of `center`: a plane keeps the side its normal points to.
+const east = Cesium.Matrix4.multiplyByPointAsVector(enu, Cesium.Cartesian3.UNIT_X, new Cesium.Cartesian3());
+ds.clipPlanes = [Cesium.Plane.fromPointNormal(center, east)];
+
+ds.clipMode = 'outside';  // draw everything *except* that region
+ds.clipBoxes = undefined; // clear
+```
+
+- Coordinates are world space (ECEF), tested against each point's drawn
+  position — after `heightOffset`.
+- The region is the points on the kept side of **every** plane and, when any
+  box is set, inside **at least one** box. `'inside'` draws that region;
+  `'outside'` draws the rest. With no planes or boxes, everything is drawn.
+- Boundaries count as inside. Regions are converted to each node's local
+  coordinates in double precision, so boundaries stay accurate to centimetres
+  rather than snapping to Float32's ~0.5 m steps at Earth-centered magnitudes.
+- Up to 6 planes and 4 boxes.
 
 ## Requirements: HTTP Range Requests and CORS
 

@@ -1,5 +1,15 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 import * as Cesium from 'cesium';
 import { CLASSIFICATION_COLORS, DEFAULT_CLASS_COLOR } from '../style/classificationColors';
+import { CLIP_MODE, MAX_CLIP_BOXES, MAX_CLIP_PLANES } from './clipping';
 
 /** Colour mode as the shader sees it. Kept in sync with `ColorMode` in types.ts. */
 export const COLOR_MODE = {
@@ -51,6 +61,68 @@ const classificationBranches = Object.entries(CLASSIFICATION_COLORS)
   .map(([code, rgb]) => `  if (c == ${code}) return ${toVec3(rgb)};`)
   .join('\n');
 
+// Shared by the main and pick vertex shaders so the two can't drift apart —
+// a point the pick pass would let through that the main pass culls (or vice
+// versa) would make picking silently disagree with what's on screen.
+const classAllowedSource = `
+// 256 codes packed into 8 int32 words: word = c / 32, bit = c % 32. Cesium's
+// uniform layer has no unsigned-int setter (createUniform throws on uvec*),
+// so the words are signed and "all allowed" is -1 rather than 0xFFFFFFFF.
+bool classAllowed(int c) {
+  int word = c >> 5;
+  int bits = u_classMask[word >> 2][word & 3];
+  return ((bits >> (c & 31)) & 1) != 0;
+}`;
+
+// Also shared for the same reason: the pick pass must rasterize points at
+// exactly the size the main pass draws them, or a click that visually lands
+// on a point could miss it (or hit a neighbor) in the pick pass.
+const pointSizeSource = `
+  vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
+
+  if (u_sizeMode == ${SIZE_MODE.attenuated}) {
+    // max(..., epsilon): a point essentially at the camera would otherwise
+    // divide by ~0 and blow up to a huge, GPU-hostile point size.
+    float distMeters = max(length(eyeRel), 1e-4);
+    gl_PointSize = clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize);
+  } else {
+    gl_PointSize = u_pixelSize;
+  }`;
+
+/**
+ * Clip test over node-local positions; uniforms come from
+ * `writeLocalClipUniforms()`. Kept as its own chunk so every shader that
+ * draws or picks points can include it and apply the exact same cut.
+ *
+ * Inside = on the kept side of every plane AND (when any box is set) within
+ * at least one box. Boundaries count as inside.
+ */
+export const clipShaderChunk = `
+uniform int u_clipMode;
+uniform int u_clipPlaneCount;
+uniform vec4 u_clipPlanes[${MAX_CLIP_PLANES}];   // xyz = normal, w = node-local distance
+uniform int u_clipBoxCount;
+uniform mat4 u_clipBoxes[${MAX_CLIP_BOXES}];     // node-local -> unit-cube [-0.5, 0.5]^3
+
+bool clipKeeps(vec3 p) {
+  if (u_clipMode == ${CLIP_MODE.none}) return true;
+  bool inside = true;
+  for (int i = 0; i < ${MAX_CLIP_PLANES}; i++) {
+    if (i >= u_clipPlaneCount) break;
+    if (dot(u_clipPlanes[i].xyz, p) + u_clipPlanes[i].w < 0.0) inside = false;
+  }
+  if (inside && u_clipBoxCount > 0) {
+    bool inAnyBox = false;
+    for (int i = 0; i < ${MAX_CLIP_BOXES}; i++) {
+      if (i >= u_clipBoxCount) break;
+      vec3 q = (u_clipBoxes[i] * vec4(p, 1.0)).xyz;
+      if (all(lessThanEqual(abs(q), vec3(0.5)))) inAnyBox = true;
+    }
+    inside = inAnyBox;
+  }
+  return u_clipMode == ${CLIP_MODE.inside} ? inside : !inside;
+}`;
+
 export const vertexShaderSource = `
 in vec3 position;
 in vec4 color;
@@ -69,6 +141,7 @@ uniform ivec4 u_classMask[2];   // 256-bit allow-list, one bit per classificatio
 uniform float u_opacity;
 
 out vec4 v_color;
+${clipShaderChunk}
 
 vec3 classificationColor(int c) {
 ${classificationBranches}
@@ -82,20 +155,12 @@ vec3 elevationColor(float t) {
   if (t < 0.75) return mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (t - 0.50) * 4.0);
   return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (t - 0.75) * 4.0);
 }
-
-// 256 codes packed into 8 int32 words: word = c / 32, bit = c % 32. Cesium's
-// uniform layer has no unsigned-int setter (createUniform throws on uvec*),
-// so the words are signed and "all allowed" is -1 rather than 0xFFFFFFFF.
-bool classAllowed(int c) {
-  int word = c >> 5;
-  int bits = u_classMask[word >> 2][word & 3];
-  return ((bits >> (c & 31)) & 1) != 0;
-}
+${classAllowedSource}
 
 void main() {
   int c = int(classification * 255.0 + 0.5);
 
-  if (!classAllowed(c)) {
+  if (!classAllowed(c) || !clipKeeps(position)) {
     // Outside clip space, so the point is culled before it ever rasterizes.
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     gl_PointSize = 0.0;
@@ -121,16 +186,7 @@ void main() {
   // rides in the model matrix. Reconstruct the eye-relative position the way
   // czm_translateRelativeToEye does, but from a single Float32 offset — the
   // precision comes from the double-precision origin baked into the matrix.
-  vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
-
-  if (u_sizeMode == ${SIZE_MODE.attenuated}) {
-    // max(..., epsilon): a point essentially at the camera would otherwise
-    // divide by ~0 and blow up to a huge, GPU-hostile point size.
-    float distMeters = max(length(eyeRel), 1e-4);
-    gl_PointSize = clamp(u_attenuationFactor / sqrt(distMeters), u_minPixelSize, u_maxPixelSize);
-  } else {
-    gl_PointSize = u_pixelSize;
-  }
+${pointSizeSource}
 
   gl_Position = czm_modelViewProjectionRelativeToEye * vec4(eyeRel, 1.0);
 }`;
@@ -208,3 +264,82 @@ void main() {
   out_FragColor = color;
   gl_FragDepth = depth;
 }`;
+/**
+ * Highest node slot / point index the pick encoding below can represent.
+ * `decodePickColor()`'s caller must keep concurrently-picked nodes at or
+ * under this count, and must not pick a node with more points than this —
+ * past it the index wraps and reports a different point's data.
+ *
+ * Split 24/8 rather than 16/16: a COPC node commonly holds more than 65,535
+ * points, while the slot count is bounded by the visible node set (default
+ * `maxVisibleNodes` 100).
+ */
+export const MAX_PICKABLE_NODE_SLOTS = 0xff;
+export const MAX_PICKABLE_POINT_INDEX = 0xffffff;
+
+// Reads gl_VertexID (WebGL2/GLSL ES 300 only), so point-level picking is a
+// WebGL2-only feature — see CopcDataSource.pickPoint()'s
+// FeatureDetection.supportsWebgl2 guard.
+export const pickVertexShaderSource = `
+in vec3 position;
+in float classification;  // UNSIGNED_BYTE, normalized -> code / 255
+
+uniform float u_pixelSize;
+uniform int u_sizeMode;
+uniform float u_attenuationFactor;
+uniform float u_minPixelSize;
+uniform float u_maxPixelSize;
+uniform ivec4 u_classMask[2];
+// 1-based: a decoded node slot of 0 unambiguously means "the framebuffer's
+// clear color", i.e. no hit — point index 0 of node slot 0 would otherwise be
+// indistinguishable from an untouched pixel.
+uniform int u_nodeSlot;
+
+flat out int v_pointIndex;
+flat out int v_nodeSlot;
+${clipShaderChunk}
+${classAllowedSource}
+
+void main() {
+  int c = int(classification * 255.0 + 0.5);
+  v_pointIndex = gl_VertexID;
+  v_nodeSlot = u_nodeSlot;
+
+  if (!classAllowed(c) || !clipKeeps(position)) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    gl_PointSize = 0.0;
+    return;
+  }
+${pointSizeSource}
+
+  gl_Position = czm_modelViewProjectionRelativeToEye * vec4(eyeRel, 1.0);
+}`;
+
+export const pickFragmentShaderSource = `
+flat in int v_pointIndex;
+flat in int v_nodeSlot;
+
+void main() {
+  // Packs pointIndex (24-bit, RGB) and nodeSlot (8-bit, A) across the four
+  // RGBA8 channels — decoded by decodePickColor() below.
+  int idx = v_pointIndex;
+  int slot = v_nodeSlot;
+  out_FragColor = vec4(
+    float(idx & 255) / 255.0,
+    float((idx >> 8) & 255) / 255.0,
+    float((idx >> 16) & 255) / 255.0,
+    float(slot & 255) / 255.0
+  );
+}`;
+
+/** Mirrors `pickFragmentShaderSource`'s encoding. Returns `undefined` for a
+ *  pixel the pick pass never drew to (node slot 0 — see the shader's comment). */
+export function decodePickColor(
+  rgba: Uint8Array | Uint8ClampedArray,
+  offset = 0,
+): { pointIndex: number; nodeSlot: number } | undefined {
+  const nodeSlot = rgba[offset + 3]!;
+  if (nodeSlot === 0) return undefined;
+  const pointIndex = rgba[offset]! | (rgba[offset + 1]! << 8) | (rgba[offset + 2]! << 16);
+  return { pointIndex, nodeSlot };
+}

@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 // Rendered as a child of resium's <Viewer>, so `useCesium()` here resolves
 // to the real Cesium.Viewer instance from context — the idiomatic resium way
 // to reach imperative Cesium/copcesium APIs, in contrast to the ref-based

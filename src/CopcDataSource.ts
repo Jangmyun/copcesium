@@ -1,8 +1,17 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 김선교 (seongyooo), 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 /**
  * Orchestrator and public entry point. A standalone class (not a CesiumJS
  * `DataSource` implementation) that takes a `Viewer` and hooks its own
- * `scene.preRender`/`camera.moveEnd` listeners; owns the loaded hierarchy,
- * node cache, and per-frame LoD walk, wiring together `hierarchy` (metadata),
+ * `scene.preRender`/`camera.moveStart`/`camera.moveEnd` listeners; owns the
+ * loaded hierarchy, node cache, and per-frame LoD walk, wiring together `hierarchy` (metadata),
  * `RangeFetcher`/`WorkerPool` (fetch + decode), `selectNodes` (LoD), and
  * `PointCloudPrimitive` (rendering) into one coherent stream.
  */
@@ -10,29 +19,77 @@ import * as Cesium from 'cesium';
 import proj4 from 'proj4';
 import { Copc, type Hierarchy } from 'copc';
 import type {
+  ClipMode,
   ColorMode,
   CopcDataSourceOptions,
   CopcStats,
   LoadedNode,
   NodeRenderData,
+  PickedPoint,
   PointSizeMode,
   StageTiming,
 } from './types';
-import { loadCopcHierarchy } from './copc/hierarchy';
+import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
 import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { orderForLoading } from './lod/loadOrder';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
 import { EyeDomeLighting } from './renderer/EyeDomeLighting';
-import { COLOR_MODE, SIZE_MODE, buildClassMask } from './renderer/shaders';
+import {
+  COLOR_MODE,
+  SIZE_MODE,
+  MAX_PICKABLE_NODE_SLOTS,
+  MAX_PICKABLE_POINT_INDEX,
+  buildClassMask,
+  decodePickColor,
+} from './renderer/shaders';
+import { PickFramebuffer } from './renderer/PickFramebuffer';
+import {
+  createClipState,
+  setClipBoxes,
+  validateClipMode,
+  validateClipPlanes,
+} from './renderer/clipping';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
+
+// `SceneTransforms.transformWindowToDrawingBuffer` and `Context.prototype.draw`
+// are Cesium renderer internals with no public type declarations — same
+// undeclared-but-present-at-runtime pattern as PointCloudPrimitive.ts's
+// CesiumInternal cast. `pickPoint()` is the only user.
+interface CesiumPickingInternal {
+  SceneTransforms: {
+    transformWindowToDrawingBuffer(scene: Cesium.Scene, windowPosition: Cesium.Cartesian2): Cesium.Cartesian2;
+  };
+}
+const CesiumPicking = Cesium as unknown as CesiumPickingInternal;
+interface CesiumContextDrawable {
+  draw(command: unknown, passState: unknown): void;
+  uniformState: {
+    updateCamera(camera: Cesium.Camera): void;
+    updateFrustum(frustum: PickFrustum): void;
+  };
+}
+/** The near/far-bearing subset of every Cesium frustum type (perspective,
+ *  orthographic, and their off-center variants) that `pickPoint()` tightens. */
+interface PickFrustum {
+  near: number;
+  far: number;
+  clone(): PickFrustum;
+}
+/** Floor for the pick pass's tightened near plane — see `pickPoint()`. */
+const MIN_PICK_NEAR = 1;
+/** `Scene.context` (the renderer `Context`) has no public type declaration either. */
+interface CesiumSceneInternal {
+  context: unknown;
+}
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
 // instead of emitted as a separate chunk with a runtime-constructed URL — a
 // consumer's own bundler can't discover or copy an asset it never sees a
@@ -42,7 +99,7 @@ import { NodeCache } from './cache/NodeCache';
 // consumer builds.
 import CopcWorker from './worker/worker.ts?worker&inline';
 
-export type { ColorMode, CopcDataSourceOptions };
+export type { ClipMode, ColorMode, CopcDataSourceOptions };
 
 /** Shared by the constructor and the live setter so an out-of-range or non-finite
  *  value can never slip in through either path. */
@@ -103,7 +160,9 @@ type OpenEndedOption =
   | 'classificationFilter'
   | 'intensityRange'
   | 'maxCacheBytes'
-  | 'maxConcurrentRequests';
+  | 'maxConcurrentRequests'
+  | 'clipPlanes'
+  | 'clipBoxes';
 
 type ResolvedOptions = Required<Omit<CopcDataSourceOptions, OpenEndedOption>> &
   Pick<CopcDataSourceOptions, OpenEndedOption>;
@@ -117,6 +176,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   maxCacheNodes: 150,
   maxVisibleNodes: 100,
   maxPoints: 5_000_000,
+  viewAxisBias: 2,
   prefetchFrustumFactor: 1.8,
   maxPrefetchNodes: 50,
   pixelSize: 2,
@@ -133,6 +193,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   eyeDomeLighting: false,
   eyeDomeLightingStrength: 1,
   eyeDomeLightingRadius: 1,
+  clipMode: 'inside',
 };
 
 // Total attempts per hierarchy sub-page before giving up, mirroring
@@ -154,6 +215,14 @@ const PAGE_RETRY_BASE_MS = 1000;
 // without this, three isolated blips across a long session would still add up
 // to a permanent give-up.
 const PAGE_FAILURE_RESET_MS = 60_000;
+
+// Heap-priority multiplier `selectNodes` gives nodes already on screen while
+// the camera moves, so nodes straddling a budget cut stop trading places on
+// every pass (#192). Released on `moveEnd`, so the settled selection is exact:
+// applied unconditionally it would let the view settle on whatever drifted in
+// during the move. 1.05–1.30 all eliminated the flicker in the issue's
+// measurements; 1.15 sits in the middle.
+const INCUMBENT_BONUS = 1.15;
 
 type StageName = 'fetch' | 'decode' | 'upload';
 
@@ -227,7 +296,13 @@ export class CopcDataSource {
   private _lastUpdateTime = 0;
   private _removeUpdateListener: () => void = () => {};
   private _removeMoveEndListener: () => void = () => {};
+  private _removeMoveStartListener: () => void = () => {};
+  private _cameraMoving = false;
   private _destroyed = false;
+  /** Lazily built, resized to the canvas on demand — see `pickPoint()`. */
+  private readonly _pickFramebuffer = new PickFramebuffer();
+  /** So a WebGL1 session logs the pickPoint() limitation once, not on every click. */
+  private _warnedNoWebgl2 = false;
 
   private constructor(
     url: string,
@@ -260,6 +335,7 @@ export class CopcDataSource {
       classMask: buildClassMask(options.classificationFilter),
       heightOffset: 0,
       opacity: validateOpacity(options.opacity),
+      clip: createClipState(options.clipPlanes, options.clipBoxes, options.clipMode),
     };
     this._edl = new EyeDomeLighting(
       this._getSphere('0-0-0-0'),
@@ -302,6 +378,11 @@ export class CopcDataSource {
     workerPool?: WorkerPool,
   ): Promise<CopcDataSource> {
     const resolved: ResolvedOptions = { ...DEFAULT_OPTIONS, ...options };
+    // NaN would otherwise flow into every point's height and blank the cloud
+    // with no error.
+    if (!Number.isFinite(resolved.geoidOffset)) {
+      throw new Error(`[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`);
+    }
 
     const hierarchy = await loadCopcHierarchy(url);
 
@@ -320,6 +401,21 @@ export class CopcDataSource {
       // already carries the (indistinguishable) default of 1.
       if (options.zFactor === undefined) resolved.zFactor = detected.zFactor;
       if (options.xyFactor === undefined) resolved.xyFactor = detected.xyFactor;
+      if (detected.warning && !options.projDef) console.warn(`[CopcDataSource] ${url}: ${detected.warning}`);
+    }
+    // Without a CRS the coordinates are read as degrees. For projected data
+    // (meters or feet) that puts every point off the globe or in the wrong
+    // place with no error at all, so refuse it while it can still be told
+    // apart: longitude/latitude never leave ±180/±90.
+    if (resolved.proj === 'EPSG:4326') {
+      const { min, max } = hierarchy.copc.header;
+      if ([min[0], max[0]].some((x) => Math.abs(x) > 180) || [min[1], max[1]].some((y) => Math.abs(y) > 90)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: no CRS could be determined from the file, and its extent ` +
+            `(x ${min[0]}..${max[0]}, y ${min[1]}..${max[1]}) is not longitude/latitude. ` +
+            'Pass `proj` and `projDef` for its coordinate system.',
+        );
+      }
     }
     if (resolved.projDef && resolved.proj !== 'EPSG:4326') {
       proj4.defs(resolved.proj, resolved.projDef);
@@ -327,6 +423,33 @@ export class CopcDataSource {
 
     const converter = resolved.proj !== 'EPSG:4326' ? proj4(resolved.proj, 'EPSG:4326') : null;
     const project = createProjector(converter, resolved.geoidOffset, resolved.zFactor);
+
+    // A CRS proj4 can define but not evaluate here — most often a +nadgrids
+    // definition whose grid file was never registered — turns every point
+    // into NaN and fails each node's decode one by one. Try the middle of
+    // the data once, up front, and say why instead.
+    if (converter) {
+      const { min, max } = hierarchy.copc.header;
+      const [lon, lat] = converter.forward([(min[0] + max[0]) / 2, (min[1] + max[1]) / 2]);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+        throw new Error(
+          `[CopcDataSource] ${url}: the CRS "${resolved.proj}" cannot transform this file's coordinates to WGS84 ` +
+            '(a +nadgrids definition needs its grid registered with proj4.nadgrid() first). ' +
+            'Pass a usable `projDef`.',
+        );
+      }
+    }
+
+    // A compound CRS gives heights against a vertical datum, which for
+    // nearly every survey is a geoid; Cesium places them on the WGS84
+    // ellipsoid. Without `geoidOffset` the cloud floats or sinks by the local
+    // geoid height, tens of meters in much of the world.
+    if (options.geoidOffset === undefined && /\b(?:VERT_CS|VERTCRS|VERTICALCRS)\s*[[(]/i.test(hierarchy.copc.wkt ?? '')) {
+      console.warn(
+        `[CopcDataSource] ${url}: heights are relative to a vertical datum (usually a geoid), not the WGS84 ` +
+          'ellipsoid Cesium uses. Pass `geoidOffset` (the local geoid height in meters) to place them correctly.',
+      );
+    }
 
     const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolved.concurrency);
 
@@ -346,6 +469,9 @@ export class CopcDataSource {
   private _startListening(): void {
     this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
     this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
+    this._removeMoveStartListener = this._viewer.scene.camera.moveStart.addEventListener(() => {
+      this._cameraMoving = true;
+    });
   }
 
   /** Flies the camera to the loaded dataset's root bounding sphere. */
@@ -411,6 +537,7 @@ export class CopcDataSource {
    *  possibly losing the final refinement to debounce timing. */
   private _onMoveEnd(): void {
     if (this._destroyed) return;
+    this._cameraMoving = false;
     this._lastUpdateTime = performance.now();
     void this._updateLoD();
   }
@@ -468,6 +595,9 @@ export class CopcDataSource {
           prefetchFrustumFactor: this._options.prefetchFrustumFactor,
           maxPrefetchNodes: this._options.maxPrefetchNodes,
           onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
+          incumbents: this._selectedKeys,
+          incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
+          viewAxisBias: this._options.viewAxisBias,
         }),
       );
 
@@ -478,6 +608,7 @@ export class CopcDataSource {
 
       // Show/load the new selection first, so a just-arrived replacement
       // already counts as "ready" when the hide pass below checks for it.
+      const toLoad: string[] = [];
       for (const key of newSelectedKeys) {
         const node = this._nodeCache.peek(key);
         if (node) {
@@ -489,6 +620,9 @@ export class CopcDataSource {
           continue;
         }
         if (this._pendingKeys.has(key)) continue;
+        toLoad.push(key);
+      }
+      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
         void this._loadNode(key);
       }
 
@@ -671,6 +805,7 @@ export class CopcDataSource {
     try {
       const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
       if (this._destroyed) return;
+      emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
       Object.assign(this._nodes, nodes);
       for (const nodeKey of Object.keys(nodes)) {
         const depth = getDepth(nodeKey);
@@ -878,6 +1013,49 @@ export class CopcDataSource {
     this._viewer.scene.requestRender();
   }
 
+  /**
+   * Clipping planes in world (ECEF) coordinates; see
+   * `CopcDataSourceOptions.clipPlanes`. Assign `undefined` or `[]` to clear.
+   * The planes are copied on assignment, so mutating them afterwards has no
+   * effect until they're assigned again.
+   */
+  get clipPlanes(): Cesium.Plane[] {
+    return this._style.clip.planes.map((plane) => Cesium.Plane.clone(plane));
+  }
+  set clipPlanes(value: Cesium.Plane[] | undefined) {
+    this._style.clip.planes = validateClipPlanes(value);
+    this._clipChanged();
+  }
+
+  /**
+   * Clipping boxes, each mapping the unit cube `[-0.5, 0.5]^3` to world
+   * (ECEF); see `CopcDataSourceOptions.clipBoxes`. Assign `undefined` or
+   * `[]` to clear. Copied on assignment, like `clipPlanes`.
+   */
+  get clipBoxes(): Cesium.Matrix4[] {
+    return this._style.clip.boxes.map((box) => Cesium.Matrix4.clone(box));
+  }
+  set clipBoxes(value: Cesium.Matrix4[] | undefined) {
+    setClipBoxes(this._style.clip, value);
+    this._clipChanged();
+  }
+
+  /** Which side of the clip regions is drawn. */
+  get clipMode(): ClipMode {
+    return this._options.clipMode;
+  }
+  set clipMode(value: ClipMode) {
+    const mode = validateClipMode(value);
+    this._options.clipMode = value;
+    this._style.clip.mode = mode;
+    this._clipChanged();
+  }
+
+  private _clipChanged(): void {
+    this._style.clip.version++;
+    this._viewer.scene.requestRender();
+  }
+
   /** Screen-space error threshold (pixels) that triggers node subdivision. */
   get sseThreshold(): number {
     return this._options.sseThreshold;
@@ -948,6 +1126,7 @@ export class CopcDataSource {
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
       pendingNodes: this._pendingKeys.size,
+      waste: this._counter.waste,
       fetch: this._stageTiming('fetch'),
       decode: this._stageTiming('decode'),
       upload: this._stageTiming('upload'),
@@ -959,14 +1138,174 @@ export class CopcDataSource {
     return this._nodeCache.size;
   }
 
+  /**
+   * Finds the nearest currently-visible point under `windowPosition` (screen
+   * coordinates, e.g. from a `ScreenSpaceEventHandler`) and returns its
+   * position plus classification/intensity, or `undefined` if nothing is
+   * under the cursor. `tolerancePixels` widens the search around the exact
+   * pixel — points are near-zero-area dots, so an exact-pixel-only test
+   * misses far more often than it would against a filled shape.
+   *
+   * WebGL2-only: identifying which point was hit reads `gl_VertexID`, and
+   * fetching its attributes uses `gl.getBufferSubData`, both to avoid keeping
+   * a full CPU copy of every loaded node around just in case it's picked. On
+   * a WebGL1 fallback context (or a `Viewer` built with
+   * `contextOptions: { requestWebgl1: true }`), this logs one warning and
+   * always returns `undefined` — every other part of this library still
+   * renders fine there; only picking needs WebGL2.
+   *
+   * Respects the current render set: a node hidden by `classificationFilter`,
+   * culled by the view frustum, or not yet loaded can't be picked, matching
+   * what's actually on screen. `nodeKey`/`pointIndex` on the result are only
+   * meaningful while that node stays cached — see `PickedPoint`'s own doc
+   * comment.
+   */
+  pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels = 4): PickedPoint | undefined {
+    if (this._destroyed) return undefined;
+    const scene = this._viewer.scene;
+    if (!Cesium.FeatureDetection.supportsWebgl2(scene)) {
+      if (!this._warnedNoWebgl2) {
+        this._warnedNoWebgl2 = true;
+        console.warn(
+          '[CopcDataSource] pickPoint() requires a WebGL2 context; this session is running WebGL1 ' +
+            '(either the browser lacks WebGL2, or the Viewer was created with contextOptions.requestWebgl1). ' +
+            'Returning undefined for every call.',
+        );
+      }
+      return undefined;
+    }
+
+    const context = (scene as unknown as CesiumSceneInternal).context as unknown as CesiumContextDrawable;
+    const width = scene.drawingBufferWidth;
+    const height = scene.drawingBufferHeight;
+    if (width === 0 || height === 0) return undefined;
+
+    const { framebuffer, passState } = this._pickFramebuffer.ensure(context, width, height);
+    this._pickFramebuffer.clear(context);
+    // The czm_* view/projection uniforms still hold whatever the last draw
+    // left there — e.g. the narrow off-center frustum of a scene.pick() the
+    // Viewer's own click handler ran just before this, or the nearest slice
+    // of a multi-frustum render. Re-sync them to the full current camera,
+    // as Cesium's Picking.js does before its own pick pass.
+    context.uniformState.updateCamera(scene.camera);
+
+    // 1-based: slotToKey[slot - 1] === key — see decodePickColor()'s doc for
+    // why node slot 0 is reserved as "no hit". Commands are collected first
+    // and drawn only after the frustum is tightened to exactly these nodes.
+    const slotToKey: string[] = [];
+    const commands: unknown[] = [];
+    for (const key of this._selectedKeys) {
+      // Past these limits the pick encoding wraps and would silently report a
+      // different point — see MAX_PICKABLE_NODE_SLOTS's doc comment.
+      if (slotToKey.length >= MAX_PICKABLE_NODE_SLOTS) break;
+      const node = this._nodeCache.peek(key);
+      if (!node || !node.primitive.show) continue; // not actually on screen
+      if (node.pointCount > MAX_PICKABLE_POINT_INDEX + 1) continue;
+      const cmd = node.primitive.preparePickCommand(context, slotToKey.length + 1, framebuffer);
+      if (!cmd) continue;
+      slotToKey.push(key);
+      commands.push(cmd);
+    }
+    if (slotToKey.length === 0) return undefined;
+
+    this._tightenPickFrustum(scene, context, slotToKey);
+    for (const cmd of commands) context.draw(cmd, passState);
+
+    const drawingBufferPos = CesiumPicking.SceneTransforms.transformWindowToDrawingBuffer(scene, windowPosition);
+    const glX = Math.round(drawingBufferPos.x);
+    // Window/drawing-buffer Y grows downward from the top; GL readback Y grows upward from the bottom.
+    const glY = Math.round(height - drawingBufferPos.y);
+
+    const rectX = Cesium.Math.clamp(glX - tolerancePixels, 0, width - 1);
+    const rectY = Cesium.Math.clamp(glY - tolerancePixels, 0, height - 1);
+    const rectRight = Cesium.Math.clamp(glX + tolerancePixels, 0, width - 1);
+    const rectTop = Cesium.Math.clamp(glY + tolerancePixels, 0, height - 1);
+    const rectW = rectRight - rectX + 1;
+    const rectH = rectTop - rectY + 1;
+    if (rectW <= 0 || rectH <= 0) return undefined;
+
+    const pixels = this._pickFramebuffer.readPixels(context, rectX, rectY, rectW, rectH);
+
+    // Among every hit in the tolerance window, the one closest to the exact
+    // click wins — each pixel already reflects the GPU depth test's own
+    // nearest-to-camera winner, so no depth comparison is needed here.
+    let best: { pointIndex: number; nodeSlot: number; distSq: number } | undefined;
+    for (let row = 0; row < rectH; row++) {
+      for (let col = 0; col < rectW; col++) {
+        const decoded = decodePickColor(pixels, (row * rectW + col) * 4);
+        if (!decoded) continue;
+        const dx = rectX + col - glX;
+        const dy = rectY + row - glY;
+        const distSq = dx * dx + dy * dy;
+        if (!best || distSq < best.distSq) best = { ...decoded, distSq };
+      }
+    }
+    if (!best) return undefined;
+
+    const nodeKey = slotToKey[best.nodeSlot - 1];
+    const node = nodeKey ? this._nodeCache.peek(nodeKey) : undefined;
+    if (!nodeKey || !node) return undefined;
+
+    const attrs = node.primitive.readPointAttributes(best.pointIndex, context);
+    return {
+      nodeKey,
+      pointIndex: best.pointIndex,
+      position: attrs.position,
+      dataPosition: attrs.dataPosition,
+      classification: attrs.classification,
+      intensity: attrs.intensity,
+    };
+  }
+
+  /**
+   * Narrows the pick pass's near/far to the depth range the drawn nodes
+   * actually span. The camera's own frustum runs 0.1 m–1e10 m, which leaves
+   * even a 24-bit pick depth buffer unable to order points kilometres away —
+   * the GPU depth test then keeps an arbitrary point instead of the front-most
+   * one. Depth is measured along the view direction (not Euclidean distance)
+   * so off-axis points near the screen edge are never clipped, and each
+   * sphere is widened by `|heightOffset|`, which shifts drawn positions but
+   * not the cached spheres. Leaves the uniforms untouched in a non-3D scene
+   * mode or for a frustum without plain near/far.
+   */
+  private _tightenPickFrustum(scene: Cesium.Scene, context: CesiumContextDrawable, keys: string[]): void {
+    if (scene.mode !== Cesium.SceneMode.SCENE3D) return;
+    const original = scene.camera.frustum as unknown as Partial<PickFrustum>;
+    if (typeof original.near !== 'number' || typeof original.far !== 'number' || typeof original.clone !== 'function') {
+      return;
+    }
+    const camPos = scene.camera.positionWC;
+    const camDir = scene.camera.directionWC;
+    const extra = Math.abs(this._style.heightOffset);
+    const toCenter = new Cesium.Cartesian3();
+    let near = Infinity;
+    let far = -Infinity;
+    for (const key of keys) {
+      const sphere = this._getSphere(key);
+      const depth = Cesium.Cartesian3.dot(Cesium.Cartesian3.subtract(sphere.center, camPos, toCenter), camDir);
+      const radius = sphere.radius + extra;
+      near = Math.min(near, depth - radius);
+      far = Math.max(far, depth + radius);
+    }
+    const frustum = (original as PickFrustum).clone();
+    // Camera inside (or right next to) a node drives `depth - radius` to zero
+    // or below; floor it rather than letting near collapse and squander the
+    // depth precision this exists to recover.
+    frustum.near = Math.max(near, MIN_PICK_NEAR, original.near);
+    frustum.far = Math.max(Math.min(far, original.far), frustum.near + 1);
+    context.uniformState.updateFrustum(frustum);
+  }
+
   destroy(): void {
     if (this._destroyed) return;
     this._destroyed = true;
     this._removeUpdateListener();
     this._removeMoveEndListener();
+    this._removeMoveStartListener();
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
     this._edl.destroy();
+    this._pickFramebuffer.destroy();
   }
 }
