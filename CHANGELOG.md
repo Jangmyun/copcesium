@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+
+- `adaptiveMergeGap` is now on by default. In controlled-network replays
+  it matched the best fixed gap on every dataset and link, was up to 17%
+  faster than contiguous-only merging (Millsite, 100 ms), and did not slow
+  the pan route. Pass `adaptiveMergeGap: false` for the previous behaviour.
+
 ## [1.4.3] - 2026-11-16
 
 ### Added

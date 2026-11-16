@@ -93,8 +93,8 @@ export interface CopcDataSourceOptions {
    * the link's download rate divided by `maxConcurrentRequests` (≈ RTT ×
    * bandwidth ÷ concurrent requests), clamped to 0–256 KiB. Bridging a gap downloads bytes no node needs to save
    * one request, which pays on a fast, high-latency link and costs on a slow
-   * one; a fixed gap gets one of the two wrong. Default `false` (merge only
-   * contiguous ranges).
+   * one; a fixed gap gets one of the two wrong. Default `true`; `false`
+   * merges only contiguous ranges.
    */
   adaptiveMergeGap?: boolean;
   debounceMs?: number;
