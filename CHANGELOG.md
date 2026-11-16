@@ -7,6 +7,23 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **Opt-in network, decode and cache options, all off by default.** With
+  them off, requests and decode calls are unchanged.
+  - `adaptiveMergeGap`: while requests queue for a fetch slot, nearby ranges
+    are merged across gaps sized from the measured time to first byte and
+    link rate (0–256 KiB).
+  - `prefetchIdleOnly`: prefetch waits until every load for the current view
+    has finished.
+  - `decodeBackpressure`: while a full round of decoding waits for a worker,
+    further loads are held back and resume in load order; prefetch decodes
+    after visible nodes.
+  - `concurrency: 'auto'`: worker count from `hardwareConcurrency − 1`,
+    clamped to 2–5. The default stays `5`.
+  - `strictCacheBudget`: re-applies `maxCacheNodes`/`maxCacheBytes` after
+    every LoD pass, so nodes that just left the screen are evicted right away
+    when the cache is over budget.
+  - `stats.decodeQueue` and `stats.cache` report decode-queue wait/run times
+    and cache size, pinned nodes and evictions.
 - **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
   (default off), `eyeDomeLightingStrength` (default `1`) and
   `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how

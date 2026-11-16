@@ -328,4 +328,45 @@ describe('NodeCache', () => {
     ]);
     expect(cache.get('c')).toBe(c);
   });
+describe('budget accounting', () => {
+    it('reports estimated bytes, pinned nodes and evictions', () => {
+      const cache = new NodeCache(2, vi.fn(), 1000);
+      cache.set('a', makeNode('a', 10));
+      cache.set('b', makeNode('b', 10));
+      cache.pin(new Set(['a']));
+      expect(cache.estimatedBytes).toBe(420);
+      expect(cache.pinnedCount).toBe(1);
+
+      cache.set('c', makeNode('c', 10)); // over the node budget: evicts b, not pinned a
+
+      expect(cache.evictionCount).toBe(1);
+      expect(cache.peek('b')).toBeUndefined();
+      expect(cache.estimatedBytes).toBe(420);
+    });
+
+    it('stays over budget when only pinned nodes are left, and trim() restores it once they are unpinned', () => {
+      const onEvict = vi.fn();
+      const cache = new NodeCache(1, onEvict);
+      cache.pin(new Set(['a', 'b']));
+      cache.set('a', makeNode('a'));
+      cache.set('b', makeNode('b'));
+      expect(cache.size).toBe(2); // both on screen: the budget cannot be met
+
+      cache.pin(new Set(['b']));
+      expect(cache.size).toBe(2); // pin() alone does not evict
+      cache.trim();
+
+      expect(cache.size).toBe(1);
+      expect(cache.peek('b')).toBeDefined();
+      expect(onEvict).toHaveBeenCalledTimes(1);
+      expect(cache.evictionCount).toBe(1);
+    });
+
+    it('does not count destroy() as eviction', () => {
+      const cache = new NodeCache(5, vi.fn());
+      cache.set('a', makeNode('a'));
+      cache.destroy();
+      expect(cache.evictionCount).toBe(0);
+    });
+  });
 });
