@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-11-16
+
 ### Added
 
 - **Opt-in network, decode and cache options, all off by default.** With
@@ -24,6 +26,8 @@ All notable changes to this project are documented here. This project follows
     when the cache is over budget.
   - `stats.decodeQueue` and `stats.cache` report decode-queue wait/run times
     and cache size, pinned nodes and evictions.
+
+  (#258)
 
 - **Distance measurement between picked points.** `measureSegment(a, b)`
   returns the straight-line distance, the horizontal (geodesic) distance and
@@ -45,7 +49,14 @@ All notable changes to this project are documented here. This project follows
   order). The SSE threshold is unchanged, so a view that fits the budget
   selects the same nodes. On a recorded low-pitch pass over Montréal, the
   centre half of the screen went from 0.50 to 0.97 SSIM against an
-  unbudgeted reference, at the same bytes.
+  unbudgeted reference, at the same bytes. (#263)
+
+### Examples
+
+- The advanced viewer gains a **Clip** tab: click a point to place a box or a
+  plane, switch inside/outside, and clear it. (#264)
+- Values interpolated into the advanced viewer's HTML are escaped, and the
+  React examples' `dompurify` is patched to 3.4.17. (#262)
 
 ## [1.4.2] - 2026-11-14
 
