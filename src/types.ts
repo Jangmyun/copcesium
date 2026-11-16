@@ -8,7 +8,10 @@
  */
 
 import type * as Cesium from 'cesium';
+import type { FetchWaste } from './copc/TransferCounter';
 import type { PointCloudPrimitive } from './renderer/PointCloudPrimitive';
+
+export type { FetchWaste };
 
 /**
  * How a point's colour is chosen.
@@ -76,6 +79,14 @@ export interface CopcDataSourceOptions {
    * of `maxVisibleNodes`. Default 5,000,000.
    */
   maxPoints?: number;
+  /**
+   * How far the centre of the view outranks its corners when `maxVisibleNodes`
+   * or `maxPoints` cuts the selection: a node's priority is scaled from
+   * `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views
+   * that fit the budget select the same nodes either way. Default `2`; `0`
+   * ranks by screen-space error alone.
+   */
+  viewAxisBias?: number;
   pixelSize?: number;
   /** How `gl_PointSize` is computed. Default `'fixed'`. */
   pointSizeMode?: PointSizeMode;
@@ -162,6 +173,13 @@ export interface CrsDetectionResult {
   zFactor: number;
   /** Factor that converts the XY axis unit to meters */
   xyFactor: number;
+  /**
+   * Set when the CRS was recognised but positions may still be wrong, e.g. a
+   * datum whose shift to WGS84 neither the WKT nor the local EPSG table
+   * gives, which proj4 then applies as no shift at all (hundreds of meters
+   * for Tokyo, Korean 1985, DHDN). `CopcDataSource.load()` logs it.
+   */
+  warning?: string;
 }
 
 /**
@@ -223,6 +241,9 @@ export interface CopcStats {
    *  the current view is fully resolved, which is the only externally visible
    *  signal a benchmark can use to know when to stop the clock. */
   pendingNodes: number;
+  /** Node point-data fetches that were aborted, failed or retried, and bytes
+   *  received that no node used — what `transferredBytes` leaves out. */
+  waste: FetchWaste;
   /** Waiting on the network for a node's compressed point data. */
   fetch: StageTiming;
   /** LAZ decode plus coordinate transform, in a worker. */

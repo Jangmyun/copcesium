@@ -14,11 +14,14 @@
 // HUD. See `examples/basic-viewer` for the minimal reference; this is the
 // "what a real app looks like" companion (see issue for scope notes: no
 // `onProgress` or per-node stats — neither exists on `CopcDataSource` today).
+// The Clip tab lives in clip.ts.
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
 import { autoRunWalk, benchRequested, mountBenchTab, tuningOptions } from './bench';
+import { mountClipTab } from './clip';
+import { escapeHtml } from './html';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
 
@@ -216,6 +219,7 @@ const PANEL_TITLES: Record<string, string> = {
   appearance: 'Appearance',
   filter: 'Filter',
   points: 'Points',
+  clip: 'Clip',
   info: 'Info',
   help: 'Help',
   bench: 'Benchmark',
@@ -479,8 +483,8 @@ function renderPresetList(activeKey: string | null): void {
     btn.className = `dataset-row${activeKey === key ? ' active' : ''}`;
     btn.innerHTML =
       `<span class="dataset-dot"></span>` +
-      `<span class="dataset-name">${p.label}</span>` +
-      `<span class="dataset-pts">${p.size}</span>`;
+      `<span class="dataset-name">${escapeHtml(p.label)}</span>` +
+      `<span class="dataset-pts">${escapeHtml(p.size)}</span>`;
     btn.addEventListener('click', () => {
       setActivePreset(key);
       urlInput.value = p.url;
@@ -493,6 +497,7 @@ function renderPresetList(activeKey: string | null): void {
 
 // ── Current load state ──────────────────────────────────────
 let currentDs: CopcDataSource | null = null;
+const clipTab = mountClipTab(viewer, () => currentDs);
 let currentUrl: string | null = null;
 let currentOptions: CopcDataSourceOptions = {};
 let activeLabel: string | null = null;
@@ -514,7 +519,7 @@ function updateInfoPanel(name: string, rows: [string, string][]): void {
   infoMeta.innerHTML = rows
     .map(
       ([k, v]) =>
-        `<div class="meta-row"><span class="meta-key">${k}</span><span class="meta-val">${v}</span></div>`,
+        `<div class="meta-row"><span class="meta-key">${escapeHtml(k)}</span><span class="meta-val">${escapeHtml(v)}</span></div>`,
     )
     .join('');
 }
@@ -582,6 +587,7 @@ async function loadCopc(
 
   if (currentDs) {
     stopStatsPolling();
+    clipTab.reset();
     currentDs.destroy();
     currentDs = null;
   }
@@ -616,6 +622,7 @@ async function loadCopc(
       sseThreshold: parseInt(sseSlider.value, 10),
       colorMode: activeMode,
       opacity: parseFloat(opacitySlider.value),
+      clipMode: clipTab.clipMode(),
       classificationFilter: Object.values(_classOn).every((v) => v)
         ? undefined
         : Object.entries(_classOn)

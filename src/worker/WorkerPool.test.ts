@@ -147,23 +147,21 @@ describe('WorkerPool', () => {
     errorSpy.mockRestore();
   });
 
-  it('rejects a task that times out while a worker is processing it, and frees the worker without replacing it', async () => {
+  it('rejects a task that times out while a worker is processing it, and replaces that worker', async () => {
     const { factory, fakeWorkers } = makeFactory();
     const pool = new WorkerPool(factory, 1);
 
     const promise = pool.run('a', [], 10);
     await expect(promise).rejects.toThrow(/timed out/);
 
-    expect(fakeWorkers[0].terminated).toBe(false); // a timeout is not a crash
-    expect(fakeWorkers).toHaveLength(1); // no replacement was created
+    // Still stuck inside 'a', so it must not be handed the next task.
+    expect(fakeWorkers[0].terminated).toBe(true);
+    expect(fakeWorkers).toHaveLength(2);
 
-    // the worker is idle again and usable for a new task
     const second = pool.run<string>('b');
-    expect(fakeWorkers[0].received).toEqual([
-      { id: 0, payload: 'a' },
-      { id: 1, payload: 'b' },
-    ]);
-    fakeWorkers[0].reply({ result: 'b-done' });
+    expect(fakeWorkers[0].received).toEqual([{ id: 0, payload: 'a' }]);
+    expect(fakeWorkers[1].received).toEqual([{ id: 1, payload: 'b' }]);
+    fakeWorkers[1].reply({ result: 'b-done' });
     await expect(second).resolves.toBe('b-done');
   });
 
@@ -186,11 +184,11 @@ describe('WorkerPool', () => {
     await expect(promise).rejects.toThrow(/timed out/);
 
     const second = pool.run<string>('b');
-    // Stale reply for the already-timed-out task 'a' (id 0), arriving after
-    // 'b' (id 1) was dispatched to the same (freed) worker.
+    // Stale reply for the already-timed-out task 'a' (id 0) from the worker
+    // that was replaced, arriving after 'b' (id 1) went to its replacement.
     fakeWorkers[0].onmessage?.({ data: { id: 0, result: 'late-a' } } as MessageEvent<WorkerResponse>);
 
-    fakeWorkers[0].reply({ result: 'b-done' });
+    fakeWorkers[1].reply({ result: 'b-done' });
     await expect(second).resolves.toBe('b-done');
   });
 

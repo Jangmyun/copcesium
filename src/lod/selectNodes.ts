@@ -17,6 +17,7 @@ import * as Cesium from 'cesium';
 import type { Hierarchy } from 'copc';
 import { getChildKeys } from '../copc/node';
 import { getCullingVolume, getExpandedCullingVolume, isInFrustum } from './boundingVolume';
+import { viewAlignment } from './loadOrder';
 import { computeScreenSpaceError } from './screenSpaceError';
 
 // Camera.frustum is PerspectiveFrustum | PerspectiveOffCenterFrustum | OrthographicFrustum;
@@ -155,6 +156,17 @@ export interface SelectNodesOptions {
   incumbents?: ReadonlySet<string>;
   /** Priority multiplier for `incumbents`. Defaults to 1 (no bonus). */
   incumbentBonus?: number;
+  /**
+   * How far the centre of the view outranks its corners when a budget cuts the
+   * traversal: heap priority is scaled from `1 + viewAxisBias` on the view axis
+   * down to 1 at the screen corner and beyond. Screen-space error only knows
+   * how near a node is, so looking out at a shallow angle would otherwise spend
+   * the budget on the ground under the camera before the distant middle of the
+   * screen, whose error barely clears the threshold. Only the traversal order
+   * is affected — the SSE threshold test still uses the raw value, so a view
+   * that fits the budget selects the same nodes. Defaults to 0 (no bias).
+   */
+  viewAxisBias?: number;
 }
 
 /**
@@ -201,6 +213,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     onPrefetchCandidate,
     incumbents,
     incumbentBonus = 1,
+    viewAxisBias = 0,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
@@ -224,6 +237,18 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const sseOf = (key: string): number =>
     computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
 
+  // The angle from the view axis to a corner of the screen.
+  const aspectRatio =
+    camera.frustum instanceof Cesium.PerspectiveFrustum ? (camera.frustum.aspectRatio ?? 1) : 1;
+  const tanHalfFovy = Math.tan(fovy / 2);
+  const halfDiagonal = Math.atan(Math.hypot(tanHalfFovy, tanHalfFovy * aspectRatio));
+
+  const viewAxisFactor = (key: string): number => {
+    if (viewAxisBias === 0) return 1;
+    const alignment = viewAlignment(getSphere(key).center, camera.positionWC, camera.directionWC);
+    return 1 + viewAxisBias * Math.max(0, 1 - Cesium.Math.acosClamped(alignment) / halfDiagonal);
+  };
+
   const heap = new MaxHeap<{ key: string; priority: number }>((entry) => entry.priority);
   // The root's priority never matters — it's the only entry until popped.
   heap.push({ key: '0-0-0-0', priority: Infinity });
@@ -234,7 +259,8 @@ export function selectNodes(options: SelectNodesOptions): string[] {
         const sse = sseOf(childKey);
         heap.push({
           key: childKey,
-          priority: incumbents?.has(childKey) ? sse * incumbentBonus : sse,
+          priority:
+            (incumbents?.has(childKey) ? sse * incumbentBonus : sse) * viewAxisFactor(childKey),
         });
       } else if (pages[childKey]) {
         onPageNeeded?.(childKey);

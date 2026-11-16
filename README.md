@@ -4,7 +4,7 @@
 
 # [copcesium](https://github.com/Jangmyun/copcesium)
 
-[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-96.01%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.4%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
@@ -195,6 +195,7 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
@@ -230,6 +231,7 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
+| `viewAxisBias` | `2` | How far the centre of the view outranks its corners when `maxVisibleNodes` or `maxPoints` cuts the selection: priority is scaled from `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views that fit the budget select the same nodes either way. `0` ranks by screen-space error alone. |
 | `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
 | `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
@@ -366,6 +368,7 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `transferredBytes` | Bytes actually received, across every path: the Range-support probe, the header, hierarchy pages, and node point data. |
 | `requestCount` | Range responses received. Fetches merged into one request count once. |
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
+| `waste` | What the totals above leave out, for node point data. Attempts that were aborted (`abortedRequests`, with `abortedAfterHeaders` for those cut off mid-body), attempts that failed (`failedRequests`), and `retries`. The bytes those aborted and failed attempts *asked for* (`abortedBytes`, `failedBytes`). `unusedBytes`: received bytes that no node used, such as merge gaps and nodes cancelled while their request was in flight; these are already part of `transferredBytes`. `cancelledBeforeSend`: requests dropped before anything was sent. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.

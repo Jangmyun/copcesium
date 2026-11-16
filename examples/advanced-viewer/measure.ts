@@ -1,3 +1,12 @@
+/*
+ * Copyright 2026 copcesium contributors. All Rights Reserved.
+ * Author 2026 추인규 (Jangmyun)
+ *
+ * Licensed under the MIT License.
+ * See the LICENSE file in the project root for details.
+ * SPDX-License-Identifier: MIT
+ */
+
 // Two-point / path measurement for the advanced viewer (#215). STUB: not
 // wired into main.ts yet. The numbers come from the library's pure
 // `measureSegment()` / `measurePath()`; this file only owns the interaction
@@ -12,6 +21,12 @@
 //   `disableDepthTestDistance` so points never hide them.
 // - Store `PickedPoint.dataPosition`, and draw at that position shifted by
 //   the live `heightOffset`, so the endpoints follow the cloud if it moves.
+//   Shift along `normalize(dataPosition)` (geocentric up), which is how the
+//   library applies `heightOffset`; adding it to the Cartographic height or
+//   along `geodeticSurfaceNormal` drifts sideways by about 0.34 m per 100 m
+//   at Autzen's latitude.
+// - Make the tool exclusive with the Clip tab (#265): both act on LEFT_CLICK,
+//   so turning one on should switch the other off.
 // - Show distance, horizontal distance and height difference in meters, and
 //   say in the UI that height is ellipsoidal height.
 // - Browser check (needs the measurement lock to be released): the same two

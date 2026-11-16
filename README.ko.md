@@ -195,6 +195,7 @@ interface CopcDataSourceOptions {
   maxCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
+  viewAxisBias?: number;
   pixelSize?: number;
   pointSizeMode?: 'fixed' | 'attenuated';
   attenuationFactor?: number;
@@ -230,6 +231,7 @@ interface CopcDataSourceOptions {
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
 | `maxVisibleNodes` | `100` | 한 번의 LoD 패스에서 렌더링용으로 선택하는 최대 노드 수. |
 | `maxPoints` | `5,000,000` | 한 번의 LoD 패스에서 선택된 노드들의 총 포인트 수 상한 — `maxVisibleNodes`와 함께 적용됩니다. |
+| `viewAxisBias` | `2` | `maxVisibleNodes`나 `maxPoints`가 선택을 잘라야 할 때 화면 중앙을 모서리보다 얼마나 우선할지 정합니다. 우선순위에 시선축에서 `1 + viewAxisBias`, 화면 모서리에서 1을 곱합니다. 예산 안에 들어오는 시점은 값과 무관하게 같은 노드를 선택합니다. `0`이면 screen-space error만으로 순위를 매깁니다. |
 | `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
 | `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
@@ -366,6 +368,7 @@ console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴
 | `transferredBytes` | 실제로 수신한 바이트 — Range 지원 확인 요청, 헤더, 계층 구조 페이지, 노드 포인트 데이터를 모두 포함합니다. |
 | `requestCount` | 수신한 range 응답 수. 병합된 요청은 한 번으로 셉니다. |
 | `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
+| `waste` | 위 합계가 빠뜨리는 노드 포인트 데이터 쪽 수치입니다. 중단된 시도(`abortedRequests`, 그중 본문 도중에 끊긴 것은 `abortedAfterHeaders`), 실패한 시도(`failedRequests`), 재시도(`retries`)를 셉니다. 중단·실패한 시도가 **요청한** 바이트는 `abortedBytes`, `failedBytes`입니다. `unusedBytes`는 받았지만 아무 노드도 쓰지 않은 바이트(병합 틈, 받는 도중 취소된 노드)이며, 이미 `transferredBytes`에 들어 있습니다. `cancelledBeforeSend`는 보내기 전에 취소된 요청 수입니다. |
 | `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
 
 `upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.
