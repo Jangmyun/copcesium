@@ -155,7 +155,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   projDef: null,
   geoidOffset: 0,
   concurrency: 5,
-  adaptiveMergeGap: false,
+  adaptiveMergeGap: true,
   debounceMs: 100,
   maxCacheNodes: 150,
   maxVisibleNodes: 100,

@@ -1324,14 +1324,26 @@ describe('CopcDataSource update loop', () => {
     });
   });
 
-  it('builds the fetcher with a fixed gap and no adaptive options by default', async () => {
+  it('builds the fetcher with the adaptive gap by default', async () => {
     mockCopc(undefined);
     const { viewer } = makeFakeViewer();
 
     await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
 
-    expect(rangeFetcherCtor.mock.calls[0]![6]).toBeUndefined();
+    expect(rangeFetcherCtor.mock.calls[0]![6]).toEqual({});
     expect(workerPoolSizes).toEqual([5]);
+  });
+
+  it('builds the fetcher with a fixed gap when adaptiveMergeGap is false', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      debounceMs: 0,
+      adaptiveMergeGap: false,
+    });
+
+    expect(rangeFetcherCtor.mock.calls[0]![6]).toBeUndefined();
   });
 
   describe('decodeBackpressure', () => {
