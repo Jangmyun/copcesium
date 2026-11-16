@@ -2,7 +2,7 @@
 
 A fuller reference viewer built on the published `copcesium` npm package: a
 collapsible sidebar with tabbed sections (Data / Global / Appearance /
-Filter / Points / Info / Help), preset datasets, per-color-mode legends, a
+Filter / Points / Clip / Info / Help), preset datasets, per-color-mode legends, a
 classification filter panel, terrain/imagery pickers, a camera/FPS HUD, and
 light/dark theming.
 
@@ -32,6 +32,26 @@ file, so it loads with no extra options:
 ```
 https://s3.amazonaws.com/hobu-lidar/cn-tower-20-50m-HAG.copc.laz
 ```
+
+## Clipping
+
+The **Clip** tab drives `clipBoxes`, `clipPlanes` and `clipMode` from a
+click on the cloud, so plane and box clipping can be tried without building
+`Cesium.Plane` / `Cesium.Matrix4` values by hand.
+
+- **Box**: click a point to center a box on it, aligned to that point's local
+  east/north/up. Width, depth and height are in meters; a cyan outline shows
+  the box.
+- **Plane**: click a point to cut through it, then choose which side to keep.
+- **Inside / Outside** picks which side of the region is drawn, and **Clear**
+  removes it.
+
+Clicks do nothing while the tool is **Off**. The click goes through
+`pickPoint()`, which skips clipped points, so with **Inside** you can't click
+outside the current region — press **Clear** first. Regions stay where they
+were placed in world space, so moving the Points tab's height offset
+afterwards slides the cloud through them. Loading another dataset clears
+them.
 
 ## Benchmark
 
