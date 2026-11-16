@@ -5,6 +5,16 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Distance measurement between picked points.** `measureSegment(a, b)`
+  returns the straight-line distance, the horizontal (geodesic) distance and
+  the ellipsoidal height difference, and `measurePath(points)` sums them
+  along a path with total ascent and descent. `PickedPoint.dataPosition`
+  gives the picked point without the display `heightOffset`, so measurements
+  reflect the data. The advanced viewer's measuring UI is not wired up yet.
+  (#215)
+
 ### Changed
 
 - **The centre of the view is refined first when a budget cuts the

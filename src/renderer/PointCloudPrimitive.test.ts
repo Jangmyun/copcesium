@@ -215,6 +215,19 @@ describe('PointCloudPrimitive.readPointAttributes', () => {
     expect(attrs.intensity).toBe(500);
   });
 
+  it('reports the point without the live heightOffset as dataPosition', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, { ...style, heightOffset: 10 });
+    primitive.update(frame());
+
+    const attrs = primitive.readPointAttributes(0, fakeGpuContext());
+
+    // The node's "up" at origin [6378137, 0, 0] is +X, so the shift is +10 in X.
+    expect(attrs.position.x).toBeCloseTo(6378148);
+    expect(attrs.dataPosition.x).toBeCloseTo(6378138);
+    expect(attrs.dataPosition.y).toBeCloseTo(2);
+    expect(attrs.dataPosition.z).toBeCloseTo(3);
+  });
+
   it('restores the ARRAY_BUFFER binding it found, so Cesium\'s cached GL state stays accurate', () => {
     const primitive = new PointCloudPrimitive(renderData, sphere, style);
     primitive.update(frame());
