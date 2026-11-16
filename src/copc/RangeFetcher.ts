@@ -16,7 +16,24 @@
  * `CopcDataSource`, reusing this file's `isRetryable` to classify failures
  * the same way.
  */
+import { NetworkEstimator, OverlapClock } from './NetworkEstimator';
 import type { TransferCounter } from './TransferCounter';
+
+/**
+ * Turns the fixed `gapBytes` into one measured from the link while the
+ * fetcher runs. See `NetworkEstimator` for why the break-even gap is
+ * `time-to-first-byte × link rate ÷ maxConcurrent`.
+ */
+export interface AdaptiveGapOptions {
+  /** Lower clamp on the measured gap. Default `0`. */
+  minGapBytes?: number;
+  /** Upper clamp on the measured gap. Default 256 KiB. */
+  maxGapBytes?: number;
+  /** Replaces `maxGroupBytes` while the adaptive gap is on. Default 4 MiB. */
+  maxGroupBytes?: number;
+  /** Clock, for tests. Default `performance.now`. */
+  now?: () => number;
+}
 
 /** Shared by every member of one merged fetch, so the last cancellation in a
  *  group can abort the fetch itself instead of just discarding its result. */
@@ -28,6 +45,9 @@ interface GroupState {
 interface RangeRequest {
   begin: number;
   end: number;
+  /** End of the bytes after `end` that the caller skipped but that belong to
+   *  the same chunk; equal to `end` when nothing was skipped. */
+  slackEnd: number;
   resolve: (bytes: Uint8Array) => void;
   reject: (err: Error) => void;
   cancelled: boolean;
@@ -125,6 +145,15 @@ const DEFAULT_MAX_CONCURRENT = 6;
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 250;
 
+// Clamps for the adaptive gap. 256 KiB is roughly `RTT × bandwidth ÷
+// concurrency` at 100 ms, 100 Mbps and five fetches, the widest link this was
+// measured on, where a fixed 256 KiB gap won; going past it only adds gap
+// bytes on links fast enough that a request costs little anyway. The group cap
+// is raised alongside, because a 256 KiB gap under the default 512 KiB cap
+// could rarely merge anything; 4 MiB is the cap the gap rule was measured with.
+const DEFAULT_MAX_ADAPTIVE_GAP = 256 * 1024;
+const DEFAULT_ADAPTIVE_MAX_GROUP_BYTES = 4 * 1024 * 1024;
+
 // How long one attempt may go without the server sending anything — the
 // response headers, or the next chunk of the body — before it is abandoned
 // and retried. Measured from the last progress, not from the start, so a
@@ -159,6 +188,9 @@ export class RangeFetcher {
   private activeCount = 0;
   private readonly inFlight = new Set<AbortController>();
   private destroyed = false;
+  private readonly estimator: NetworkEstimator | null;
+  private readonly overlap: OverlapClock | null;
+  private readonly now: () => number;
 
   constructor(
     private readonly url: string,
@@ -170,10 +202,48 @@ export class RangeFetcher {
      *  hierarchy pages (#181). */
     private readonly counter?: TransferCounter,
     private readonly idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
-  ) {}
+    /** Omit to keep the fixed `gapBytes`. `gapBytes` is then only the gap
+     *  used until enough responses have been timed. */
+    private readonly adaptive?: AdaptiveGapOptions,
+    /** Widest skipped tail (see `fetch()`'s `slackEnd`) re-fetched to keep
+     *  two neighbors in one request, on top of whatever gap is in use. */
+    private readonly tailGapBytes = 0,
+  ) {
+    this.estimator = adaptive ? new NetworkEstimator() : null;
+    this.overlap = adaptive ? new OverlapClock() : null;
+    this.now = adaptive?.now ?? (() => performance.now());
+  }
 
-  /** Resolves with the raw bytes for `[begin, end)`. */
-  fetch(begin: number, end: number): CancellableBytesPromise {
+  /** The merge gap the next flush would use when its batch can't all be
+   *  dispatched at once. Equal to `gapBytes` unless adaptive. */
+  get currentGapBytes(): number {
+    if (!this.estimator) return this.gapBytes;
+    return this.estimator.gapBytes(
+      this.adaptive!.minGapBytes ?? 0,
+      this.adaptive!.maxGapBytes ?? DEFAULT_MAX_ADAPTIVE_GAP,
+      this.gapBytes,
+      this.maxConcurrent,
+    );
+  }
+
+  /** Read-only view of the link estimate, for diagnostics. Null unless adaptive. */
+  get network(): Pick<NetworkEstimator, 'ready' | 'ttfbMs' | 'bytesPerMs'> | null {
+    return this.estimator;
+  }
+
+  /**
+   * Resolves with the raw bytes for `[begin, end)`.
+   *
+   * `slackEnd` (default `end`) marks bytes the caller chose to skip after
+   * `end` — the unused tail of a chunk read layer by layer, or the hole
+   * between a chunk's two used ranges. Skipping them leaves a gap between
+   * neighbors that a fixed gap of 0 would never bridge, so a batch of sibling
+   * nodes that used to go out as one request goes out as one per node. A gap
+   * that lies wholly inside the earlier request's slack is bridged up to
+   * `tailGapBytes`, or up to the merge gap in use if that is wider; the
+   * skipped bytes are downloaded and dropped, never handed to the caller.
+   */
+  fetch(begin: number, end: number, slackEnd = end): CancellableBytesPromise {
     if (this.destroyed) {
       const rejected = Promise.reject(
         abortError('RangeFetcher: fetch() called after destroy()'),
@@ -183,7 +253,7 @@ export class RangeFetcher {
     }
     let req!: RangeRequest;
     const promise = new Promise<Uint8Array>((resolve, reject) => {
-      req = { begin, end, resolve, reject, cancelled: false, group: null };
+      req = { begin, end, slackEnd: Math.max(end, slackEnd), resolve, reject, cancelled: false, group: null };
       this.pending.push(req);
       this._scheduleFlush();
     }) as CancellableBytesPromise;
@@ -267,9 +337,30 @@ export class RangeFetcher {
   }
 
   /**
-   * Sorts by offset and merges requests within `gapBytes` of their neighbor,
-   * unless doing so would grow the group's span past `maxGroupBytes` — a
-   * request that alone exceeds the cap still gets its own group, since
+   * Groups a flushed batch. With a fixed gap this is just `_merge()`. With the
+   * adaptive gap, bridging a gap only pays when a request saved would
+   * otherwise have waited for a slot: if the contiguous-only groups all fit in
+   * the free slots, they go out in parallel and merging across gaps would
+   * just download the gap bytes for nothing. So the measured gap applies only
+   * when the batch would queue.
+   */
+  private _group(requests: RangeRequest[]): RangeRequest[][] {
+    if (!this.adaptive) return this._merge(requests, this.gapBytes, this.maxGroupBytes);
+    const contiguous = this._merge(requests, 0, this.maxGroupBytes);
+    const free = this.maxConcurrent - this.activeCount - this.queue.length;
+    if (contiguous.length <= free) return contiguous;
+    return this._merge(
+      requests,
+      this.currentGapBytes,
+      Math.max(this.maxGroupBytes, this.adaptive.maxGroupBytes ?? DEFAULT_ADAPTIVE_MAX_GROUP_BYTES),
+    );
+  }
+
+  /**
+   * Sorts by offset and merges requests within `gapBytes` of their neighbor
+   * (or within `tailGapBytes`, when the gap is only the neighbor's skipped
+   * tail), unless doing so would grow the group's span past `maxGroupBytes` —
+   * a request that alone exceeds the cap still gets its own group, since
    * there's no smaller fetch that would satisfy it.
    *
    * A group reaches as far as its furthest-ending member, not its last one:
@@ -283,20 +374,23 @@ export class RangeFetcher {
    * layout decide what appeared on screen first once `maxConcurrent` queued
    * the rest.
    */
-  private _group(requests: RangeRequest[]): RangeRequest[][] {
+  private _merge(requests: RangeRequest[], gapBytes: number, maxGroupBytes: number): RangeRequest[][] {
     const askedAt = new Map(requests.map((req, i) => [req, i]));
     const sorted = [...requests].sort((a, b) => a.begin - b.begin);
+    const tailGap = Math.max(gapBytes, this.tailGapBytes);
     const groups: RangeRequest[][] = [];
-    let groupEnd = 0;
+    // The current group's furthest-ending member.
+    let reach: RangeRequest | undefined;
     for (const req of sorted) {
       const group = groups[groups.length - 1];
-      const spanIfAdded = group ? Math.max(groupEnd, req.end) - group[0]!.begin : 0;
-      if (group && req.begin - groupEnd <= this.gapBytes && spanIfAdded <= this.maxGroupBytes) {
-        group.push(req);
-        groupEnd = Math.max(groupEnd, req.end);
+      const spanIfAdded = group ? Math.max(reach!.end, req.end) - group[0]!.begin : 0;
+      const limit = reach && req.begin <= reach.slackEnd ? tailGap : gapBytes;
+      if (reach && req.begin - reach.end <= limit && spanIfAdded <= maxGroupBytes) {
+        group!.push(req);
+        if (req.end > reach.end) reach = req;
       } else {
         groups.push([req]);
-        groupEnd = req.end;
+        reach = req;
       }
     }
     const firstAsked = (group: RangeRequest[]): number =>
@@ -349,9 +443,38 @@ export class RangeFetcher {
       if (attempt > 1) this.counter?.recordRetry();
       let afterHeaders = false;
       try {
-        const bytes = await this._attempt(begin, end, signal, () => {
-          afterHeaders = true;
-        });
+        const sentAt = this.now();
+        let headersAt = sentAt;
+        // Every body is clocked from its headers on, even one that fails or is
+        // aborted, since it still shared the link with the bodies that do get
+        // timed.
+        let mark: number | null = null;
+        let bodyArea = 0;
+        let bodyEnd = sentAt;
+        let bytes: Uint8Array;
+        try {
+          bytes = await this._attempt(begin, end, signal, () => {
+            afterHeaders = true;
+            headersAt = this.now();
+            if (this.overlap) mark = this.overlap.start(headersAt);
+          });
+        } finally {
+          // One timestamp for both the overlap integral and the body time, so
+          // `sharedWith` is the mean over exactly the interval it divides by.
+          bodyEnd = this.now();
+          if (mark !== null) bodyArea = this.overlap!.end(bodyEnd, mark);
+        }
+        // Only successful reads are timed: a failed or aborted attempt says
+        // nothing about what the next request on a working link costs.
+        if (this.estimator) {
+          const bodyMs = bodyEnd - headersAt;
+          this.estimator.record({
+            ttfbMs: headersAt - sentAt,
+            bodyMs,
+            bytes: bytes.length,
+            sharedWith: bodyMs > 0 ? bodyArea / bodyMs : 1,
+          });
+        }
         // Counted after the body is in hand, not at the response headers: the
         // LoD pass cancels requests the camera has moved past (#86), and an
         // abort partway through the download would otherwise be tallied as a

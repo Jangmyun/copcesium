@@ -51,6 +51,40 @@ interface Task {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Higher runs first among queued tasks; equal priorities keep FIFO order. */
+  priority: number;
+  queuedAt: number;
+  /** Set when the task reaches a worker. */
+  startedAt: number | null;
+}
+
+/** Recent queue and run times, so a caller can tell a CPU-bound pipeline
+ *  (tasks wait for a worker) from a network-bound one (workers wait for tasks). */
+export interface WorkerPoolTiming {
+  /** Tasks waiting for a worker right now. */
+  waiting: number;
+  /** Tasks running on a worker right now. */
+  running: number;
+  /** Median ms from `run()` to reaching a worker, over recent tasks. NaN before any. */
+  waitP50: number;
+  /** Median ms a worker spent on a task, over recent completed tasks. NaN before any. */
+  runP50: number;
+}
+
+// Enough to smooth over one slow node, short enough to follow a change of
+// view from sparse to dense data within a few seconds of decoding.
+const TIMING_WINDOW = 32;
+
+function median(xs: number[]): number {
+  if (!xs.length) return NaN;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+}
+
+function pushWindow(window: number[], value: number): void {
+  window.push(value);
+  if (window.length > TIMING_WINDOW) window.shift();
 }
 
 /**
@@ -68,10 +102,14 @@ export class WorkerPool {
   private nextId = 0;
   private destroyed = false;
   private workerReplacementCount = 0;
+  private readonly waitTimes: number[] = [];
+  private readonly runTimes: number[] = [];
 
   constructor(
     private readonly workerFactory: () => Worker,
     concurrency: number,
+    /** Clock for the timing window, for tests. */
+    private readonly now: () => number = () => performance.now(),
   ) {
     this.workers = [];
     for (let i = 0; i < concurrency; i++) {
@@ -88,13 +126,31 @@ export class WorkerPool {
     return this.workers.length;
   }
 
+  /** Tasks waiting for a worker. */
+  get backlog(): number {
+    return this.queue.length;
+  }
+
+  /** A snapshot of how busy the pool is and how long tasks have been taking. */
+  get timing(): WorkerPoolTiming {
+    return {
+      waiting: this.queue.length,
+      running: this.pending.size,
+      waitP50: median(this.waitTimes),
+      runP50: median(this.runTimes),
+    };
+  }
+
   /**
    * @param timeoutMs Rejects (and frees up the worker/queue slot) if no
    *   response arrives in time — a hung Range Request or a wasm decode that
    *   never returns would otherwise wedge that node forever, since nothing
    *   else would ever remove it from `pending`.
+   * @param priority Among tasks waiting for a worker, higher goes first;
+   *   equal priorities run in the order they were submitted. Default `0`, so
+   *   callers that never pass it get plain FIFO.
    */
-  run<T>(message: unknown, transfer: Transferable[] = [], timeoutMs = 30_000): CancellablePromise<T> {
+  run<T>(message: unknown, transfer: Transferable[] = [], timeoutMs = 30_000, priority = 0): CancellablePromise<T> {
     if (this.destroyed) {
       const rejected = Promise.reject(new Error('WorkerPool: run() called after destroy()')) as CancellablePromise<T>;
       rejected.cancel = () => {};
@@ -109,6 +165,9 @@ export class WorkerPool {
         resolve: resolve as (value: unknown) => void,
         reject,
         timer: setTimeout(() => this._handleTimeout(task), timeoutMs),
+        priority,
+        queuedAt: this.now(),
+        startedAt: null,
       };
       this._dispatch(task);
     }) as CancellablePromise<T>;
@@ -135,11 +194,26 @@ export class WorkerPool {
   private _dispatch(task: Task): void {
     const worker = this.idleWorkers.pop();
     if (!worker) {
-      this.queue.push(task);
+      // After every task of equal or higher priority, so equal priorities
+      // stay FIFO and an all-default pool behaves exactly as before.
+      const at = this.queue.findIndex((queued) => queued.priority < task.priority);
+      if (at === -1) this.queue.push(task);
+      else this.queue.splice(at, 0, task);
       return;
     }
+    this._start(worker, task);
+  }
+
+  private _start(worker: Worker, task: Task): void {
+    task.startedAt = this.now();
+    pushWindow(this.waitTimes, task.startedAt - task.queuedAt);
     this.pending.set(worker, task);
     worker.postMessage({ id: task.id, payload: task.message } satisfies WorkerRequest, task.transfer);
+  }
+
+  /** Records how long a task held its worker, for `timing.runP50`. */
+  private _finished(task: Task): void {
+    if (task.startedAt !== null) pushWindow(this.runTimes, this.now() - task.startedAt);
   }
 
   private _handleMessage(worker: Worker, e: MessageEvent<WorkerResponse>): void {
@@ -150,6 +224,9 @@ export class WorkerPool {
     if (!task || e.data.id !== task.id) return;
     this.pending.delete(worker);
     clearTimeout(task.timer);
+    // A cancelled task's reply comes back early and would read as a fast
+    // decode; only completed work describes what the CPU can do.
+    if (!e.data.error) this._finished(task);
 
     if (e.data.error) {
       const err = new Error(e.data.error.message);
@@ -220,8 +297,7 @@ export class WorkerPool {
       this.idleWorkers.push(worker);
       return;
     }
-    this.pending.set(worker, next);
-    worker.postMessage({ id: next.id, payload: next.message } satisfies WorkerRequest, next.transfer);
+    this._start(worker, next);
   }
 
   /** Removes a crashed worker from rotation and spins up a replacement, so a

@@ -297,4 +297,80 @@ describe('WorkerPool', () => {
       expect(() => promise.cancel()).not.toThrow();
     });
   });
+
+  describe('priority', () => {
+    it('keeps FIFO order when every task has the default priority', () => {
+      const { factory, fakeWorkers } = makeFactory();
+      const pool = new WorkerPool(factory, 1);
+      for (const p of ['a', 'b', 'c']) void pool.run(p);
+
+      fakeWorkers[0].reply({ result: null });
+      fakeWorkers[0].reply({ result: null });
+
+      expect(fakeWorkers[0].received.map((r) => r.payload)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('runs a higher-priority queued task first, and equal ones in submission order', () => {
+      const { factory, fakeWorkers } = makeFactory();
+      const pool = new WorkerPool(factory, 1);
+      void pool.run('busy');
+      void pool.run('prefetch-1', [], undefined, -1);
+      void pool.run('visible-1');
+      void pool.run('prefetch-2', [], undefined, -1);
+      void pool.run('visible-2');
+
+      for (let i = 0; i < 4; i++) fakeWorkers[0].reply({ result: null });
+
+      expect(fakeWorkers[0].received.map((r) => r.payload)).toEqual([
+        'busy',
+        'visible-1',
+        'visible-2',
+        'prefetch-1',
+        'prefetch-2',
+      ]);
+    });
+  });
+
+  describe('timing', () => {
+    it('reports the backlog and how long tasks waited for and ran on a worker', async () => {
+      const { factory, fakeWorkers } = makeFactory();
+      let t = 0;
+      const pool = new WorkerPool(factory, 1, () => t);
+
+      const first = pool.run('a'); // starts at t = 0
+      const second = pool.run('b'); // queued at t = 0
+      expect(pool.backlog).toBe(1);
+      expect(pool.timing).toMatchObject({ waiting: 1, running: 1 });
+
+      t = 40;
+      fakeWorkers[0].reply({ result: null }); // a ran 40 ms; b starts after waiting 40 ms
+      t = 100;
+      fakeWorkers[0].reply({ result: null }); // b ran 60 ms
+      await Promise.all([first, second]);
+
+      expect(pool.backlog).toBe(0);
+      expect(pool.timing).toEqual({ waiting: 0, running: 0, waitP50: 20, runP50: 50 });
+    });
+
+    it('does not count a cancelled or failed task as decoding work', async () => {
+      const { factory, fakeWorkers } = makeFactory();
+      let t = 0;
+      const pool = new WorkerPool(factory, 1, () => t);
+
+      const task = pool.run('a');
+      task.cancel();
+      t = 1;
+      fakeWorkers[0].reply({ error: { name: 'AbortError', message: 'cancelled' } });
+      await expect(task).rejects.toThrow('cancelled');
+
+      expect(Number.isNaN(pool.timing.runP50)).toBe(true);
+    });
+
+    it('is empty before any task has run', () => {
+      const { factory } = makeFactory();
+      const pool = new WorkerPool(factory, 2);
+      expect(pool.timing.waiting).toBe(0);
+      expect(Number.isNaN(pool.timing.waitP50)).toBe(true);
+    });
+  });
 });
