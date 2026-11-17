@@ -57,6 +57,8 @@ const TUNING_PARAMS = [
   'adaptiveMergeGap',
   'decodeBackpressure',
   'strictCacheBudget',
+  'preUploadHidden',
+  'maxGpuInitsPerFrame',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {

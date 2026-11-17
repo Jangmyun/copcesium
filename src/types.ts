@@ -175,6 +175,23 @@ export interface CopcDataSourceOptions {
    * right away if the cache is over budget. Default `false`.
    */
   strictCacheBudget?: boolean;
+  /**
+   * Uploads a node's vertex buffers to the GPU as soon as it has loaded,
+   * even while it is hidden (prefetched, not yet on screen), instead of on
+   * the first frame it is shown. A prefetched node then appears on a pan
+   * without that frame's upload cost, at the price of holding its GPU
+   * memory earlier. Combine with `maxGpuInitsPerFrame` to spread the
+   * uploads out. Default `false`.
+   */
+  preUploadHidden?: boolean;
+  /**
+   * Caps how many nodes may upload their vertex buffers in one frame; the
+   * rest wait for later frames. Limits the frame-time spike when many nodes
+   * arrive together. Nodes on screen may use every slot, while hidden
+   * pre-uploads (`preUploadHidden`) take at most one slot per frame. Unset
+   * (the default) means no cap.
+   */
+  maxGpuInitsPerFrame?: number;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;
   /** Factor that converts the XY axis unit to meters. Auto-detected from the WKT when omitted. */
