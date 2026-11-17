@@ -127,6 +127,31 @@ interface DrawCommandLike {
   framebuffer: unknown;
 }
 
+/** Position attribute (node-relative offset), shared by the main and pick vertex arrays. */
+function positionAttribute(vertexBuffer: unknown) {
+  return {
+    index: 0,
+    vertexBuffer,
+    componentsPerAttribute: 3,
+    componentDatatype: Cesium.ComponentDatatype.FLOAT,
+    offsetInBytes: 0,
+    strideInBytes: 12,
+  };
+}
+
+/** Classification attribute; its slot differs between the main (3) and pick (1) vertex arrays. */
+function classificationAttribute(index: number, vertexBuffer: unknown) {
+  return {
+    index,
+    vertexBuffer,
+    componentsPerAttribute: 1,
+    componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
+    normalize: true,
+    offsetInBytes: 0,
+    strideInBytes: 1,
+  };
+}
+
 // Cesium.Primitive allocates a JS object per point; this DrawCommand-based
 // wrapper instead uploads the node's TypedArrays as a single GPU buffer.
 //
@@ -276,6 +301,23 @@ export class PointCloudPrimitive {
     this._appliedClipVersion = this._style.clip.version;
   }
 
+  /** Uniforms the main and pick shaders both read. */
+  private _sharedUniforms(style: PointStyle) {
+    return {
+      u_pixelSize: () => style.pixelSize,
+      u_sizeMode: () => style.sizeMode,
+      u_attenuationFactor: () => style.attenuationFactor,
+      u_minPixelSize: () => style.minPixelSize,
+      u_maxPixelSize: () => style.maxPixelSize,
+      u_classMask: () => style.classMask,
+      u_clipMode: () => this._clipUniforms.mode,
+      u_clipPlaneCount: () => this._clipUniforms.planeCount,
+      u_clipPlanes: () => this._clipPlanes,
+      u_clipBoxCount: () => this._clipUniforms.boxCount,
+      u_clipBoxes: () => this._clipBoxes,
+    };
+  }
+
   /** Node origin shifted `heightOffset` meters along the node's local "up". */
   private _modelMatrix(heightOffset: number): Cesium.Matrix4 {
     const origin = new Cesium.Cartesian3(this._origin[0], this._origin[1], this._origin[2]);
@@ -307,14 +349,7 @@ export class PointCloudPrimitive {
       va = new CesiumAny.VertexArray({
         context,
         attributes: [
-          {
-            index: 0, // position (node-relative offset)
-            vertexBuffer: positionBuffer,
-            componentsPerAttribute: 3,
-            componentDatatype: Cesium.ComponentDatatype.FLOAT,
-            offsetInBytes: 0,
-            strideInBytes: 12,
-          },
+          positionAttribute(positionBuffer),
           {
             index: 1, // color
             vertexBuffer: colorBuffer,
@@ -333,15 +368,7 @@ export class PointCloudPrimitive {
             offsetInBytes: 0,
             strideInBytes: 2,
           },
-          {
-            index: 3, // classification
-            vertexBuffer: classificationBuffer,
-            componentsPerAttribute: 1,
-            componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
-            normalize: true,
-            offsetInBytes: 0,
-            strideInBytes: 1,
-          },
+          classificationAttribute(3, classificationBuffer),
           {
             index: 4, // elevation
             vertexBuffer: elevationBuffer,
@@ -388,20 +415,10 @@ export class PointCloudPrimitive {
         // ECEF from this plus the node-relative offsets.
         modelMatrix: this._modelMatrix(this._style.heightOffset),
         uniformMap: {
-          u_pixelSize: () => style.pixelSize,
-          u_sizeMode: () => style.sizeMode,
-          u_attenuationFactor: () => style.attenuationFactor,
-          u_minPixelSize: () => style.minPixelSize,
-          u_maxPixelSize: () => style.maxPixelSize,
+          ...this._sharedUniforms(style),
           u_colorMode: () => style.colorMode,
           u_intensityRange: () => style.intensityRange,
-          u_classMask: () => style.classMask,
           u_opacity: () => style.opacity,
-          u_clipMode: () => this._clipUniforms.mode,
-          u_clipPlaneCount: () => this._clipUniforms.planeCount,
-          u_clipPlanes: () => this._clipPlanes,
-          u_clipBoxCount: () => this._clipUniforms.boxCount,
-          u_clipBoxes: () => this._clipBoxes,
         },
       }) as DrawCommandLike;
       this._appliedHeightOffset = this._style.heightOffset;
@@ -462,23 +479,9 @@ export class PointCloudPrimitive {
     const pickVa = new CesiumAny.VertexArray({
       context,
       attributes: [
-        {
-          index: 0, // position (node-relative offset) — same buffer as the main VA's
-          vertexBuffer: this._positionBuffer,
-          componentsPerAttribute: 3,
-          componentDatatype: Cesium.ComponentDatatype.FLOAT,
-          offsetInBytes: 0,
-          strideInBytes: 12,
-        },
-        {
-          index: 1, // classification — same buffer as the main VA's, for the same allow-list cull
-          vertexBuffer: this._classificationBuffer,
-          componentsPerAttribute: 1,
-          componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
-          normalize: true,
-          offsetInBytes: 0,
-          strideInBytes: 1,
-        },
+        // Same buffers as the main VA's; classification for the same allow-list cull.
+        positionAttribute(this._positionBuffer),
+        classificationAttribute(1, this._classificationBuffer),
       ],
     });
     const pickSp = CesiumAny.ShaderProgram.fromCache({
@@ -504,18 +507,8 @@ export class PointCloudPrimitive {
       modelMatrix: this._modelMatrix(this._style.heightOffset),
       framebuffer,
       uniformMap: {
-        u_pixelSize: () => style.pixelSize,
-        u_sizeMode: () => style.sizeMode,
-        u_attenuationFactor: () => style.attenuationFactor,
-        u_minPixelSize: () => style.minPixelSize,
-        u_maxPixelSize: () => style.maxPixelSize,
-        u_classMask: () => style.classMask,
+        ...this._sharedUniforms(style),
         u_nodeSlot: () => this._pickNodeSlot,
-        u_clipMode: () => this._clipUniforms.mode,
-        u_clipPlaneCount: () => this._clipUniforms.planeCount,
-        u_clipPlanes: () => this._clipPlanes,
-        u_clipBoxCount: () => this._clipUniforms.boxCount,
-        u_clipBoxes: () => this._clipBoxes,
       },
     }) as DrawCommandLike;
     return this._pickCmd;
