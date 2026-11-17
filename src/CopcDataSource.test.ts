@@ -66,8 +66,12 @@ const rangeFetcherFetch = vi.fn();
 const rangeFetcherDestroy = vi.fn();
 /** Constructor calls, so the concurrency cap it receives can be asserted on. */
 const rangeFetcherCtor = vi.fn();
-vi.mock('./copc/RangeFetcher', () => {
+// The module's other exports are kept real (via `importOriginal`); only the
+// fetcher class is replaced.
+vi.mock('./copc/RangeFetcher', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./copc/RangeFetcher')>();
   return {
+    ...actual,
     RangeFetcher: vi.fn().mockImplementation(function (...args: unknown[]) {
       rangeFetcherCtor(...args);
       return {
@@ -97,6 +101,7 @@ const isInFrustumMock = vi.fn<(...args: unknown[]) => boolean>(() => true);
 vi.mock('./lod/boundingVolume', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./lod/boundingVolume')>();
   return {
+    ...actual,
     getCullingVolume: vi.fn(() => ({})),
     isInFrustum: (...args: unknown[]) => isInFrustumMock(...args),
   };
