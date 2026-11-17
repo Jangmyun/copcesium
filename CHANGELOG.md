@@ -15,6 +15,12 @@ All notable changes to this project are documented here. This project follows
   skipped while the camera, viewport, loads, hierarchy pages, cache and
   options are unchanged since the last pass, so an idle scene under
   continuous rendering stops re-running selection every `debounceMs`.
+- `prefetchLookaheadMs` (opt-in, off by default): while the camera moves,
+  prefetch is built around the pose it is predicted to have that far ahead
+  (damped constant-velocity, capped at 250 ms), candidates load nearest to
+  that pose first, and a prefetch load that drops out of the prefetch set is
+  cancelled only after 300 ms. Offline on a recorded human camera path this
+  prediction beat holding the pose only up to 250 ms. Recommended: `250`.
 
 ### Changed
 

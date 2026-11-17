@@ -30,6 +30,12 @@ import { GpuInitBudget } from '../renderer/GpuInitBudget';
 // a prefetched node never takes a worker ahead of one on screen.
 const PREFETCH_DECODE_PRIORITY = -1;
 
+// With `prefetchLookaheadMs`, a pending prefetch load that fell out of the
+// prefetch set survives this long before it is cancelled. The predicted view
+// wobbles from pass to pass, and a half-downloaded node is worth keeping if
+// the camera swings back within a few frames.
+const PREFETCH_CANCEL_GRACE_MS = 300;
+
 /** The option fields the scheduler reads; the live options object is passed in. */
 export type LoadSchedulerOptions = Required<
   Pick<
@@ -43,7 +49,7 @@ export type LoadSchedulerOptions = Required<
     | 'zFactor'
   >
 > &
-  Pick<CopcDataSourceOptions, 'maxGpuInitsPerFrame'>;
+  Pick<CopcDataSourceOptions, 'maxGpuInitsPerFrame' | 'prefetchLookaheadMs'>;
 
 export interface LoadSchedulerDeps {
   options: LoadSchedulerOptions;
@@ -73,6 +79,9 @@ export class LoadScheduler {
   /** Under `decodeBackpressure`: loads of `_wantedKeys` held back because the
    *  decode queue was full, in selection order. */
   private _deferredLoads: string[] = [];
+  /** Pending loads started as prefetch, and when each was first seen outside the prefetch set. */
+  private readonly _prefetchLoads = new Set<string>();
+  private readonly _absentSince = new Map<string, number>();
 
   private readonly _o: LoadSchedulerOptions;
   /** Shared per-frame upload cap; null when `maxGpuInitsPerFrame` is unset. */
@@ -163,6 +172,7 @@ export class LoadScheduler {
       if (this._pendingKeys.size >= concurrency) break;
       if (this._cache.peek(key)) continue;
       if (this._pendingKeys.has(key)) continue;
+      this._prefetchLoads.add(key);
       void this.load(key, priority);
     }
   }
@@ -205,10 +215,29 @@ export class LoadScheduler {
    *  decoding data nobody will show; cancel it so its worker slot frees up
    *  for the current selection instead (#86). `newPrefetchKeys` is included
    *  so a pending prefetch load isn't cancelled just for being outside the
-   *  actual frustum — that's exactly what makes it a prefetch candidate. */
-  cancelStale(newSelectedKeys: Set<string>, newPrefetchKeys: Set<string>): void {
+   *  actual frustum — that's exactly what makes it a prefetch candidate.
+   *  With `prefetchLookaheadMs`, a prefetch load gets `PREFETCH_CANCEL_GRACE_MS`
+   *  of grace before it is cancelled; `now` is injectable for tests. */
+  cancelStale(
+    newSelectedKeys: Set<string>,
+    newPrefetchKeys: Set<string>,
+    now: number = performance.now(),
+  ): void {
+    const grace = !!this._o.prefetchLookaheadMs && this._o.prefetchLookaheadMs > 0;
     for (const key of this._pendingKeys) {
-      if (!newSelectedKeys.has(key) && !newPrefetchKeys.has(key)) this._cancels.get(key)?.();
+      if (newSelectedKeys.has(key) || newPrefetchKeys.has(key)) {
+        this._absentSince.delete(key);
+        continue;
+      }
+      if (grace && this._prefetchLoads.has(key) && !this._wantedKeys.has(key)) {
+        const since = this._absentSince.get(key);
+        if (since === undefined) {
+          this._absentSince.set(key, now);
+          continue;
+        }
+        if (now - since <= PREFETCH_CANCEL_GRACE_MS) continue;
+      }
+      this._cancels.get(key)?.();
     }
   }
 
@@ -291,6 +320,8 @@ export class LoadScheduler {
     } finally {
       this._pendingKeys.delete(key);
       this._cancels.delete(key);
+      this._prefetchLoads.delete(key);
+      this._absentSince.delete(key);
       this._onSettled();
       if (!this._isDestroyed()) {
         // A finished (or abandoned) node is room in the decode queue.

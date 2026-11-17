@@ -15,7 +15,13 @@
  */
 import * as Cesium from 'cesium';
 import type { Hierarchy } from 'copc';
-import { getCullingVolume, getExpandedCullingVolume, isInFrustum } from './boundingVolume';
+import {
+  getCullingVolume,
+  getExpandedCullingVolume,
+  isInFrustum,
+  type CameraPose,
+  type CameraView,
+} from './boundingVolume';
 import { viewAlignment } from './loadOrder';
 import { computeScreenSpaceError, getFovy, sseScale } from './screenSpaceError';
 
@@ -112,7 +118,7 @@ export interface SelectNodesOptions {
    * selection pass.
    */
   getSphere: (key: string) => Cesium.BoundingSphere;
-  camera: Cesium.Camera;
+  camera: CameraView;
   viewportHeight: number;
   sseThreshold: number;
   maxVisibleNodes: number;
@@ -148,6 +154,14 @@ export interface SelectNodesOptions {
    * and cache it ahead of time.
    */
   onPrefetchCandidate?: (key: string) => void;
+  /**
+   * Where the camera is expected to be a short moment from now. When set, the
+   * prefetch region is the expanded frustum placed at this pose, the prefetch
+   * screen-space error is measured from its eye, and candidates are reported
+   * nearest to that eye first (instead of in traversal order). The visible
+   * selection still uses `camera`. Unset: prefetch is built around `camera`.
+   */
+  predictedPose?: CameraPose;
   /**
    * Keys currently on screen. Their heap priority is multiplied by
    * `incumbentBonus`, so when a budget cuts the traversal mid-heap, a visible
@@ -216,6 +230,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     prefetchFrustumFactor,
     maxPrefetchNodes = 50,
     onPrefetchCandidate,
+    predictedPose,
     incumbents,
     incumbentBonus = 1,
     viewAxisBias = 0,
@@ -229,7 +244,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   // nothing to gain from deferring it, and doing so up front keeps the
   // per-node branch below a plain frustum test.
   const expandedCullingVolume = prefetchEnabled
-    ? getExpandedCullingVolume(camera, prefetchFactor)
+    ? getExpandedCullingVolume(camera, prefetchFactor, predictedPose)
     : undefined;
   const fovy = getFovy(camera.frustum);
   const selected: string[] = [];
@@ -242,6 +257,13 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const scale = sseScale(viewportHeight, fovy);
   const sseOf = (sphere: Cesium.BoundingSphere): number =>
     computeScreenSpaceError(sphere, camera.positionWC, viewportHeight, fovy, scale);
+
+  // Prefetch candidates are measured from the predicted eye, when there is one.
+  const prefetchEye = predictedPose?.positionWC ?? camera.positionWC;
+  const prefetchSseOf = (sphere: Cesium.BoundingSphere): number =>
+    computeScreenSpaceError(sphere, prefetchEye, viewportHeight, fovy, scale);
+  // Only filled with a predicted pose: candidates are then sorted before they are reported.
+  const ranked: { key: string; distance: number }[] = [];
 
   // The angle from the view axis to a corner of the screen.
   const aspectRatio =
@@ -315,13 +337,21 @@ export function selectNodes(options: SelectNodesOptions): string[] {
       if (!prefetchBudgetLeft) continue; // prefetch budget spent; prune the subtree
 
       if (nodeInfo.pointCount > 0) {
-        onPrefetchCandidate?.(key);
+        if (predictedPose) {
+          ranked.push({
+            key,
+            distance: Cesium.Cartesian3.distance(sphere.center, prefetchEye),
+          });
+        } else {
+          onPrefetchCandidate?.(key);
+        }
         prefetchCount++;
       }
       // Same empty-node/SSE expansion rule as the onscreen branch below, so a
       // prefetched node ends up at roughly the LOD it would render at once
       // panned into view, not an arbitrarily coarse one.
-      if (nodeInfo.pointCount > 0 && (entry.sse ?? sseOf(sphere)) <= sseThreshold) continue;
+      const prefetchSse = predictedPose ? prefetchSseOf(sphere) : (entry.sse ?? sseOf(sphere));
+      if (nodeInfo.pointCount > 0 && prefetchSse <= sseThreshold) continue;
       expandChildren(entry);
       continue;
     }
@@ -339,6 +369,11 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     if (nodeInfo.pointCount > 0 && (entry.sse ?? sseOf(sphere)) <= sseThreshold) continue;
 
     expandChildren(entry);
+  }
+
+  if (predictedPose) {
+    ranked.sort((a, b) => a.distance - b.distance);
+    for (const { key } of ranked) onPrefetchCandidate?.(key);
   }
 
   return selected;
