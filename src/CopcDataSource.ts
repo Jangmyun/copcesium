@@ -814,7 +814,7 @@ export class CopcDataSource {
 
       const payload: NodeConversionPayload = {
         compressedBytes,
-        copc: this._copc,
+        copc: { header: this._copc.header, eb: this._copc.eb },
         node,
         proj: this._options.proj,
         projDef: this._options.projDef,

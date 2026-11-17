@@ -33,7 +33,7 @@ proj4Mock.defs = (...args: unknown[]) => proj4Defs(...args);
 proj4Mock.Proj = () => ({ projName: 'longlat', inverse: () => null });
 vi.mock('proj4', () => ({ default: proj4Mock }));
 
-const { convertNode, lonLatAltToEcef } = await import('./worker');
+const { convertNode, lonLatAltToEcef, lonLatAltToEcefInto } = await import('./worker');
 
 /** Builds a fake `copc` View backed by plain arrays, matching the real
  * getter contract: throws for a dimension that wasn't supplied. */
@@ -61,6 +61,16 @@ const BASE_PAYLOAD = {
   zMin: 0,
   zMax: 100,
 };
+
+describe('lonLatAltToEcefInto', () => {
+  it('writes the same values as lonLatAltToEcef and reuses the buffer', () => {
+    const out = new Float64Array(3);
+    for (const [lon, lat, alt] of [[0, 0, 0], [10, 20, 5], [-122.4, 37.8, 120.5]] as const) {
+      lonLatAltToEcefInto(lon, lat, alt, out);
+      expect([...out]).toEqual(lonLatAltToEcef(lon, lat, alt));
+    }
+  });
+});
 
 describe('lonLatAltToEcef', () => {
   it('places (0, 0, 0) on the equator at the WGS84 equatorial radius', () => {
