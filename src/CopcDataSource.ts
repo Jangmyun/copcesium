@@ -23,7 +23,6 @@ import type {
   CopcDataSourceOptions,
   CopcStats,
   LoadedNode,
-  NodeRenderData,
   PickedPoint,
   PointSizeMode,
 } from './types';
@@ -39,11 +38,10 @@ import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
-import { createNodePrimitive } from './loader/loadNode';
+import { LoadScheduler } from './loader/LoadScheduler';
 import { PointPicker } from './renderer/pickPoint';
 import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
-import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
 
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
@@ -115,10 +113,6 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
 // measurements; 1.15 sits in the middle.
 const INCUMBENT_BONUS = 1.15;
 
-// Below the default 0 visible nodes decode at, so under `decodeBackpressure`
-// a prefetched node never takes a worker ahead of one on screen.
-const PREFETCH_DECODE_PRIORITY = -1;
-
 // Bounds for `concurrency: 'auto'`. The top is today's fixed default, so
 // 'auto' never spends more cores than a desktop already gets. The bottom keeps
 // one decode running while another node's transfer is handed over, even on a
@@ -152,17 +146,9 @@ export class CopcDataSource {
   private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
   private readonly _ownsPool: boolean;
-  private readonly _pendingKeys = new Set<string>();
-  private readonly _cancels = new Map<string, () => void>();
+  private readonly _scheduler: LoadScheduler;
   private readonly _spheres: SphereCache;
   private _selectedKeys = new Set<string>();
-  /** The last LoD pass's selection and prefetch candidates, kept so
-   *  `_dispatchPrefetch()` can run again when a load finishes. */
-  private _wantedKeys = new Set<string>();
-  private _prefetchCandidates = new Set<string>();
-  /** Under `decodeBackpressure`: loads of `_wantedKeys` held back because the
-   *  decode queue was full, in selection order. */
-  private _deferredLoads: string[] = [];
   private _isUpdating = false;
   private _pendingUpdate = false;
   private _lastUpdateTime = 0;
@@ -214,6 +200,20 @@ export class CopcDataSource {
     );
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
+    this._scheduler = new LoadScheduler({
+      options,
+      viewer,
+      copc: this._copc,
+      nodes: this._pager.nodes,
+      rangeFetcher: this._rangeFetcher,
+      workerPool,
+      nodeCache: this._nodeCache,
+      stages: this._stages,
+      style: this._styleCtl,
+      getSphere: (key) => this._getSphere(key),
+      isDestroyed: () => this._destroyed,
+      isSelected: (key) => this._selectedKeys.has(key),
+    });
   }
 
   /**
@@ -367,7 +367,7 @@ export class CopcDataSource {
       );
 
       this._dispatchPageLoads(neededPages);
-      this._cancelStaleLoads(newSelectedKeys, newPrefetchKeys);
+      this._scheduler.cancelStale(newSelectedKeys, newPrefetchKeys);
 
       let sceneChanged = false;
 
@@ -385,25 +385,20 @@ export class CopcDataSource {
           }
           continue;
         }
-        if (this._pendingKeys.has(key)) continue;
+        if (this._scheduler.isPending(key)) continue;
         toLoad.push(key);
       }
       // Ordered before the backpressure check, so deferred loads resume in
       // the same shallowest-first, centre-first order.
       for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
-        if (this._options.decodeBackpressure && this._decodeBound()) {
+        if (this._options.decodeBackpressure && this._scheduler.decodeBound()) {
           deferred.push(key);
           continue;
         }
-        void this._loadNode(key);
+        void this._scheduler.load(key);
       }
 
-      this._wantedKeys = newSelectedKeys;
-      // Replaced, not appended: keys the camera has since moved past must not
-      // be loaded later just because they were once deferred.
-      this._deferredLoads = deferred;
-      this._prefetchCandidates = newPrefetchKeys;
-      this._dispatchPrefetch();
+      this._scheduler.commit(newSelectedKeys, deferred, newPrefetchKeys);
 
       const stillShown = new Set(newSelectedKeys);
       // Bucketed once per pass (not once per deselected key) so
@@ -446,87 +441,11 @@ export class CopcDataSource {
     }
   }
 
-  /**
-   * Prefetch candidates never set `show` — they're outside the actual frustum
-   * — and only get a request once the visible loads have already claimed
-   * their slots, so a pan never waits on prefetch traffic for the detail it
-   * needs right now (#212).
-   *
-   * Claiming slots first is not enough on a link that is bandwidth-bound
-   * rather than latency-bound: a prefetch request that starts while visible
-   * loads are still downloading takes its share of the bytes, and every
-   * visible node arrives that much later. With `prefetchIdleOnly`, prefetch
-   * waits until no load for the current selection is still pending, and
-   * `_loadNode()` calls back here when the last one finishes, so prefetch
-   * still runs in the pauses between camera moves without another LoD pass.
-   *
-   * Every prefetch rule is decided here, in `_prefetchBlocked()`, and the
-   * rules only ever add conditions: with both `prefetchIdleOnly` and
-   * `decodeBackpressure` on, prefetch waits until *both* the visible loads
-   * have finished and the decode queue is empty. Neither option can let
-   * prefetch through when the other holds it back.
-   */
-  private _dispatchPrefetch(): void {
-    if (this._prefetchBlocked()) return;
-    const concurrency = this._workerPool.concurrency;
-    const priority = this._options.decodeBackpressure ? PREFETCH_DECODE_PRIORITY : 0;
-    for (const key of this._prefetchCandidates) {
-      if (this._pendingKeys.size >= concurrency) break;
-      if (this._nodeCache.peek(key)) continue;
-      if (this._pendingKeys.has(key)) continue;
-      void this._loadNode(key, priority);
-    }
-  }
-
-  /** True while any enabled prefetch rule holds prefetch back. */
-  private _prefetchBlocked(): boolean {
-    if (this._options.decodeBackpressure && this._workerPool.backlog > 0) return true;
-    if (this._options.prefetchIdleOnly) {
-      for (const key of this._pendingKeys) if (this._wantedKeys.has(key)) return true;
-    }
-    return false;
-  }
-
-  /**
-   * True when a full round of decoding (one task per worker) is already
-   * waiting for a worker. Downloads are then outrunning the CPU: another
-   * node fetched now would only wait in the decode queue, holding bandwidth
-   * and memory that the next view's nodes could have used, and be cancelled
-   * outright if the camera moves on first.
-   */
-  private _decodeBound(): boolean {
-    return this._workerPool.backlog >= this._workerPool.concurrency;
-  }
-
-  /** Under decode backpressure, starts deferred loads still wanted by the
-   *  current selection, at most as many as the decode queue has room for in
-   *  one round, so they go out in one tick and their ranges can still merge. */
-  private _drainDeferredLoads(): void {
-    let room = this._workerPool.concurrency - this._workerPool.backlog;
-    while (room > 0 && this._deferredLoads.length > 0) {
-      const key = this._deferredLoads.shift()!;
-      if (!this._wantedKeys.has(key) || this._nodeCache.peek(key) || this._pendingKeys.has(key)) continue;
-      void this._loadNode(key);
-      room--;
-    }
-  }
-
   /** Kicks off a hierarchy page load for every page the current selection
    *  pass needed but that isn't already loading. */
   private _dispatchPageLoads(neededPages: Set<string>): void {
     for (const key of neededPages) {
       if (!this._pager.isPending(key)) void this._pager.loadPage(key);
-    }
-  }
-
-  /** A load still in flight for a key the camera has since moved past is
-   *  decoding data nobody will show; cancel it so its worker slot frees up
-   *  for the current selection instead (#86). `newPrefetchKeys` is included
-   *  so a pending prefetch load isn't cancelled just for being outside the
-   *  actual frustum — that's exactly what makes it a prefetch candidate. */
-  private _cancelStaleLoads(newSelectedKeys: Set<string>, newPrefetchKeys: Set<string>): void {
-    for (const key of this._pendingKeys) {
-      if (!newSelectedKeys.has(key) && !newPrefetchKeys.has(key)) this._cancels.get(key)?.();
     }
   }
 
@@ -549,87 +468,6 @@ export class CopcDataSource {
       const node = this._nodeCache.peek(candidate);
       return !!node && node.primitive.show;
     });
-  }
-
-  private async _loadNode(key: string, decodePriority = 0): Promise<void> {
-    this._pendingKeys.add(key);
-    try {
-      // selectNodes() only ever returns keys it found present in the pager's nodes.
-      const node = this._pager.nodes[key]!;
-
-      // Queued alongside every other node this same _updateLoD() pass just
-      // selected — RangeFetcher merges same-tick requests for adjacent byte
-      // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._rangeFetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
-      this._cancels.set(key, rangeTask.cancel);
-      const fetchStart = performance.now();
-      const compressedBytes = await rangeTask;
-      this._stages.record('fetch', fetchStart);
-      if (this._destroyed) return;
-
-      const payload: NodeConversionPayload = {
-        compressedBytes,
-        copc: { header: this._copc.header, eb: this._copc.eb },
-        node,
-        proj: this._options.proj,
-        projDef: this._options.projDef,
-        geoidOffset: this._options.geoidOffset,
-        zFactor: this._options.zFactor,
-        zMin: this._copc.header.min[2],
-        zMax: this._copc.header.max[2],
-      };
-      const transfer = [compressedBytes.buffer];
-      // Priority only under decodeBackpressure; otherwise the call is the
-      // plain one, so an injected pool sees exactly what it always has.
-      const task =
-        decodePriority === 0
-          ? this._workerPool.run<NodeRenderData>(payload, transfer)
-          : this._workerPool.run<NodeRenderData>(payload, transfer, undefined, decodePriority);
-      this._cancels.set(key, task.cancel);
-      const decodeStart = performance.now();
-      const renderData = await task;
-      this._stages.record('decode', decodeStart);
-      if (this._destroyed) return;
-
-      const boundingSphere = this._getSphere(key);
-      this._styleCtl.growAutoIntensityRange(renderData.maxIntensity);
-      // Timed from inside the primitive rather than around this call: the GPU
-      // work happens on the first frame the node is drawn, because that is
-      // when `frameState.context` exists. Wrapping the constructor measured
-      // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._styleCtl.style, (start, end) => {
-        if (!this._destroyed) this._stages.record('upload', start, end);
-      });
-      if (this._destroyed) {
-        primitive.destroy();
-        return;
-      }
-      // The selection may have moved on while this node was decoding; only
-      // show it if it's still wanted, but keep it cached either way.
-      primitive.show = this._selectedKeys.has(key);
-      this._viewer.scene.primitives.add(primitive);
-      this._nodeCache.set(key, { key, primitive, pointCount: renderData.pointCount });
-      // Required under `requestRenderMode: true` for the new primitive to actually
-      // appear; harmless (no-op) under continuous rendering otherwise.
-      this._viewer.scene.requestRender();
-    } catch (err) {
-      if (this._destroyed) return;
-      // Cancelled because the selection moved on (see the deselect loop in
-      // _updateLoD) — expected, not a failure worth logging.
-      if ((err as Error).name === 'AbortError') return;
-      console.error(`[CopcDataSource] Failed to load node "${key}":`, err);
-    } finally {
-      this._pendingKeys.delete(key);
-      this._cancels.delete(key);
-      if (!this._destroyed) {
-        // A finished (or abandoned) node is room in the decode queue.
-        if (this._options.decodeBackpressure) this._drainDeferredLoads();
-        // It may also have been the last thing holding prefetch back.
-        if (this._options.decodeBackpressure || (this._options.prefetchIdleOnly && this._wantedKeys.has(key))) {
-          this._dispatchPrefetch();
-        }
-      }
-    }
   }
 
   private _destroyLoadedNode(node: LoadedNode): void {
@@ -810,8 +648,8 @@ export class CopcDataSource {
       fileBytes: this._counter.fileBytes,
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
-      pendingNodes: this._pendingKeys.size,
-      decodeQueue: { ...this._workerPool.timing, deferredLoads: this._deferredLoads.length },
+      pendingNodes: this._scheduler.pendingCount,
+      decodeQueue: { ...this._workerPool.timing, deferredLoads: this._scheduler.deferredCount },
       cache: {
         nodes: this._nodeCache.size,
         estimatedBytes: this._nodeCache.estimatedBytes,
