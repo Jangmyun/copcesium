@@ -59,12 +59,6 @@ export function lonLatAltToEcefInto(lonDeg: number, latDeg: number, altM: number
   out[2] = (n * (1 - WGS84_E2) + altM) * sinLat;
 }
 
-export function lonLatAltToEcef(lonDeg: number, latDeg: number, altM: number): [number, number, number] {
-  const out = new Float64Array(3);
-  lonLatAltToEcefInto(lonDeg, latDeg, altM, out);
-  return [out[0]!, out[1]!, out[2]!];
-}
-
 const FLAT_COLOR: [number, number, number] = [200, 200, 200];
 
 function clamp255(v: number): number {

@@ -13,12 +13,12 @@
  * how many are in flight at once, and retries retryable failures with
  * backoff. Only `loadNode`'s point-data fetches go through this class;
  * hierarchy page loads use their own getter and retry loop in
- * `CopcDataSource`, reusing this file's `isRetryable` to classify failures
+ * `hierarchyPager`, reusing `retryPolicy`'s `isRetryable` to classify failures
  * the same way.
  */
 import { NetworkEstimator, OverlapClock } from './NetworkEstimator';
 import { fetchPartial, httpStatusError } from './rangeRequest';
-import { backoffMs, MAX_ATTEMPTS, RETRY_BASE_MS } from './retryPolicy';
+import { backoffMs, isRetryable, MAX_NODE_ATTEMPTS, NODE_RETRY_BASE_MS } from './retryPolicy';
 import type { TransferCounter } from './TransferCounter';
 
 /**
@@ -78,20 +78,6 @@ function httpError(status: number, begin: number, end: number): Error {
     `RangeFetcher: server returned HTTP ${status} for bytes=${begin}-${end - 1} (expected 206 Partial Content)`,
     status,
   );
-}
-
-/** Exported so other callers hitting the same file over HTTP (e.g.
- *  `CopcDataSource`'s hierarchy page loads) can classify a settled 4xx the
- *  same way, instead of retrying an answer that will never change. */
-export function isRetryable(err: unknown): boolean {
-  // A cancelled request must never be retried — `cancel()`/`destroy()` raise
-  // this name precisely to say the result is no longer wanted.
-  if ((err as Error).name === 'AbortError') return false;
-  const status = (err as { status?: number }).status;
-  // No status means `fetch()` itself rejected (DNS failure, connection reset,
-  // TLS error) rather than the server answering — transient often enough to
-  // be worth another attempt.
-  return status === undefined || status >= 500;
 }
 
 /**
@@ -493,8 +479,8 @@ export class RangeFetcher {
         // shows two failures and two retries next to its one counted response.
         if (signal.aborted) this.counter?.recordAborted(begin, end, afterHeaders);
         else this.counter?.recordFailed(begin, end);
-        if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
-        await delay(backoffMs(RETRY_BASE_MS, attempt), signal);
+        if (attempt >= MAX_NODE_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
+        await delay(backoffMs(NODE_RETRY_BASE_MS, attempt), signal);
         // Cancelled while backing off — don't resurrect work nobody wants.
         if (signal.aborted) throw abortError('RangeFetcher: request cancelled while waiting to retry');
       }

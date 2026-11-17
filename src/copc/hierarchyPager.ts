@@ -16,12 +16,11 @@
 import { Copc } from 'copc';
 import type { Hierarchy } from 'copc';
 import { emptyInvalidNodes, maxNodeDepth, type CopcHierarchy } from './hierarchy';
-import { isRetryable } from './RangeFetcher';
-import { backoffMs, MAX_PAGE_LOAD_ATTEMPTS, PAGE_RETRY_BASE_MS } from './retryPolicy';
+import { backoffMs, isRetryable, MAX_PAGE_LOAD_ATTEMPTS, PAGE_RETRY_BASE_MS } from './retryPolicy';
 import { createCountingGetter } from './TransferCounter';
 
 // MAX_PAGE_LOAD_ATTEMPTS (from retryPolicy.ts) is the total attempts per
-// hierarchy sub-page before giving up, mirroring RangeFetcher's MAX_ATTEMPTS
+// hierarchy sub-page before giving up, mirroring RangeFetcher's MAX_NODE_ATTEMPTS
 // for node-level Range Requests (#117): a page that keeps failing needs a bound
 // so `onPageNeeded` doesn't refire the same request forever on every LoD pass.
 

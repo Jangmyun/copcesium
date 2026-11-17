@@ -35,7 +35,7 @@ import { StageTimer } from './util/StageTimer';
 import type { TransferCounter } from './copc/TransferCounter';
 import { resolveCrs } from './crs/resolveCrs';
 import { getCullingVolume, isInFrustum, type CameraPose, type ProjectToCartesian } from './lod/boundingVolume';
-import { CameraMotionTracker } from './lod/cameraMotion';
+import { CameraMotionTracker, MAX_PREFETCH_LOOKAHEAD_MS } from './lod/cameraMotion';
 import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
@@ -118,10 +118,6 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
 // during the move. 1.05–1.30 all eliminated the flicker in the issue's
 // measurements; 1.15 sits in the middle.
 const INCUMBENT_BONUS = 1.15;
-
-// Upper bound on `prefetchLookaheadMs`. Offline, damped extrapolation of a
-// recorded human camera path only beat holding the pose up to about 250 ms.
-const MAX_PREFETCH_LOOKAHEAD_MS = 250;
 
 // Bounds for `concurrency: 'auto'`. The top is today's fixed default, so
 // 'auto' never spends more cores than a desktop already gets. The bottom keeps

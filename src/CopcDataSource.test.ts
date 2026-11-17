@@ -66,13 +66,8 @@ const rangeFetcherFetch = vi.fn();
 const rangeFetcherDestroy = vi.fn();
 /** Constructor calls, so the concurrency cap it receives can be asserted on. */
 const rangeFetcherCtor = vi.fn();
-// `isRetryable` is kept real (via `importOriginal`) rather than mocked — it's
-// a pure function with no fetch dependency, and `_loadPage()`'s give-up tests
-// below rely on its actual status-based classification.
-vi.mock('./copc/RangeFetcher', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./copc/RangeFetcher')>();
+vi.mock('./copc/RangeFetcher', () => {
   return {
-    ...actual,
     RangeFetcher: vi.fn().mockImplementation(function (...args: unknown[]) {
       rangeFetcherCtor(...args);
       return {
@@ -102,7 +97,6 @@ const isInFrustumMock = vi.fn<(...args: unknown[]) => boolean>(() => true);
 vi.mock('./lod/boundingVolume', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./lod/boundingVolume')>();
   return {
-    ...actual,
     getCullingVolume: vi.fn(() => ({})),
     isInFrustum: (...args: unknown[]) => isInFrustumMock(...args),
   };

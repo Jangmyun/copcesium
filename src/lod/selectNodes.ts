@@ -282,7 +282,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   heap.push({ key: '0-0-0-0', d: 0, x: 0, y: 0, z: 0, priority: Infinity });
 
   const expandChildren = (entry: HeapEntry): void => {
-    // Child order matches getChildKeys: x varies fastest, then y, then z.
+    // Child order: x varies fastest, then y, then z.
     const nd = entry.d + 1;
     const nx = entry.x * 2;
     const ny = entry.y * 2;

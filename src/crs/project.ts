@@ -17,7 +17,7 @@ import type { ProjectToCartesian } from '../lod/boundingVolume';
  * This runs on the main thread, where (unlike inside the point-conversion
  * Worker) Cesium is available, so ellipsoid conversion is delegated to
  * `Cesium.Cartesian3.fromDegrees` instead of re-deriving the WGS84 math done
- * in `worker/worker.ts`'s `lonLatAltToEcef`.
+ * in `worker/worker.ts`'s `lonLatAltToEcefInto`.
  */
 export function createProjector(
   converter: Converter | null,
