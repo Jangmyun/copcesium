@@ -17,7 +17,7 @@
  */
 import * as Cesium from 'cesium';
 import proj4 from 'proj4';
-import { Copc, type Hierarchy } from 'copc';
+import type { Copc } from 'copc';
 import type {
   ClipMode,
   ColorMode,
@@ -29,16 +29,12 @@ import type {
   PointSizeMode,
   StageTiming,
 } from './types';
-import { emptyInvalidNodes, loadCopcHierarchy, maxNodeDepth } from './copc/hierarchy';
+import { loadCopcHierarchy } from './copc/hierarchy';
+import { HierarchyPager } from './copc/hierarchyPager';
 import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
-import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
-import {
-  backoffMs,
-  MAX_PAGE_LOAD_ATTEMPTS,
-  PAGE_RETRY_BASE_MS,
-} from './copc/retryPolicy';
+import { RangeFetcher } from './copc/RangeFetcher';
 import { percentile, pushSample } from './util/rollingSamples';
-import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
+import type { TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
@@ -113,25 +109,6 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   clipMode: 'inside',
 };
 
-// MAX_PAGE_LOAD_ATTEMPTS (from retryPolicy.ts) is the total attempts per
-// hierarchy sub-page before giving up, mirroring RangeFetcher's MAX_ATTEMPTS
-// for node-level Range Requests (#117): a page that keeps failing needs a bound
-// so `onPageNeeded` doesn't refire the same request forever on every LoD pass.
-
-// Retries here aren't paced by a timer of their own — a page is re-requested
-// whenever the next LoD pass rediscovers it, which is as often as every
-// `debounceMs` (100ms by default) while the camera moves, and immediately on
-// `moveEnd`. Without a delay of its own, all three attempts can burn inside a
-// few hundred milliseconds, so a one-second network blip would exhaust the
-// budget and drop the subtree for good. These spread the attempts the way
-// RangeFetcher's backoff does, but longer: a give-up here is permanent for the
-// session, whereas a failed node load is simply re-requested by the next pass.
-// (PAGE_RETRY_BASE_MS lives in retryPolicy.ts.)
-// Failures far enough apart are unrelated incidents, not one page going bad:
-// without this, three isolated blips across a long session would still add up
-// to a permanent give-up.
-const PAGE_FAILURE_RESET_MS = 60_000;
-
 // Heap-priority multiplier `selectNodes` gives nodes already on screen while
 // the camera moves, so nodes straddling a budget cut stop trading places on
 // every pass (#192). Released on `moveEnd`, so the settled selection is exact:
@@ -183,23 +160,8 @@ export class CopcDataSource {
   private readonly _url: string;
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
-  private readonly _nodes: Hierarchy.Node.Map;
-  /** Tracked incrementally as nodes are merged in, rather than recomputed with
-   *  `Math.max(...keys)` on every read — that spread blows the call stack once
-   *  a multi-page hierarchy's node count passes ~124k (#126). */
-  private _maxDepth: number;
-  /** Sub-page entry points not yet merged into `_nodes`; shrinks as pages load. */
-  private readonly _pages: Hierarchy.Page.Map;
-  private readonly _pendingPages = new Set<string>();
-  /** Failed attempts per hierarchy page key, with the timestamp of the last one
-   *  so retries can be spaced out and stale counts discarded; cleared once a
-   *  page loads. */
-  private readonly _pageFailures = new Map<string, { count: number; at: number }>();
+  private readonly _pager: HierarchyPager;
   private readonly _counter: TransferCounter;
-  /** Shared status-checked, counting Getter for hierarchy sub-pages. Retry
-   *  policy stays with `_loadPage()`, which already owns the attempt count and
-   *  backoff — this getter makes exactly one attempt (#139). */
-  private readonly _pageGetter: (begin: number, end: number) => Promise<Uint8Array>;
   /** Bounded rolling samples per pipeline stage; see `stats`. */
   private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
   /** Monotonic completion counts. Kept apart from `_stageSamples` because that
@@ -251,9 +213,6 @@ export class CopcDataSource {
     this._url = url;
     this._viewer = viewer;
     this._copc = hierarchy.copc;
-    this._nodes = hierarchy.nodes;
-    this._maxDepth = hierarchy.maxDepth;
-    this._pages = hierarchy.pages;
     this._rootCenter = hierarchy.rootCenter;
     this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
@@ -265,7 +224,12 @@ export class CopcDataSource {
       options.maxCacheBytes,
     );
     this._counter = hierarchy.counter;
-    this._pageGetter = createCountingGetter(url, this._counter);
+    this._pager = new HierarchyPager(
+      url,
+      hierarchy,
+      () => this._destroyed,
+      () => void this._updateLoD(),
+    );
     this._rangeFetcher = new RangeFetcher(
       url,
       undefined,
@@ -504,8 +468,8 @@ export class CopcDataSource {
       const newPrefetchKeys = new Set<string>();
       const newSelectedKeys = new Set(
         selectNodes({
-          nodes: this._nodes,
-          pages: this._pages,
+          nodes: this._pager.nodes,
+          pages: this._pager.pages,
           onPageNeeded: (key) => neededPages.add(key),
           getSphere: (key) => this._getSphere(key),
           camera: this._viewer.scene.camera,
@@ -671,7 +635,7 @@ export class CopcDataSource {
    *  pass needed but that isn't already loading. */
   private _dispatchPageLoads(neededPages: Set<string>): void {
     for (const key of neededPages) {
-      if (!this._pendingPages.has(key)) void this._loadPage(key);
+      if (!this._pager.isPending(key)) void this._pager.loadPage(key);
     }
   }
 
@@ -710,8 +674,8 @@ export class CopcDataSource {
   private async _loadNode(key: string, decodePriority = 0): Promise<void> {
     this._pendingKeys.add(key);
     try {
-      // selectNodes() only ever returns keys it found present in this._nodes.
-      const node = this._nodes[key]!;
+      // selectNodes() only ever returns keys it found present in the pager's nodes.
+      const node = this._pager.nodes[key]!;
 
       // Queued alongside every other node this same _updateLoD() pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
@@ -785,61 +749,6 @@ export class CopcDataSource {
           this._dispatchPrefetch();
         }
       }
-    }
-  }
-
-  /** Loads a hierarchy sub-page, merges its nodes/pages into the live maps,
-   *  and re-runs LoD selection so the newly revealed depth can be picked up. */
-  private async _loadPage(key: string): Promise<void> {
-    const page = this._pages[key];
-    if (!page) return;
-    const failure = this._pageFailures.get(key);
-    // Still inside this attempt's backoff — skip the pass rather than spend an
-    // attempt on it. The next LoD pass to rediscover the page picks it up once
-    // the delay has elapsed.
-    if (failure && performance.now() - failure.at < backoffMs(PAGE_RETRY_BASE_MS, failure.count)) {
-      return;
-    }
-    this._pendingPages.add(key);
-    try {
-      const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
-      if (this._destroyed) return;
-      emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
-      Object.assign(this._nodes, nodes);
-      this._maxDepth = maxNodeDepth(nodes, this._maxDepth);
-      delete this._pages[key];
-      Object.assign(this._pages, pages);
-      this._pageFailures.delete(key);
-      void this._updateLoD();
-    } catch (err) {
-      const now = performance.now();
-      const recent = failure && now - failure.at < PAGE_FAILURE_RESET_MS;
-      const attempts = recent ? failure.count + 1 : 1;
-      this._pageFailures.set(key, { count: attempts, at: now });
-      // A settled 4xx (e.g. 404 on a removed page, 416 on a bad range) never
-      // succeeds on retry, so it gives up on the first attempt instead of
-      // burning MAX_PAGE_LOAD_ATTEMPTS and their backoff delays (#139).
-      if (attempts >= MAX_PAGE_LOAD_ATTEMPTS || !isRetryable(err)) {
-        // Give up: drop the entry point so `onPageNeeded` never fires for it
-        // again, and log an error once here rather than on every attempt so a
-        // transient outage doesn't scroll the console.
-        delete this._pages[key];
-        this._pageFailures.delete(key);
-        console.error(
-          `[CopcDataSource] Giving up on hierarchy page "${key}" after ${attempts} attempt${attempts === 1 ? '' : 's'}:`,
-          err,
-        );
-      } else {
-        // Not silent before the cap: a page that eventually loads leaves no
-        // error behind, so without this the failures that a field report would
-        // need to explain a stall would be invisible.
-        console.warn(
-          `[CopcDataSource] Hierarchy page "${key}" failed (attempt ${attempts}/${MAX_PAGE_LOAD_ATTEMPTS}), will retry:`,
-          err,
-        );
-      }
-    } finally {
-      this._pendingPages.delete(key);
     }
   }
 
@@ -997,15 +906,15 @@ export class CopcDataSource {
   }
 
   /** Deepest octree level present in the loaded hierarchy so far — grows as
-   *  sub-pages load, and is tracked incrementally in `_loadPage()` rather than
-   *  recomputed on every read (see `_maxDepth`). */
+   *  sub-pages load, and is tracked incrementally by the pager rather than
+   *  recomputed on every read. */
   get maxDepth(): number {
-    return this._maxDepth;
+    return this._pager.maxDepth;
   }
 
   /** Total number of nodes in the loaded hierarchy (loaded or not). */
   get nodeCount(): number {
-    return Object.keys(this._nodes).length;
+    return Object.keys(this._pager.nodes).length;
   }
 
   /** Records one stage's elapsed time, and emits a `performance.measure` so
