@@ -32,6 +32,11 @@ import type {
 import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
 import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
+import {
+  backoffMs,
+  MAX_PAGE_LOAD_ATTEMPTS,
+  PAGE_RETRY_BASE_MS,
+} from './copc/retryPolicy';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
@@ -180,11 +185,10 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   clipMode: 'inside',
 };
 
-// Total attempts per hierarchy sub-page before giving up, mirroring
-// RangeFetcher's MAX_ATTEMPTS for node-level Range Requests (#117): a page
-// that keeps failing needs a bound so `onPageNeeded` doesn't refire the same
-// request forever on every LoD pass.
-const MAX_PAGE_LOAD_ATTEMPTS = 3;
+// MAX_PAGE_LOAD_ATTEMPTS (from retryPolicy.ts) is the total attempts per
+// hierarchy sub-page before giving up, mirroring RangeFetcher's MAX_ATTEMPTS
+// for node-level Range Requests (#117): a page that keeps failing needs a bound
+// so `onPageNeeded` doesn't refire the same request forever on every LoD pass.
 
 // Retries here aren't paced by a timer of their own — a page is re-requested
 // whenever the next LoD pass rediscovers it, which is as often as every
@@ -194,7 +198,7 @@ const MAX_PAGE_LOAD_ATTEMPTS = 3;
 // budget and drop the subtree for good. These spread the attempts the way
 // RangeFetcher's backoff does, but longer: a give-up here is permanent for the
 // session, whereas a failed node load is simply re-requested by the next pass.
-const PAGE_RETRY_BASE_MS = 1000;
+// (PAGE_RETRY_BASE_MS lives in retryPolicy.ts.)
 // Failures far enough apart are unrelated incidents, not one page going bad:
 // without this, three isolated blips across a long session would still add up
 // to a permanent give-up.
@@ -886,7 +890,7 @@ export class CopcDataSource {
     // Still inside this attempt's backoff — skip the pass rather than spend an
     // attempt on it. The next LoD pass to rediscover the page picks it up once
     // the delay has elapsed.
-    if (failure && performance.now() - failure.at < PAGE_RETRY_BASE_MS * 2 ** (failure.count - 1)) {
+    if (failure && performance.now() - failure.at < backoffMs(PAGE_RETRY_BASE_MS, failure.count)) {
       return;
     }
     this._pendingPages.add(key);
