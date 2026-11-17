@@ -46,22 +46,13 @@ import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
-import type { PointStyle } from './renderer/PointCloudPrimitive';
 import {
-  COLOR_MODE,
-  SIZE_MODE,
   MAX_PICKABLE_NODE_SLOTS,
   MAX_PICKABLE_POINT_INDEX,
-  buildClassMask,
   decodePickColor,
 } from './renderer/shaders';
 import { PickFramebuffer } from './renderer/PickFramebuffer';
-import {
-  createClipState,
-  setClipBoxes,
-  validateClipMode,
-  validateClipPlanes,
-} from './renderer/clipping';
+import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
 import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
@@ -106,36 +97,6 @@ interface CesiumSceneInternal {
 import CopcWorker from './worker/worker.ts?worker&inline';
 
 export type { ClipMode, ColorMode, CopcDataSourceOptions };
-
-/** Shared by the constructor and the live setter so an out-of-range or non-finite
- *  value can never slip in through either path. */
-function validateOpacity(value: number): number {
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
-    throw new RangeError(`opacity must be between 0 and 1, got ${value}`);
-  }
-  return value;
-}
-
-/** Shared by the constructor and the live setter; a zero/negative factor would
- *  make every attenuated point collapse to (or below) `minPixelSize`. */
-function validateAttenuationFactor(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new RangeError(`attenuationFactor must be a positive finite number, got ${value}`);
-  }
-  return value;
-}
-
-/** Shared by the constructor and both min/max live setters — checked together
- *  because either one alone can't tell whether the *pair* still makes sense
- *  (e.g. raising min past the current max). */
-function validateSizeBounds(min: number, max: number): void {
-  if (!Number.isFinite(min) || min < 0) {
-    throw new RangeError(`minPixelSize must be a non-negative finite number, got ${min}`);
-  }
-  if (!Number.isFinite(max) || max < min) {
-    throw new RangeError(`maxPixelSize must be a finite number >= minPixelSize (${min}), got ${max}`);
-  }
-}
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
@@ -287,9 +248,7 @@ export class CopcDataSource {
   private readonly _rootHalfSize: number;
   private readonly _options: ResolvedOptions;
   private readonly _project: ProjectToCartesian;
-  private readonly _style: PointStyle;
-  /** True while `intensityRange` is unpinned and grows with each node loaded. */
-  private _autoIntensityRange: boolean;
+  private readonly _styleCtl: StyleController;
   private readonly _nodeCache: NodeCache;
   private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
@@ -337,21 +296,7 @@ export class CopcDataSource {
     this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
     this._project = project;
-    validateSizeBounds(options.minPixelSize, options.maxPixelSize);
-    this._style = {
-      pixelSize: options.pixelSize,
-      sizeMode: SIZE_MODE[options.pointSizeMode],
-      attenuationFactor: validateAttenuationFactor(options.attenuationFactor),
-      minPixelSize: options.minPixelSize,
-      maxPixelSize: options.maxPixelSize,
-      colorMode: COLOR_MODE[options.colorMode],
-      intensityRange: new Cesium.Cartesian2(options.intensityRange?.[0] ?? 0, options.intensityRange?.[1] ?? 1),
-      classMask: buildClassMask(options.classificationFilter),
-      heightOffset: 0,
-      opacity: validateOpacity(options.opacity),
-      clip: createClipState(options.clipPlanes, options.clipBoxes, options.clipMode),
-    };
-    this._autoIntensityRange = options.intensityRange === undefined;
+    this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
       (_key, node) => this._destroyLoadedNode(node),
@@ -841,12 +786,12 @@ export class CopcDataSource {
       if (this._destroyed) return;
 
       const boundingSphere = this._getSphere(key);
-      this._growAutoIntensityRange(renderData.maxIntensity);
+      this._styleCtl.growAutoIntensityRange(renderData.maxIntensity);
       // Timed from inside the primitive rather than around this call: the GPU
       // work happens on the first frame the node is drawn, because that is
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style, (start, end) => {
+      const primitive = await createNodePrimitive(renderData, boundingSphere, this._styleCtl.style, (start, end) => {
         if (!this._destroyed) this._recordStage('upload', start, end);
       });
       if (this._destroyed) {
@@ -941,30 +886,20 @@ export class CopcDataSource {
     this._viewer.scene.requestRender();
   }
 
-  /** Widens the auto intensity range as nodes arrive; a no-op once pinned. */
-  private _growAutoIntensityRange(maxIntensity: number): void {
-    if (!this._autoIntensityRange) return;
-    if (maxIntensity <= this._style.intensityRange.y) return;
-    this._style.intensityRange.y = maxIntensity;
-  }
-
   /** Point size in pixels, shared live by every loaded primitive (no reload needed). */
   get pixelSize(): number {
-    return this._style.pixelSize;
+    return this._styleCtl.pixelSize;
   }
   set pixelSize(value: number) {
-    this._style.pixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.pixelSize = value;
   }
 
   /** How `gl_PointSize` is computed. Shared live by every loaded primitive (no reload needed). */
   get pointSizeMode(): PointSizeMode {
-    return this._options.pointSizeMode;
+    return this._styleCtl.pointSizeMode;
   }
   set pointSizeMode(value: PointSizeMode) {
-    this._options.pointSizeMode = value;
-    this._style.sizeMode = SIZE_MODE[value];
-    this._viewer.scene.requestRender();
+    this._styleCtl.pointSizeMode = value;
   }
 
   /**
@@ -973,31 +908,26 @@ export class CopcDataSource {
    * by every loaded primitive (no reload needed).
    */
   get attenuationFactor(): number {
-    return this._style.attenuationFactor;
+    return this._styleCtl.attenuationFactor;
   }
   set attenuationFactor(value: number) {
-    this._style.attenuationFactor = validateAttenuationFactor(value);
-    this._viewer.scene.requestRender();
+    this._styleCtl.attenuationFactor = value;
   }
 
   /** Lower clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
   get minPixelSize(): number {
-    return this._style.minPixelSize;
+    return this._styleCtl.minPixelSize;
   }
   set minPixelSize(value: number) {
-    validateSizeBounds(value, this._style.maxPixelSize);
-    this._style.minPixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.minPixelSize = value;
   }
 
   /** Upper clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
   get maxPixelSize(): number {
-    return this._style.maxPixelSize;
+    return this._styleCtl.maxPixelSize;
   }
   set maxPixelSize(value: number) {
-    validateSizeBounds(this._style.minPixelSize, value);
-    this._style.maxPixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.maxPixelSize = value;
   }
 
   /**
@@ -1007,11 +937,10 @@ export class CopcDataSource {
    * blend out of order.
    */
   get opacity(): number {
-    return this._style.opacity;
+    return this._styleCtl.opacity;
   }
   set opacity(value: number) {
-    this._style.opacity = validateOpacity(value);
-    this._viewer.scene.requestRender();
+    this._styleCtl.opacity = value;
   }
 
   /**
@@ -1020,12 +949,10 @@ export class CopcDataSource {
    * and the node cache is untouched.
    */
   get colorMode(): ColorMode {
-    return this._options.colorMode;
+    return this._styleCtl.colorMode;
   }
   set colorMode(value: ColorMode) {
-    this._options.colorMode = value;
-    this._style.colorMode = COLOR_MODE[value];
-    this._viewer.scene.requestRender();
+    this._styleCtl.colorMode = value;
   }
 
   /**
@@ -1034,15 +961,10 @@ export class CopcDataSource {
    * — this hides points, it doesn't reclaim anything.
    */
   get classificationFilter(): number[] | undefined {
-    return this._options.classificationFilter;
+    return this._styleCtl.classificationFilter;
   }
   set classificationFilter(value: number[] | undefined) {
-    // Built before either field is assigned, so an out-of-range code throws
-    // without leaving the filter half-applied.
-    const mask = buildClassMask(value);
-    this._options.classificationFilter = value;
-    this._style.classMask = mask;
-    this._viewer.scene.requestRender();
+    this._styleCtl.classificationFilter = value;
   }
 
   /**
@@ -1051,14 +973,10 @@ export class CopcDataSource {
    * the nodes loaded from then on rather than the ones already resident.
    */
   get intensityRange(): [number, number] {
-    return [this._style.intensityRange.x, this._style.intensityRange.y];
+    return this._styleCtl.intensityRange;
   }
   set intensityRange(value: [number, number] | undefined) {
-    this._autoIntensityRange = value === undefined;
-    this._options.intensityRange = value;
-    this._style.intensityRange.x = value?.[0] ?? 0;
-    this._style.intensityRange.y = value?.[1] ?? 1;
-    this._viewer.scene.requestRender();
+    this._styleCtl.intensityRange = value;
   }
 
   /**
@@ -1068,11 +986,10 @@ export class CopcDataSource {
    * needed) — moves the model matrix, not the geometry.
    */
   get heightOffset(): number {
-    return this._style.heightOffset;
+    return this._styleCtl.heightOffset;
   }
   set heightOffset(value: number) {
-    this._style.heightOffset = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.heightOffset = value;
   }
 
   /**
@@ -1082,11 +999,10 @@ export class CopcDataSource {
    * effect until they're assigned again.
    */
   get clipPlanes(): Cesium.Plane[] {
-    return this._style.clip.planes.map((plane) => Cesium.Plane.clone(plane));
+    return this._styleCtl.clipPlanes;
   }
   set clipPlanes(value: Cesium.Plane[] | undefined) {
-    this._style.clip.planes = validateClipPlanes(value);
-    this._clipChanged();
+    this._styleCtl.clipPlanes = value;
   }
 
   /**
@@ -1095,27 +1011,18 @@ export class CopcDataSource {
    * `[]` to clear. Copied on assignment, like `clipPlanes`.
    */
   get clipBoxes(): Cesium.Matrix4[] {
-    return this._style.clip.boxes.map((box) => Cesium.Matrix4.clone(box));
+    return this._styleCtl.clipBoxes;
   }
   set clipBoxes(value: Cesium.Matrix4[] | undefined) {
-    setClipBoxes(this._style.clip, value);
-    this._clipChanged();
+    this._styleCtl.clipBoxes = value;
   }
 
   /** Which side of the clip regions is drawn. */
   get clipMode(): ClipMode {
-    return this._options.clipMode;
+    return this._styleCtl.clipMode;
   }
   set clipMode(value: ClipMode) {
-    const mode = validateClipMode(value);
-    this._options.clipMode = value;
-    this._style.clip.mode = mode;
-    this._clipChanged();
-  }
-
-  private _clipChanged(): void {
-    this._style.clip.version++;
-    this._viewer.scene.requestRender();
+    this._styleCtl.clipMode = value;
   }
 
   /** Screen-space error threshold (pixels) that triggers node subdivision. */
@@ -1344,7 +1251,7 @@ export class CopcDataSource {
     }
     const camPos = scene.camera.positionWC;
     const camDir = scene.camera.directionWC;
-    const extra = Math.abs(this._style.heightOffset);
+    const extra = Math.abs(this._styleCtl.heightOffset);
     const toCenter = new Cesium.Cartesian3();
     let near = Infinity;
     let far = -Infinity;
