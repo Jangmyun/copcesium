@@ -18,8 +18,15 @@ import type * as Cesium from 'cesium';
 
 const FRUSTUM_FIELDS = ['fov', 'fovy', 'aspectRatio', 'near', 'far', 'width', 'xOffset', 'yOffset'] as const;
 
-export function viewSignature(camera: Cesium.Camera, viewportWidth: number, viewportHeight: number): number[] {
-  const out: number[] = [viewportWidth, viewportHeight];
+/** Fills `out` in place when given, so a per-pass caller can reuse one buffer. */
+export function viewSignature(
+  camera: Cesium.Camera,
+  viewportWidth: number,
+  viewportHeight: number,
+  out: number[] = [],
+): number[] {
+  out.length = 0;
+  out.push(viewportWidth, viewportHeight);
   for (const v of [camera.positionWC, camera.directionWC, camera.upWC] as (Cesium.Cartesian3 | undefined)[]) {
     out.push(v?.x ?? NaN, v?.y ?? NaN, v?.z ?? NaN);
   }

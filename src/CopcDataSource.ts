@@ -169,6 +169,9 @@ export class CopcDataSource {
   private _lodDirty = true;
   /** The view the last pass ran against; compared on each throttled tick. */
   private _lastViewSignature: number[] = [];
+  /** Buffer the next signature is written into; swapped with `_lastViewSignature`
+   *  after a pass, so the two are never the same array. */
+  private _viewSignatureScratch: number[] = [];
   /** Set when the last pass left work that only a later pass completes: a page
    *  still wanted (its retry rides on rediscovery) or a deselected node held
    *  visible until its replacement is ready. */
@@ -240,7 +243,7 @@ export class CopcDataSource {
       nodeCache: this._nodeCache,
       stages: this._stages,
       style: this._styleCtl,
-      getSphere: (key) => this._getSphere(key),
+      getSphere: this._getSphere,
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
       onSettled: () => {
@@ -326,9 +329,9 @@ export class CopcDataSource {
     });
   }
 
-  private _getSphere(key: string): Cesium.BoundingSphere {
-    return this._spheres.get(key);
-  }
+  /** One stable function, so the per-pass `selectNodes`/`orderForLoading`
+   *  options reuse it instead of allocating a closure each time. */
+  private readonly _getSphere = (key: string): Cesium.BoundingSphere => this._spheres.get(key);
 
   /** The sphere cache's backing map; read by tests that check eviction. */
   private get _sphereCache(): ReadonlyMap<string, Cesium.BoundingSphere> {
@@ -360,7 +363,12 @@ export class CopcDataSource {
 
   private _currentViewSignature(): number[] {
     const canvas = this._viewer.scene.canvas;
-    return viewSignature(this._viewer.scene.camera, canvas.clientWidth, canvas.clientHeight);
+    return viewSignature(
+      this._viewer.scene.camera,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      this._viewSignatureScratch,
+    );
   }
 
   /** Samples the camera each frame while it moves, for the predicted pose. A
@@ -442,7 +450,9 @@ export class CopcDataSource {
     this._isUpdating = true;
     // Cleared before selecting so a load settling mid-pass re-arms it.
     this._lodDirty = false;
+    const previousSignature = this._lastViewSignature;
     this._lastViewSignature = this._currentViewSignature();
+    this._viewSignatureScratch = previousSignature;
     try {
       const neededPages = new Set<string>();
       const newPrefetchKeys = new Set<string>();
@@ -451,7 +461,7 @@ export class CopcDataSource {
           nodes: this._pager.nodes,
           pages: this._pager.pages,
           onPageNeeded: (key) => neededPages.add(key),
-          getSphere: (key) => this._getSphere(key),
+          getSphere: this._getSphere,
           camera: this._viewer.scene.camera,
           viewportHeight: this._viewer.scene.canvas.clientHeight,
           sseThreshold: this._options.sseThreshold,
@@ -491,11 +501,7 @@ export class CopcDataSource {
       }
       // Ordered before the backpressure check, so deferred loads resume in
       // the same shallowest-first, centre-first order.
-      for (const key of orderForLoading(
-        toLoad,
-        (k) => this._getSphere(k),
-        this._viewer.scene.camera,
-      )) {
+      for (const key of orderForLoading(toLoad, this._getSphere, this._viewer.scene.camera)) {
         if (this._options.decodeBackpressure && this._scheduler.decodeBound()) {
           deferred.push(key);
           continue;
@@ -807,7 +813,7 @@ export class CopcDataSource {
         scene: this._viewer.scene,
         selectedKeys: this._selectedKeys,
         peekNode: (key) => this._nodeCache.peek(key),
-        getSphere: (key) => this._getSphere(key),
+        getSphere: this._getSphere,
         heightOffset: this._styleCtl.heightOffset,
       },
       windowPosition,
