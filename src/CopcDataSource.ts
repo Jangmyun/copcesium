@@ -57,7 +57,7 @@ export type { ClipMode, ColorMode, CopcDataSourceOptions };
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
- * `intensityRange`, `maxCacheBytes`, and `maxConcurrentRequests` stay optional
+ * `intensityRange`, `maxCacheBytes`, and `maxConcurrentRequests`, and `maxGpuInitsPerFrame` stay optional
  * because their unset state is meaningful — "no filter", "auto-range as nodes
  * arrive", "no byte-based cache limit", and "follow the worker pool's size"
  * aren't expressible as a fixed value. The last one in particular has no
@@ -69,6 +69,7 @@ type OpenEndedOption =
   | 'intensityRange'
   | 'maxCacheBytes'
   | 'maxConcurrentRequests'
+  | 'maxGpuInitsPerFrame'
   | 'clipPlanes'
   | 'clipBoxes';
 
@@ -91,6 +92,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   prefetchIdleOnly: false,
   decodeBackpressure: false,
   strictCacheBudget: false,
+  preUploadHidden: false,
   pixelSize: 2,
   pointSizeMode: 'fixed',
   attenuationFactor: 100,
@@ -129,7 +131,8 @@ export function resolveWorkerCount(
   hardwareConcurrency: number | undefined = globalThis.navigator?.hardwareConcurrency,
 ): number {
   if (concurrency !== 'auto') return concurrency;
-  const cores = hardwareConcurrency && hardwareConcurrency > 0 ? hardwareConcurrency : ASSUMED_CORES;
+  const cores =
+    hardwareConcurrency && hardwareConcurrency > 0 ? hardwareConcurrency : ASSUMED_CORES;
   return Math.min(AUTO_WORKERS_MAX, Math.max(AUTO_WORKERS_MIN, cores - 1));
 }
 
@@ -172,7 +175,12 @@ export class CopcDataSource {
     this._viewer = viewer;
     this._copc = hierarchy.copc;
     this._options = options;
-    this._spheres = new SphereCache(hierarchy.rootCenter, hierarchy.rootHalfSize, project, options.xyFactor);
+    this._spheres = new SphereCache(
+      hierarchy.rootCenter,
+      hierarchy.rootHalfSize,
+      project,
+      options.xyFactor,
+    );
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
@@ -232,16 +240,28 @@ export class CopcDataSource {
     // NaN would otherwise flow into every point's height and blank the cloud
     // with no error.
     if (!Number.isFinite(resolved.geoidOffset)) {
-      throw new Error(`[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`);
+      throw new Error(
+        `[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`,
+      );
     }
 
     const hierarchy = await loadCopcHierarchy(url);
 
     const project = resolveCrs(url, hierarchy.copc, options, resolved);
 
-    const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
+    const pool =
+      workerPool ??
+      new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
 
-    const dataSource = new CopcDataSource(url, viewer, hierarchy, resolved, project, pool, !workerPool);
+    const dataSource = new CopcDataSource(
+      url,
+      viewer,
+      hierarchy,
+      resolved,
+      project,
+      pool,
+      !workerPool,
+    );
 
     // Deferred until after the initial camera framing (if any) so the fly-to
     // doesn't spend a debounce cycle computing LoD for wherever the camera
@@ -255,8 +275,12 @@ export class CopcDataSource {
   }
 
   private _startListening(): void {
-    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
-    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
+    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() =>
+      this._onPreRender(),
+    );
+    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() =>
+      this._onMoveEnd(),
+    );
     this._removeMoveStartListener = this._viewer.scene.camera.moveStart.addEventListener(() => {
       this._cameraMoving = true;
     });
@@ -390,7 +414,11 @@ export class CopcDataSource {
       }
       // Ordered before the backpressure check, so deferred loads resume in
       // the same shallowest-first, centre-first order.
-      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
+      for (const key of orderForLoading(
+        toLoad,
+        (k) => this._getSphere(k),
+        this._viewer.scene.camera,
+      )) {
         if (this._options.decodeBackpressure && this._scheduler.decodeBound()) {
           deferred.push(key);
           continue;

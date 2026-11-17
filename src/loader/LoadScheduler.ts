@@ -24,6 +24,7 @@ import type { StyleController } from '../renderer/StyleController';
 import type { WorkerPool } from '../worker/WorkerPool';
 import type { NodeConversionPayload } from '../worker/messages';
 import { createNodePrimitive } from './loadNode';
+import { GpuInitBudget } from '../renderer/GpuInitBudget';
 
 // Below the default 0 visible nodes decode at, so under `decodeBackpressure`
 // a prefetched node never takes a worker ahead of one on screen.
@@ -33,9 +34,16 @@ const PREFETCH_DECODE_PRIORITY = -1;
 export type LoadSchedulerOptions = Required<
   Pick<
     CopcDataSourceOptions,
-    'decodeBackpressure' | 'prefetchIdleOnly' | 'proj' | 'projDef' | 'geoidOffset' | 'zFactor'
+    | 'decodeBackpressure'
+    | 'prefetchIdleOnly'
+    | 'preUploadHidden'
+    | 'proj'
+    | 'projDef'
+    | 'geoidOffset'
+    | 'zFactor'
   >
->;
+> &
+  Pick<CopcDataSourceOptions, 'maxGpuInitsPerFrame'>;
 
 export interface LoadSchedulerDeps {
   options: LoadSchedulerOptions;
@@ -65,6 +73,8 @@ export class LoadScheduler {
   private _deferredLoads: string[] = [];
 
   private readonly _o: LoadSchedulerOptions;
+  /** Shared per-frame upload cap; null when `maxGpuInitsPerFrame` is unset. */
+  private readonly _gpuBudget: GpuInitBudget | null;
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
   private readonly _nodes: Hierarchy.Node.Map;
@@ -79,6 +89,10 @@ export class LoadScheduler {
 
   constructor(deps: LoadSchedulerDeps) {
     this._o = deps.options;
+    this._gpuBudget =
+      deps.options.maxGpuInitsPerFrame === undefined
+        ? null
+        : new GpuInitBudget(Math.max(1, deps.options.maxGpuInitsPerFrame));
     this._viewer = deps.viewer;
     this._copc = deps.copc;
     this._nodes = deps.nodes;
@@ -176,7 +190,8 @@ export class LoadScheduler {
     let room = this._pool.concurrency - this._pool.backlog;
     while (room > 0 && this._deferredLoads.length > 0) {
       const key = this._deferredLoads.shift()!;
-      if (!this._wantedKeys.has(key) || this._cache.peek(key) || this._pendingKeys.has(key)) continue;
+      if (!this._wantedKeys.has(key) || this._cache.peek(key) || this._pendingKeys.has(key))
+        continue;
       void this.load(key);
       room--;
     }
@@ -202,7 +217,10 @@ export class LoadScheduler {
       // Queued alongside every other node this same LoD pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._fetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
+      const rangeTask = this._fetcher.fetch(
+        node.pointDataOffset,
+        node.pointDataOffset + node.pointDataLength,
+      );
       this._cancels.set(key, rangeTask.cancel);
       const fetchStart = performance.now();
       const compressedBytes = await rangeTask;
@@ -239,9 +257,15 @@ export class LoadScheduler {
       // work happens on the first frame the node is drawn, because that is
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style.style, (start, end) => {
-        if (!this._isDestroyed()) this._stages.record('upload', start, end);
-      });
+      const primitive = await createNodePrimitive(
+        renderData,
+        boundingSphere,
+        this._style.style,
+        (start, end) => {
+          if (!this._isDestroyed()) this._stages.record('upload', start, end);
+        },
+        { preUploadHidden: this._o.preUploadHidden, budget: this._gpuBudget ?? undefined },
+      );
       if (this._isDestroyed()) {
         primitive.destroy();
         return;

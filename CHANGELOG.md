@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in GPU upload options, both off by default: `preUploadHidden` uploads
+  a node's vertex buffers while it is still hidden (prefetched), and
+  `maxGpuInitsPerFrame` caps uploads per frame, with hidden pre-uploads
+  limited to one slot per frame so visible nodes keep priority.
+
 ### Changed
 
 - `adaptiveMergeGap` is now on by default. In controlled-network replays

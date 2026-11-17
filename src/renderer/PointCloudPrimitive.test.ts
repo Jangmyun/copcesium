@@ -29,7 +29,10 @@ vi.mock('cesium', async (importOriginal) => {
       return { destroy: vi.fn() };
     }),
     ShaderProgram: { fromCache: vi.fn(() => ({ destroy: vi.fn() })) },
-    DrawCommand: vi.fn(function (opts: { framebuffer?: unknown; uniformMap?: Record<string, () => unknown> }) {
+    DrawCommand: vi.fn(function (opts: {
+      framebuffer?: unknown;
+      uniformMap?: Record<string, () => unknown>;
+    }) {
       return {
         modelMatrix: actual.Matrix4.IDENTITY,
         pass: 0,
@@ -46,6 +49,7 @@ vi.mock('cesium', async (importOriginal) => {
 
 const { PointCloudPrimitive } = await import('./PointCloudPrimitive');
 const { createClipState } = await import('./clipping');
+const { GpuInitBudget } = await import('./GpuInitBudget');
 
 const renderData: NodeRenderData = {
   positions: new Float32Array([0, 0, 0]),
@@ -193,7 +197,9 @@ describe('PointCloudPrimitive.readPointAttributes', () => {
     const primitive = new PointCloudPrimitive(renderData, sphere, style);
     primitive.update(frame());
     expect(() => primitive.readPointAttributes(-1, fakeGpuContext())).toThrow(RangeError);
-    expect(() => primitive.readPointAttributes(renderData.pointCount, fakeGpuContext())).toThrow(RangeError);
+    expect(() => primitive.readPointAttributes(renderData.pointCount, fakeGpuContext())).toThrow(
+      RangeError,
+    );
   });
 
   it('throws if called before the node has reached the GPU', () => {
@@ -228,7 +234,7 @@ describe('PointCloudPrimitive.readPointAttributes', () => {
     expect(attrs.dataPosition.z).toBeCloseTo(3);
   });
 
-  it('restores the ARRAY_BUFFER binding it found, so Cesium\'s cached GL state stays accurate', () => {
+  it("restores the ARRAY_BUFFER binding it found, so Cesium's cached GL state stays accurate", () => {
     const primitive = new PointCloudPrimitive(renderData, sphere, style);
     primitive.update(frame());
     const context = fakeGpuContext();
@@ -304,5 +310,65 @@ describe('PointCloudPrimitive clipping uniforms', () => {
     expect(pickCmd.uniformMap.u_clipPlanes!()).toBe(uniforms().u_clipPlanes!());
     expect(pickCmd.uniformMap.u_clipBoxCount!()).toBe(0);
     expect(pickCmd.uniformMap.u_clipBoxes!()).toBe(uniforms().u_clipBoxes!());
+  });
+});
+
+describe('PointCloudPrimitive pre-upload and GPU init budget', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const f = (n: number) => ({ context: {}, commandList: [] as unknown[], frameNumber: n });
+
+  it('keeps a hidden primitive un-uploaded by default', () => {
+    const p = new PointCloudPrimitive(renderData, sphere, style);
+    p.show = false;
+    p.update(f(1));
+    expect(vertexArray).not.toHaveBeenCalled();
+  });
+
+  it('uploads a hidden primitive with preUploadHidden but draws nothing', () => {
+    const p = new PointCloudPrimitive(renderData, sphere, style, undefined, {
+      preUploadHidden: true,
+    });
+    p.show = false;
+    const fs = f(1);
+    p.update(fs);
+    p.update(f(2));
+    expect(vertexArray).toHaveBeenCalledTimes(1);
+    expect(fs.commandList).toHaveLength(0);
+    p.show = true;
+    const shown = f(3);
+    p.update(shown);
+    expect(vertexArray).toHaveBeenCalledTimes(1);
+    expect(shown.commandList).toHaveLength(1);
+  });
+
+  it('defers inits over the budget to the next frame', () => {
+    const budget = new GpuInitBudget(2);
+    const ps = [0, 1, 2].map(
+      () => new PointCloudPrimitive(renderData, sphere, style, undefined, { budget }),
+    );
+    const f1 = f(1);
+    ps.forEach((p) => p.update(f1));
+    expect(vertexArray).toHaveBeenCalledTimes(2);
+    expect(f1.commandList).toHaveLength(2);
+    ps.forEach((p) => p.update(f(2)));
+    expect(vertexArray).toHaveBeenCalledTimes(3);
+  });
+
+  it('lets hidden pre-uploads take at most one slot per frame', () => {
+    const budget = new GpuInitBudget(3);
+    const hidden = [0, 1].map(() => {
+      const p = new PointCloudPrimitive(renderData, sphere, style, undefined, {
+        preUploadHidden: true,
+        budget,
+      });
+      p.show = false;
+      return p;
+    });
+    const visible = new PointCloudPrimitive(renderData, sphere, style, undefined, { budget });
+    hidden.forEach((p) => p.update(f(1)));
+    visible.update(f(1));
+    expect(vertexArray).toHaveBeenCalledTimes(2);
+    hidden[1].update(f(2));
+    expect(vertexArray).toHaveBeenCalledTimes(3);
   });
 });

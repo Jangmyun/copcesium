@@ -10,6 +10,7 @@
 import type * as Cesium from 'cesium';
 import { PointCloudPrimitive, type PointStyle } from '../renderer/PointCloudPrimitive';
 import type { NodeRenderData } from '../types';
+import type { GpuInitBudget } from '../renderer/GpuInitBudget';
 
 /**
  * Turns a node's render-ready buffers into a GPU `PointCloudPrimitive`.
@@ -28,6 +29,7 @@ export async function createNodePrimitive(
   boundingSphere: Cesium.BoundingSphere,
   style: PointStyle,
   onGpuInit?: (startedAt: number, endedAt: number) => void,
+  gpu?: { preUploadHidden?: boolean; budget?: GpuInitBudget },
 ): Promise<PointCloudPrimitive> {
-  return new PointCloudPrimitive(renderData, boundingSphere, style, onGpuInit);
+  return new PointCloudPrimitive(renderData, boundingSphere, style, onGpuInit, gpu);
 }
