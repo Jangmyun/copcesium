@@ -199,7 +199,7 @@ export class LoadScheduler {
       // selectNodes() only ever returns keys it found present in the hierarchy nodes.
       const node = this._nodes[key]!;
 
-      // Queued alongside every other node this same the LoD pass() pass just
+      // Queued alongside every other node this same LoD pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
       const rangeTask = this._fetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
@@ -256,8 +256,8 @@ export class LoadScheduler {
       this._viewer.scene.requestRender();
     } catch (err) {
       if (this._isDestroyed()) return;
-      // Cancelled because the selection moved on (see the deselect loop in
-      // the LoD pass) — expected, not a failure worth logging.
+      // Cancelled because the selection moved on (see cancelStale()) — expected,
+      // not a failure worth logging.
       if ((err as Error).name === 'AbortError') return;
       console.error(`[CopcDataSource] Failed to load node "${key}":`, err);
     } finally {
