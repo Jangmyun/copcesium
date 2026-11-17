@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- `skipIdleLoD` option (default `false`). When on, the throttled LoD pass is
+  skipped while the camera, viewport, loads, hierarchy pages, cache and
+  options are unchanged since the last pass, so an idle scene under
+  continuous rendering stops re-running selection every `debounceMs`.
+
 ### Changed
 
 - `adaptiveMergeGap` is now on by default. In controlled-network replays

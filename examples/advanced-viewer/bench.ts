@@ -57,6 +57,7 @@ const TUNING_PARAMS = [
   'adaptiveMergeGap',
   'decodeBackpressure',
   'strictCacheBudget',
+  'skipIdleLoD',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {
