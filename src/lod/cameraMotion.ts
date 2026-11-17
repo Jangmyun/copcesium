@@ -51,6 +51,10 @@ export interface Pose {
 export type CvMode = 'cv' | 'damped' | 'capped' | 'rotDamped';
 export type Hypothesis = 'persistence' | 'blend' | CvMode;
 
+// Upper bound on `prefetchLookaheadMs`. Offline, damped extrapolation of a
+// recorded human camera path only beat holding the pose up to about 250 ms.
+export const MAX_PREFETCH_LOOKAHEAD_MS = 250;
+
 export interface CameraMotionOptions {
   /** EMA time constant for velocities, ms. Default 150. */
   tauMs?: number;

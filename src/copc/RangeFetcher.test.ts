@@ -751,7 +751,7 @@ describe('RangeFetcher', () => {
       // point: runAllTimersAsync() here would fast-forward through the
       // backoff regardless of whether cancellation actually short-circuits
       // it, so it can't tell a real fix from delay() still waiting out the
-      // full RETRY_BASE_MS underneath.
+      // full NODE_RETRY_BASE_MS underneath.
       await rejection;
       expect(fetchMock).toHaveBeenCalledTimes(1); // never attempted again
     });
@@ -779,7 +779,7 @@ describe('RangeFetcher', () => {
 
       a.cancel();
       // No timer is ever advanced from here on. If delay() only resolved via
-      // setTimeout, a would keep its slot for the rest of RETRY_BASE_MS and
+      // setTimeout, a would keep its slot for the rest of NODE_RETRY_BASE_MS and
       // these awaits would hang until the test times out, rather than b
       // reaching fetch() right away.
       await expect(a).rejects.toThrow(/cancelled/);

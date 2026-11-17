@@ -8,72 +8,32 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import {
-  bucketKeysByDepth,
-  findRelevantKeys,
-  getChildKeys,
-  getDepth,
-  getParentKey,
-  isAncestorOf,
-} from './node';
+import { bucketKeysByDepth, findRelevantKeys, getDepth } from './node';
+import { parseKey } from './key';
 
-describe('getParentKey', () => {
-  it('returns null for the root key', () => {
-    expect(getParentKey('0-0-0-0')).toBeNull();
-  });
+// Test-only key helpers, independent of the implementation under test.
+function parentOf(key: string): string {
+  const [d, x, y, z] = parseKey(key);
+  return `${d - 1}-${x >> 1}-${y >> 1}-${z >> 1}`;
+}
 
-  it('returns the parent key one level up', () => {
-    expect(getParentKey('1-1-1-1')).toBe('0-0-0-0');
-    expect(getParentKey('1-0-0-0')).toBe('0-0-0-0');
-  });
+function childrenOf(key: string): string[] {
+  const [d, x, y, z] = parseKey(key);
+  const children: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    children.push(`${d + 1}-${x * 2 + (i & 1)}-${y * 2 + ((i >> 1) & 1)}-${z * 2 + (i >> 2)}`);
+  }
+  return children;
+}
 
-  it('rounds each coordinate down (integer division by 2), not just strips the low bit', () => {
-    expect(getParentKey('2-3-3-3')).toBe('1-1-1-1');
-  });
-
-  it('is the exact inverse of getChildKeys for every child', () => {
-    const parent = '2-3-5-1';
-    for (const child of getChildKeys(parent)) {
-      expect(getParentKey(child)).toBe(parent);
-    }
-  });
-});
-
-describe('isAncestorOf', () => {
-  it('recognises a direct parent', () => {
-    expect(isAncestorOf('0-0-0-0', '1-1-1-1')).toBe(true);
-    for (const child of getChildKeys('2-3-5-1')) {
-      expect(isAncestorOf('2-3-5-1', child)).toBe(true);
-    }
-  });
-
-  it('recognises an ancestor several levels up', () => {
-    expect(isAncestorOf('0-0-0-0', '3-7-7-7')).toBe(true);
-    expect(isAncestorOf('1-1-1-1', '3-7-7-7')).toBe(true);
-    expect(isAncestorOf('1-1-1-1', '3-4-4-4')).toBe(true);
-  });
-
-  it('rejects a node that is outside the ancestor cell at the same depth', () => {
-    expect(isAncestorOf('1-0-0-0', '3-7-7-7')).toBe(false);
-    expect(isAncestorOf('1-1-1-1', '3-3-4-4')).toBe(false); // x falls in the sibling cell
-  });
-
-  it('rejects siblings, self, and the reverse direction (proper ancestors only)', () => {
-    expect(isAncestorOf('1-0-0-0', '1-1-1-1')).toBe(false);
-    expect(isAncestorOf('1-1-1-1', '1-1-1-1')).toBe(false);
-    expect(isAncestorOf('3-7-7-7', '0-0-0-0')).toBe(false);
-  });
-
-  it('agrees with walking up via getParentKey', () => {
-    let key = '4-9-13-2';
-    while (true) {
-      const parent = getParentKey(key);
-      if (!parent) break;
-      expect(isAncestorOf(parent, '4-9-13-2')).toBe(true);
-      key = parent;
-    }
-  });
-});
+/** True when `ancestorKey` is a proper ancestor of `key`. */
+function isAncestorOf(ancestorKey: string, key: string): boolean {
+  const [ad, ax, ay, az] = parseKey(ancestorKey);
+  const [d, x, y, z] = parseKey(key);
+  const shift = d - ad;
+  if (shift <= 0) return false;
+  return x >> shift === ax && y >> shift === ay && z >> shift === az;
+}
 
 describe('findRelevantKeys', () => {
   // Brute-force reference implementation matching the pre-optimization
@@ -93,19 +53,19 @@ describe('findRelevantKeys', () => {
 
   it('finds a descendant, but skips a same-depth sibling outright', () => {
     const key = '1-1-1-1';
-    const parent = getParentKey(key)!;
-    const sibling = getChildKeys(parent).find((k) => k !== key)!;
-    const descendant = getChildKeys(key)[0]!;
+    const parent = parentOf(key);
+    const sibling = childrenOf(parent).find((k) => k !== key)!;
+    const descendant = childrenOf(key)[0]!;
     const buckets = bucketKeysByDepth([sibling, descendant]);
     expect(findRelevantKeys(key, buckets)).toEqual([descendant]);
   });
 
   it('finds ancestors/descendants several levels away, but not a disjoint branch', () => {
     const key = '1-0-0-0';
-    const ancestor = getParentKey(key)!; // depth 0
-    const grandchild = getChildKeys(getChildKeys(key)[0]!)[0]!; // depth 3 descendant
-    const disjointSibling = getChildKeys(ancestor).find((k) => k !== key)!; // depth 1 sibling
-    const disjointBranch = getChildKeys(disjointSibling)[0]!; // under the sibling, not under key
+    const ancestor = parentOf(key); // depth 0
+    const grandchild = childrenOf(childrenOf(key)[0]!)[0]!; // depth 3 descendant
+    const disjointSibling = childrenOf(ancestor).find((k) => k !== key)!; // depth 1 sibling
+    const disjointBranch = childrenOf(disjointSibling)[0]!; // under the sibling, not under key
 
     const buckets = bucketKeysByDepth([ancestor, grandchild, disjointSibling, disjointBranch]);
     expect(findRelevantKeys(key, buckets).sort()).toEqual([ancestor, grandchild].sort());
@@ -118,7 +78,7 @@ describe('findRelevantKeys', () => {
     let allKeys: string[] = ['0-0-0-0'];
     let frontier = allKeys;
     for (let depth = 0; depth < 3; depth++) {
-      frontier = frontier.flatMap((k) => getChildKeys(k));
+      frontier = frontier.flatMap((k) => childrenOf(k));
       allKeys = allKeys.concat(frontier);
     }
 
@@ -133,13 +93,8 @@ describe('findRelevantKeys', () => {
   });
 });
 
-describe('getDepth / getChildKeys (existing coverage sanity check)', () => {
-  it('getDepth extracts the leading depth component', () => {
+describe('getDepth', () => {
+  it('extracts the leading depth component', () => {
     expect(getDepth('3-1-2-4')).toBe(3);
-  });
-
-  it('getChildKeys returns 8 keys one level deeper', () => {
-    expect(getChildKeys('0-0-0-0')).toHaveLength(8);
-    expect(getChildKeys('0-0-0-0')).toContain('1-1-1-1');
   });
 });

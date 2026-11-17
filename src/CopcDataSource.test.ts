@@ -66,9 +66,8 @@ const rangeFetcherFetch = vi.fn();
 const rangeFetcherDestroy = vi.fn();
 /** Constructor calls, so the concurrency cap it receives can be asserted on. */
 const rangeFetcherCtor = vi.fn();
-// `isRetryable` is kept real (via `importOriginal`) rather than mocked — it's
-// a pure function with no fetch dependency, and `_loadPage()`'s give-up tests
-// below rely on its actual status-based classification.
+// The module's other exports are kept real (via `importOriginal`); only the
+// fetcher class is replaced.
 vi.mock('./copc/RangeFetcher', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./copc/RangeFetcher')>();
   return {
