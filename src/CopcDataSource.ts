@@ -29,14 +29,15 @@ import type {
   PointSizeMode,
   StageTiming,
 } from './types';
-import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
-import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
+import { emptyInvalidNodes, loadCopcHierarchy, maxNodeDepth } from './copc/hierarchy';
+import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
 import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
 import {
   backoffMs,
   MAX_PAGE_LOAD_ATTEMPTS,
   PAGE_RETRY_BASE_MS,
 } from './copc/retryPolicy';
+import { percentile, pushSample } from './util/rollingSamples';
 import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
 import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
@@ -243,12 +244,6 @@ type StageName = 'fetch' | 'decode' | 'upload';
  *  so a long session doesn't accumulate one sample per node forever; large
  *  enough that a single slow node can't drag the median. */
 const STAGE_SAMPLE_WINDOW = 256;
-
-function percentile(sorted: number[], fraction: number): number {
-  if (sorted.length === 0) return 0;
-  const index = Math.min(sorted.length - 1, Math.floor(sorted.length * fraction));
-  return sorted[index]!;
-}
 
 // Bounds `_sphereCache` independently of `maxCacheNodes`: every candidate the
 // selectNodes() pass touches while walking the hierarchy gets a sphere
@@ -533,6 +528,13 @@ export class CopcDataSource {
     return sphere;
   }
 
+  /** `_getSphere` without the LRU bump, for the per-frame visibility pass:
+   *  re-inserting up to 100 keys every frame is pure churn when nothing is
+   *  being evicted. Falls back to `_getSphere` on a miss so it still caches. */
+  private _peekSphere(key: string): Cesium.BoundingSphere {
+    return this._sphereCache.get(key) ?? this._getSphere(key);
+  }
+
   /** Runs on every `Scene.preRender`: a cheap visibility pass every frame, an
    *  expensive LoD pass throttled to `debounceMs`. */
   private _onPreRender(): void {
@@ -566,7 +568,7 @@ export class CopcDataSource {
       const node = this._nodeCache.peek(key);
       if (!node) continue; // still loading
       const primitive = node.primitive;
-      const show = isInFrustum(this._getSphere(key), cullingVolume);
+      const show = isInFrustum(this._peekSphere(key), cullingVolume);
       if (primitive.show !== show) {
         primitive.show = show;
         changed = true;
@@ -897,10 +899,7 @@ export class CopcDataSource {
       if (this._destroyed) return;
       emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
       Object.assign(this._nodes, nodes);
-      for (const nodeKey of Object.keys(nodes)) {
-        const depth = getDepth(nodeKey);
-        if (depth > this._maxDepth) this._maxDepth = depth;
-      }
+      this._maxDepth = maxNodeDepth(nodes, this._maxDepth);
       delete this._pages[key];
       Object.assign(this._pages, pages);
       this._pageFailures.delete(key);
@@ -1148,8 +1147,7 @@ export class CopcDataSource {
     const end = endedAt;
     this._stageCounts[stage]++;
     const samples = this._stageSamples[stage];
-    samples.push(end - startedAt);
-    if (samples.length > STAGE_SAMPLE_WINDOW) samples.shift();
+    pushSample(samples, end - startedAt, STAGE_SAMPLE_WINDOW);
 
     const name = `copcesium ${stage}`;
     try {
@@ -1171,8 +1169,8 @@ export class CopcDataSource {
   }
 
   private _stageTiming(stage: StageName): StageTiming {
-    const sorted = [...this._stageSamples[stage]].sort((a, b) => a - b);
-    return { count: this._stageCounts[stage], p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+    const samples = this._stageSamples[stage];
+    return { count: this._stageCounts[stage], p50: percentile(samples, 0.5), p95: percentile(samples, 0.95) };
   }
 
   /**
