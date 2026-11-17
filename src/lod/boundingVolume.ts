@@ -9,6 +9,7 @@
 
 import * as Cesium from 'cesium';
 import { parseKey } from '../copc/key';
+import { DEFAULT_FOVY } from './screenSpaceError';
 
 export type ProjectToCartesian = (x: number, y: number, z: number) => Cesium.Cartesian3;
 
@@ -45,11 +46,6 @@ export function getCullingVolume(camera: Cesium.Camera): Cesium.CullingVolume {
 export function isInFrustum(sphere: Cesium.BoundingSphere, cullingVolume: Cesium.CullingVolume): boolean {
   return cullingVolume.computeVisibility(sphere) !== Cesium.Intersect.OUTSIDE;
 }
-
-// Camera.frustum has no settable near-plane fov once it's a plain
-// PerspectiveFrustum built without one (unusual, but the type allows it) —
-// matches selectNodes.ts's own fallback for the same reason.
-const DEFAULT_FOVY = Cesium.Math.toRadians(60);
 
 /**
  * Builds the culling volume for a frustum widened by `factor`, for
