@@ -42,6 +42,7 @@ import { detectCrs } from './crs/detectCrs';
 import { createProjector } from './crs/project';
 import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
 import { orderForLoading } from './lod/loadOrder';
+import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
 import { createNodePrimitive } from './loader/loadNode';
 import type { PointStyle } from './renderer/PointCloudPrimitive';
@@ -492,11 +493,8 @@ export class CopcDataSource {
   async zoomTo(): Promise<void> {
     const rootSphere = this._getSphere('0-0-0-0');
     const camera = this._viewer.scene.camera;
-    const fovy =
-      (camera.frustum instanceof Cesium.PerspectiveFrustum ? camera.frustum.fovy : undefined) ??
-      Cesium.Math.toRadians(60);
-    const sseScale = this._viewer.scene.canvas.clientHeight / (2 * Math.tan(fovy / 2));
-    const initRange = (rootSphere.radius * sseScale) / (this._options.sseThreshold * 2);
+    const scale = sseScale(this._viewer.scene.canvas.clientHeight, getFovy(camera.frustum));
+    const initRange = (rootSphere.radius * scale) / (this._options.sseThreshold * 2);
 
     return new Promise<void>((resolve) => {
       camera.flyToBoundingSphere(rootSphere, {

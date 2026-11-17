@@ -11,7 +11,8 @@ import { parseKey } from './key';
 
 /** Extracts the depth (D) from a COPC hierarchy node key (VoxelKey, "D-X-Y-Z"). */
 export function getDepth(key: string): number {
-  return parseInt(key.split('-')[0]);
+  // parseInt stops at the first '-', so this reads just the leading D component.
+  return parseInt(key, 10);
 }
 
 /**
