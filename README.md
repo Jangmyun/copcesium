@@ -206,6 +206,7 @@ interface CopcDataSourceOptions {
   prefetchFrustumFactor?: number;
   maxPrefetchNodes?: number;
   prefetchIdleOnly?: boolean;
+  prefetchLookaheadMs?: number;
   decodeBackpressure?: boolean;
   strictCacheBudget?: boolean;
   zFactor?: number;
@@ -240,6 +241,7 @@ interface CopcDataSourceOptions {
 | `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
 | `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `prefetchIdleOnly` | `false` | Holds prefetch loads back until every load for the current view has finished, instead of only until they have all been started. On a bandwidth-limited link, prefetch bytes otherwise delay the nodes on screen; prefetching still happens whenever the camera rests. |
+| `prefetchLookaheadMs` | unset | Opt-in predictive prefetch. While the camera moves, prefetch is built around the pose it is expected to have this many milliseconds ahead (damped constant-velocity extrapolation, capped at 250 ms), candidates load nearest to that pose first, and a prefetch load that leaves the prefetch set is cancelled only after 300 ms. Offline on a recorded human camera path this beat holding the pose only up to 250 ms. Recommended: `250`. |
 | `decodeBackpressure` | `false` | For devices where decoding, not the network, is the bottleneck. Once a full round of decoding (one node per worker) is waiting for a worker, further downloads for the view are held back and resume as decodes finish; nodes the camera has moved past are dropped. Prefetch waits until the decode queue is empty and decodes after visible nodes. With `prefetchIdleOnly` also on, prefetch waits for both conditions. `stats.decodeQueue` shows the queue either way. |
 | `strictCacheBudget` | `false` | Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass instead of only when a node is inserted, so nodes that just left the screen are evicted right away. Nodes on screen are never evicted, so they alone can still exceed the budget. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |

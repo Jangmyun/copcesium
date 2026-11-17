@@ -54,6 +54,7 @@ const TUNING_PARAMS = [
   'lodHysteresis',
   'prefetchFrustumFactor',
   'prefetchIdleOnly',
+  'prefetchLookaheadMs',
   'adaptiveMergeGap',
   'decodeBackpressure',
   'strictCacheBudget',

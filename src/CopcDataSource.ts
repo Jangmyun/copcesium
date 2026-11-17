@@ -33,7 +33,8 @@ import { RangeFetcher } from './copc/RangeFetcher';
 import { StageTimer } from './util/StageTimer';
 import type { TransferCounter } from './copc/TransferCounter';
 import { resolveCrs } from './crs/resolveCrs';
-import { getCullingVolume, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { getCullingVolume, isInFrustum, type CameraPose, type ProjectToCartesian } from './lod/boundingVolume';
+import { CameraMotionTracker } from './lod/cameraMotion';
 import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
@@ -68,6 +69,7 @@ type OpenEndedOption =
   | 'classificationFilter'
   | 'intensityRange'
   | 'maxCacheBytes'
+  | 'prefetchLookaheadMs'
   | 'maxConcurrentRequests'
   | 'clipPlanes'
   | 'clipBoxes';
@@ -113,6 +115,10 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
 // measurements; 1.15 sits in the middle.
 const INCUMBENT_BONUS = 1.15;
 
+// Upper bound on `prefetchLookaheadMs`. Offline, damped extrapolation of a
+// recorded human camera path only beat holding the pose up to about 250 ms.
+const MAX_PREFETCH_LOOKAHEAD_MS = 250;
+
 // Bounds for `concurrency: 'auto'`. The top is today's fixed default, so
 // 'auto' never spends more cores than a desktop already gets. The bottom keeps
 // one decode running while another node's transfer is handed over, even on a
@@ -156,6 +162,8 @@ export class CopcDataSource {
   private _removeMoveEndListener: () => void = () => {};
   private _removeMoveStartListener: () => void = () => {};
   private _cameraMoving = false;
+  /** Feeds the predicted pose for `prefetchLookaheadMs`; unused when it is unset. */
+  private readonly _motion = new CameraMotionTracker({ dampTauMs: 150 });
   private _destroyed = false;
   private readonly _picker = new PointPicker();
 
@@ -291,6 +299,7 @@ export class CopcDataSource {
   private _onPreRender(): void {
     if (this._destroyed) return;
     this._updateVisibility();
+    this._trackMotion();
 
     const now = performance.now();
     if (now - this._lastUpdateTime < this._options.debounceMs) return;
@@ -298,11 +307,43 @@ export class CopcDataSource {
     void this._updateLoD();
   }
 
+  /** Samples the camera each frame while it moves, for the predicted pose. A
+   *  jump (flyTo, teleport) restarts the tracker inside `update()`, so the
+   *  prediction falls back to the current pose until a new velocity forms. */
+  private _trackMotion(): void {
+    if (!this._options.prefetchLookaheadMs || !this._cameraMoving) return;
+    const camera = this._viewer.scene.camera;
+    const p = camera.positionWC;
+    const d = camera.directionWC;
+    const u = camera.upWC;
+    this._motion.update({
+      timeMs: performance.now(),
+      position: [p.x, p.y, p.z],
+      direction: [d.x, d.y, d.z],
+      up: [u.x, u.y, u.z],
+    });
+  }
+
+  /** The camera pose `prefetchLookaheadMs` ahead (capped), or undefined when
+   *  the option is off, the camera is at rest, or nothing has been sampled. */
+  private _predictedPose(): CameraPose | undefined {
+    const lookahead = this._options.prefetchLookaheadMs;
+    if (!lookahead || lookahead <= 0 || !this._cameraMoving) return undefined;
+    const pose = this._motion.predict(Math.min(lookahead, MAX_PREFETCH_LOOKAHEAD_MS), 'damped');
+    if (!pose) return undefined;
+    return {
+      positionWC: new Cesium.Cartesian3(...pose.position),
+      directionWC: new Cesium.Cartesian3(...pose.direction),
+      upWC: new Cesium.Cartesian3(...pose.up),
+    };
+  }
+
   /** Camera has come to rest — run the LoD pass immediately rather than
    *  possibly losing the final refinement to debounce timing. */
   private _onMoveEnd(): void {
     if (this._destroyed) return;
     this._cameraMoving = false;
+    this._motion.reset();
     this._lastUpdateTime = performance.now();
     void this._updateLoD();
   }
@@ -360,6 +401,7 @@ export class CopcDataSource {
           prefetchFrustumFactor: this._options.prefetchFrustumFactor,
           maxPrefetchNodes: this._options.maxPrefetchNodes,
           onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
+          predictedPose: this._predictedPose(),
           incumbents: this._selectedKeys,
           incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
           viewAxisBias: this._options.viewAxisBias,

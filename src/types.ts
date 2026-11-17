@@ -159,6 +159,20 @@ export interface CopcDataSourceOptions {
    */
   prefetchIdleOnly?: boolean;
   /**
+   * Opt-in predictive prefetch, in milliseconds. While the camera moves, the
+   * prefetch region is built around the pose the camera is expected to have
+   * this far ahead (damped constant-velocity extrapolation, time constant
+   * 150 ms) instead of the current one, prefetch candidates load nearest to
+   * that pose first, and a pending prefetch load that drops out of the
+   * prefetch set is kept for 300 ms before it is cancelled. The visible
+   * selection is unaffected. The look-ahead is capped at 250 ms: an offline
+   * evaluation on a recorded human camera path found damped extrapolation
+   * beats holding the pose only up to about 250 ms (median position error
+   * 51 m against 69 m) and loses beyond 500 ms. Unset (the default), or `0`,
+   * prefetch behaves exactly as before. Recommended: `250`.
+   */
+  prefetchLookaheadMs?: number;
+  /**
    * Stops starting new node downloads while the CPU is the bottleneck: once a
    * full round of decoding (one task per worker) is already waiting for a
    * worker, further nodes of the view are held back and started as decodes
