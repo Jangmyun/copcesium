@@ -42,7 +42,14 @@ export interface Pose {
   up: Vec3;
 }
 
-export type Hypothesis = 'persistence' | 'cv' | 'blend';
+/**
+ * `cv` extrapolates linearly for the whole horizon. `damped` integrates
+ * v * exp(-t / dampTauMs), saturating at v * dampTauMs (position and
+ * rotation). `capped` extrapolates at most `capMs`, then holds.
+ * `rotDamped` is `cv` for position and `damped` for rotation.
+ */
+export type CvMode = 'cv' | 'damped' | 'capped' | 'rotDamped';
+export type Hypothesis = 'persistence' | 'blend' | CvMode;
 
 export interface CameraMotionOptions {
   /** EMA time constant for velocities, ms. Default 150. */
@@ -55,6 +62,12 @@ export interface CameraMotionOptions {
   jumpSpeedFactor?: number;
   /** Jump if the direction turns more than this in one step, radians. Default 1.0. */
   jumpAngleRad?: number;
+  /** Time constant of the damped modes, ms. Default 300. */
+  dampTauMs?: number;
+  /** Extrapolation cap of the `capped` mode, ms. Default 250. */
+  capMs?: number;
+  /** Which extrapolation the blend uses as its motion hypothesis. Default 'cv'. */
+  blendMode?: CvMode;
   /** Horizons the blend tracks errors for, ms. Default [250, 500, 1000, 2000]. */
   horizonsMs?: readonly number[];
   /** Converts radians of direction error to metres in the blend error. Default 1000. */
@@ -125,6 +138,9 @@ export class CameraMotionTracker {
   private readonly jumpAngleRad: number;
   private readonly metresPerRadian: number;
   private readonly errorAlpha: number;
+  private readonly dampTauMs: number;
+  private readonly capMs: number;
+  private readonly blendMode: CvMode;
   private readonly horizons: HorizonState[];
 
   private last: MotionSample | undefined;
@@ -140,6 +156,9 @@ export class CameraMotionTracker {
     this.jumpAngleRad = options.jumpAngleRad ?? 1.0;
     this.metresPerRadian = options.metresPerRadian ?? 1000;
     this.errorAlpha = options.errorAlpha ?? 0.05;
+    this.dampTauMs = options.dampTauMs ?? 300;
+    this.capMs = options.capMs ?? 250;
+    this.blendMode = options.blendMode ?? 'cv';
     this.horizons = (options.horizonsMs ?? [250, 500, 1000, 2000]).map((horizonMs) => ({
       horizonMs,
       pending: [],
@@ -228,8 +247,8 @@ export class CameraMotionTracker {
     if (!last) return undefined;
     const stay = this.persistencePose(last);
     if (hypothesis === 'persistence') return stay;
-    const cv = this.cvPose(last, horizonMs);
-    if (hypothesis === 'cv') return cv;
+    if (hypothesis !== 'blend') return this.cvPose(last, horizonMs, hypothesis);
+    const cv = this.cvPose(last, horizonMs, this.blendMode);
     const w = this.weights(horizonMs);
     return {
       position: add(scale(stay.position, w.persistence), scale(cv.position, w.cv)),
@@ -265,10 +284,21 @@ export class CameraMotionTracker {
     return { position: s.position, direction: s.direction, up: s.up };
   }
 
-  private cvPose(s: MotionSample, horizonMs: number): Pose {
-    const w = scale(this.angularVelocity, horizonMs);
+  /** Effective extrapolation time (ms of constant velocity) for a mode. */
+  private effectiveMs(horizonMs: number, damped: boolean, capped: boolean): number {
+    if (damped) return this.dampTauMs * (1 - Math.exp(-horizonMs / this.dampTauMs));
+    if (capped) return Math.min(horizonMs, this.capMs);
+    return horizonMs;
+  }
+
+  private cvPose(s: MotionSample, horizonMs: number, mode: CvMode): Pose {
+    const damped = mode === 'damped';
+    const capped = mode === 'capped';
+    const rotDamped = damped || mode === 'rotDamped';
+    const w = scale(this.angularVelocity, this.effectiveMs(horizonMs, rotDamped, capped));
+    const pm = this.effectiveMs(horizonMs, damped, capped);
     return {
-      position: add(s.position, scale(this.velocity, horizonMs)),
+      position: add(s.position, scale(this.velocity, pm)),
       direction: normalize(rotate(s.direction, w), s.direction),
       up: normalize(rotate(s.up, w), s.up),
     };
@@ -279,7 +309,7 @@ export class CameraMotionTracker {
       h.pending.push({
         targetMs: sample.timeMs + h.horizonMs,
         persistence: this.persistencePose(sample),
-        cv: this.cvPose(sample, h.horizonMs),
+        cv: this.cvPose(sample, h.horizonMs, this.blendMode),
       });
     }
   }
