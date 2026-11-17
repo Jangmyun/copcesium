@@ -2132,3 +2132,112 @@ describe('CopcDataSource._sphereCache', () => {
     expect(recomputed.radius).toBeGreaterThan(0);
   });
 });
+
+describe('CopcDataSource skipIdleLoD', () => {
+  beforeEach(() => {
+    selectNodesMock.mockReset();
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+  });
+
+  /** Loads with the option set, runs passes until the root node is cached and
+   *  the scheduler is quiet, and returns handles to poke the view afterwards. */
+  async function settle(skipIdleLoD: boolean, extraNodes = false) {
+    mockCopc(undefined, extraNodes ? EXTRA_NODES : undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    const fake = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fake.viewer, {
+      debounceMs: 0,
+      skipIdleLoD,
+    });
+    fake.triggerUpdate();
+    await vi.waitFor(() => expect(fake.addPrimitive).toHaveBeenCalledTimes(1));
+    fake.triggerUpdate(); // load settled -> dirty -> one more pass
+    await vi.waitFor(() => expect(ds.stats.pendingNodes).toBe(0));
+    fake.triggerUpdate();
+    selectNodesMock.mockClear();
+    return { ...fake, ds };
+  }
+
+  it('does not run a pass on an idle frame once settled', async () => {
+    const { triggerUpdate } = await settle(true);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps running a pass every tick when the option is off', async () => {
+    const { triggerUpdate } = await settle(false);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs a pass after the camera moves', async () => {
+    const { viewer, triggerUpdate } = await settle(true);
+    triggerUpdate();
+    expect(selectNodesMock).not.toHaveBeenCalled();
+    (viewer.scene.camera.positionWC as Cesium.Cartesian3).x += 1;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after the viewport is resized', async () => {
+    const { viewer, triggerUpdate } = await settle(true);
+    (viewer.scene.canvas as { clientHeight: number }).clientHeight = 700;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a node load completes', async () => {
+    const { ds, triggerUpdate, addPrimitive } = await settle(true, true);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0', '1-0-0-0']);
+    (ds as unknown as { _lodDirty: boolean })._lodDirty = true;
+    triggerUpdate(); // dispatches the load
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(2));
+    selectNodesMock.mockClear();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a hierarchy page loads', async () => {
+    const { ds } = await settle(true);
+    const inner = ds as unknown as {
+      _pager: { pages: Record<string, unknown>; loadPage(key: string): Promise<void> };
+    };
+    inner._pager.pages['1-1-1-1'] = { pageOffset: 100, pageLength: 20 };
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: {}, pages: {} });
+    await inner._pager.loadPage('1-1-1-1');
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a setter that affects selection', async () => {
+    const { ds, triggerUpdate } = await settle(true);
+    ds.sseThreshold = 100;
+    await vi.waitFor(() => expect(selectNodesMock).toHaveBeenCalledTimes(1));
+    selectNodesMock.mockClear();
+    (ds as unknown as { _lodDirty: boolean })._lodDirty = true;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a clip setting changes', async () => {
+    const { ds, triggerUpdate } = await settle(true);
+    ds.clipMode = 'outside';
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps running passes while the camera is moving', async () => {
+    const { triggerUpdate, triggerMoveStart } = await settle(true);
+    triggerMoveStart();
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(2);
+  });
+});

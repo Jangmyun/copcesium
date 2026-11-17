@@ -59,6 +59,7 @@ const TUNING_PARAMS = [
   'strictCacheBudget',
   'preUploadHidden',
   'maxGpuInitsPerFrame',
+  'skipIdleLoD',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {

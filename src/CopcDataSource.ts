@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { HierarchyPager } from './copc/hierarchyPager';
+import { sameView, viewSignature } from './lod/viewSignature';
 import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
 import { RangeFetcher } from './copc/RangeFetcher';
 import { StageTimer } from './util/StageTimer';
@@ -105,6 +106,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   colorMode: 'rgb',
   opacity: 1,
   clipMode: 'inside',
+  skipIdleLoD: false,
 };
 
 // Heap-priority multiplier `selectNodes` gives nodes already on screen while
@@ -159,6 +161,16 @@ export class CopcDataSource {
   private _removeMoveEndListener: () => void = () => {};
   private _removeMoveStartListener: () => void = () => {};
   private _cameraMoving = false;
+  /** `skipIdleLoD`: set by anything that can change what a pass would decide
+   *  (a load settling, a page arriving, an eviction, a setter) and cleared as
+   *  a pass starts, so an event during the pass re-arms it. */
+  private _lodDirty = true;
+  /** The view the last pass ran against; compared on each throttled tick. */
+  private _lastViewSignature: number[] = [];
+  /** Set when the last pass left work that only a later pass completes: a page
+   *  still wanted (its retry rides on rediscovery) or a deselected node held
+   *  visible until its replacement is ready. */
+  private _lodUnsettled = false;
   private _destroyed = false;
   private readonly _picker = new PointPicker();
 
@@ -184,7 +196,10 @@ export class CopcDataSource {
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
-      (_key, node) => this._destroyLoadedNode(node),
+      (_key, node) => {
+        this._lodDirty = true;
+        this._destroyLoadedNode(node);
+      },
       options.maxCacheBytes,
     );
     this._counter = hierarchy.counter;
@@ -192,7 +207,10 @@ export class CopcDataSource {
       url,
       hierarchy,
       () => this._destroyed,
-      () => void this._updateLoD(),
+      () => {
+        this._lodDirty = true;
+        void this._updateLoD();
+      },
     );
     this._rangeFetcher = new RangeFetcher(
       url,
@@ -221,6 +239,9 @@ export class CopcDataSource {
       getSphere: (key) => this._getSphere(key),
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
+      onSettled: () => {
+        this._lodDirty = true;
+      },
     });
   }
 
@@ -318,8 +339,23 @@ export class CopcDataSource {
 
     const now = performance.now();
     if (now - this._lastUpdateTime < this._options.debounceMs) return;
+    if (this._options.skipIdleLoD && !this._lodNeeded()) return;
     this._lastUpdateTime = now;
     void this._updateLoD();
+  }
+
+  /** `skipIdleLoD`: whether a pass could decide anything new. Conservative: any
+   *  doubt (loads in flight or deferred, a page loading, the camera moving)
+   *  counts as needed. */
+  private _lodNeeded(): boolean {
+    if (this._lodDirty || this._lodUnsettled || this._cameraMoving) return true;
+    if (this._scheduler.pendingCount > 0 || this._scheduler.deferredCount > 0) return true;
+    return !sameView(this._lastViewSignature, this._currentViewSignature());
+  }
+
+  private _currentViewSignature(): number[] {
+    const canvas = this._viewer.scene.canvas;
+    return viewSignature(this._viewer.scene.camera, canvas.clientWidth, canvas.clientHeight);
   }
 
   /** Camera has come to rest — run the LoD pass immediately rather than
@@ -367,6 +403,9 @@ export class CopcDataSource {
       return;
     }
     this._isUpdating = true;
+    // Cleared before selecting so a load settling mid-pass re-arms it.
+    this._lodDirty = false;
+    this._lastViewSignature = this._currentViewSignature();
     try {
       const neededPages = new Set<string>();
       const newPrefetchKeys = new Set<string>();
@@ -459,6 +498,7 @@ export class CopcDataSource {
       // stay over budget until the next node is inserted.
       if (this._options.strictCacheBudget) this._nodeCache.trim();
       this._selectedKeys = stillShown;
+      this._lodUnsettled = neededPages.size > 0 || stillShown.size > newSelectedKeys.size;
       if (sceneChanged) this._viewer.scene.requestRender();
     } finally {
       this._isUpdating = false;
@@ -620,6 +660,7 @@ export class CopcDataSource {
   }
   set clipPlanes(value: Cesium.Plane[] | undefined) {
     this._styleCtl.clipPlanes = value;
+    this._lodDirty = true;
   }
 
   /**
@@ -632,6 +673,7 @@ export class CopcDataSource {
   }
   set clipBoxes(value: Cesium.Matrix4[] | undefined) {
     this._styleCtl.clipBoxes = value;
+    this._lodDirty = true;
   }
 
   /** Which side of the clip regions is drawn. */
@@ -640,6 +682,7 @@ export class CopcDataSource {
   }
   set clipMode(value: ClipMode) {
     this._styleCtl.clipMode = value;
+    this._lodDirty = true;
   }
 
   /** Screen-space error threshold (pixels) that triggers node subdivision. */
@@ -648,6 +691,7 @@ export class CopcDataSource {
   }
   set sseThreshold(value: number) {
     this._options.sseThreshold = value;
+    this._lodDirty = true;
     void this._updateLoD();
   }
 

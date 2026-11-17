@@ -59,6 +59,8 @@ export interface LoadSchedulerDeps {
   isDestroyed: () => boolean;
   /** Whether the current selection includes `key`; read when a node finishes loading. */
   isSelected: (key: string) => boolean;
+  /** Called when a load ends for any reason: cached, failed, or cancelled. */
+  onSettled?: () => void;
 }
 
 export class LoadScheduler {
@@ -86,6 +88,7 @@ export class LoadScheduler {
   private readonly _getSphere: (key: string) => Cesium.BoundingSphere;
   private readonly _isDestroyed: () => boolean;
   private readonly _isSelected: (key: string) => boolean;
+  private readonly _onSettled: () => void;
 
   constructor(deps: LoadSchedulerDeps) {
     this._o = deps.options;
@@ -104,6 +107,7 @@ export class LoadScheduler {
     this._getSphere = deps.getSphere;
     this._isDestroyed = deps.isDestroyed;
     this._isSelected = deps.isSelected;
+    this._onSettled = deps.onSettled ?? (() => {});
   }
 
   get pendingCount(): number {
@@ -287,6 +291,7 @@ export class LoadScheduler {
     } finally {
       this._pendingKeys.delete(key);
       this._cancels.delete(key);
+      this._onSettled();
       if (!this._isDestroyed()) {
         // A finished (or abandoned) node is room in the decode queue.
         if (this._o.decodeBackpressure) this._drainDeferredLoads();

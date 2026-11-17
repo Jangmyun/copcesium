@@ -170,6 +170,14 @@ export interface CopcDataSourceOptions {
    */
   decodeBackpressure?: boolean;
   /**
+   * Skips the throttled LoD pass while nothing that feeds it has changed: the
+   * camera and viewport are where the last pass saw them, no load or hierarchy
+   * page is in flight, and no option, clip or cache eviction has changed since.
+   * Cuts the idle cost of continuous rendering, where the pass would otherwise
+   * run every `debounceMs` on an unchanged view. Default `false`.
+   */
+  skipIdleLoD?: boolean;
+  /**
    * Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass, not only
    * when a node is inserted, so nodes that just left the screen are evicted
    * right away if the cache is over budget. Default `false`.

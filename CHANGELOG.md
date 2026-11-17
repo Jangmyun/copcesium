@@ -11,6 +11,10 @@ All notable changes to this project are documented here. This project follows
   a node's vertex buffers while it is still hidden (prefetched), and
   `maxGpuInitsPerFrame` caps uploads per frame, with hidden pre-uploads
   limited to one slot per frame so visible nodes keep priority.
+- `skipIdleLoD` option (default `false`). When on, the throttled LoD pass is
+  skipped while the camera, viewport, loads, hierarchy pages, cache and
+  options are unchanged since the last pass, so an idle scene under
+  continuous rendering stops re-running selection every `debounceMs`.
 
 ### Changed
 
