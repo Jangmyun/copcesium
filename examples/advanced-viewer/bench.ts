@@ -54,9 +54,13 @@ const TUNING_PARAMS = [
   'lodHysteresis',
   'prefetchFrustumFactor',
   'prefetchIdleOnly',
+  'prefetchLookaheadMs',
   'adaptiveMergeGap',
   'decodeBackpressure',
   'strictCacheBudget',
+  'preUploadHidden',
+  'maxGpuInitsPerFrame',
+  'skipIdleLoD',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {

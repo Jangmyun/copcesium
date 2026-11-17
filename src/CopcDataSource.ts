@@ -28,12 +28,14 @@ import type {
 } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { HierarchyPager } from './copc/hierarchyPager';
+import { sameView, viewSignature } from './lod/viewSignature';
 import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
 import { RangeFetcher } from './copc/RangeFetcher';
 import { StageTimer } from './util/StageTimer';
 import type { TransferCounter } from './copc/TransferCounter';
 import { resolveCrs } from './crs/resolveCrs';
-import { getCullingVolume, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { getCullingVolume, isInFrustum, type CameraPose, type ProjectToCartesian } from './lod/boundingVolume';
+import { CameraMotionTracker } from './lod/cameraMotion';
 import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
@@ -57,7 +59,7 @@ export type { ClipMode, ColorMode, CopcDataSourceOptions };
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
- * `intensityRange`, `maxCacheBytes`, and `maxConcurrentRequests` stay optional
+ * `intensityRange`, `maxCacheBytes`, and `maxConcurrentRequests`, and `maxGpuInitsPerFrame` stay optional
  * because their unset state is meaningful — "no filter", "auto-range as nodes
  * arrive", "no byte-based cache limit", and "follow the worker pool's size"
  * aren't expressible as a fixed value. The last one in particular has no
@@ -68,7 +70,9 @@ type OpenEndedOption =
   | 'classificationFilter'
   | 'intensityRange'
   | 'maxCacheBytes'
+  | 'prefetchLookaheadMs'
   | 'maxConcurrentRequests'
+  | 'maxGpuInitsPerFrame'
   | 'clipPlanes'
   | 'clipBoxes';
 
@@ -91,6 +95,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   prefetchIdleOnly: false,
   decodeBackpressure: false,
   strictCacheBudget: false,
+  preUploadHidden: false,
   pixelSize: 2,
   pointSizeMode: 'fixed',
   attenuationFactor: 100,
@@ -103,6 +108,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   colorMode: 'rgb',
   opacity: 1,
   clipMode: 'inside',
+  skipIdleLoD: false,
 };
 
 // Heap-priority multiplier `selectNodes` gives nodes already on screen while
@@ -112,6 +118,10 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
 // during the move. 1.05–1.30 all eliminated the flicker in the issue's
 // measurements; 1.15 sits in the middle.
 const INCUMBENT_BONUS = 1.15;
+
+// Upper bound on `prefetchLookaheadMs`. Offline, damped extrapolation of a
+// recorded human camera path only beat holding the pose up to about 250 ms.
+const MAX_PREFETCH_LOOKAHEAD_MS = 250;
 
 // Bounds for `concurrency: 'auto'`. The top is today's fixed default, so
 // 'auto' never spends more cores than a desktop already gets. The bottom keeps
@@ -129,7 +139,8 @@ export function resolveWorkerCount(
   hardwareConcurrency: number | undefined = globalThis.navigator?.hardwareConcurrency,
 ): number {
   if (concurrency !== 'auto') return concurrency;
-  const cores = hardwareConcurrency && hardwareConcurrency > 0 ? hardwareConcurrency : ASSUMED_CORES;
+  const cores =
+    hardwareConcurrency && hardwareConcurrency > 0 ? hardwareConcurrency : ASSUMED_CORES;
   return Math.min(AUTO_WORKERS_MAX, Math.max(AUTO_WORKERS_MIN, cores - 1));
 }
 
@@ -156,6 +167,18 @@ export class CopcDataSource {
   private _removeMoveEndListener: () => void = () => {};
   private _removeMoveStartListener: () => void = () => {};
   private _cameraMoving = false;
+  /** `skipIdleLoD`: set by anything that can change what a pass would decide
+   *  (a load settling, a page arriving, an eviction, a setter) and cleared as
+   *  a pass starts, so an event during the pass re-arms it. */
+  private _lodDirty = true;
+  /** The view the last pass ran against; compared on each throttled tick. */
+  private _lastViewSignature: number[] = [];
+  /** Set when the last pass left work that only a later pass completes: a page
+   *  still wanted (its retry rides on rediscovery) or a deselected node held
+   *  visible until its replacement is ready. */
+  private _lodUnsettled = false;
+  /** Feeds the predicted pose for `prefetchLookaheadMs`; unused when it is unset. */
+  private readonly _motion = new CameraMotionTracker({ dampTauMs: 150 });
   private _destroyed = false;
   private readonly _picker = new PointPicker();
 
@@ -172,11 +195,19 @@ export class CopcDataSource {
     this._viewer = viewer;
     this._copc = hierarchy.copc;
     this._options = options;
-    this._spheres = new SphereCache(hierarchy.rootCenter, hierarchy.rootHalfSize, project, options.xyFactor);
+    this._spheres = new SphereCache(
+      hierarchy.rootCenter,
+      hierarchy.rootHalfSize,
+      project,
+      options.xyFactor,
+    );
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
-      (_key, node) => this._destroyLoadedNode(node),
+      (_key, node) => {
+        this._lodDirty = true;
+        this._destroyLoadedNode(node);
+      },
       options.maxCacheBytes,
     );
     this._counter = hierarchy.counter;
@@ -184,7 +215,10 @@ export class CopcDataSource {
       url,
       hierarchy,
       () => this._destroyed,
-      () => void this._updateLoD(),
+      () => {
+        this._lodDirty = true;
+        void this._updateLoD();
+      },
     );
     this._rangeFetcher = new RangeFetcher(
       url,
@@ -213,6 +247,9 @@ export class CopcDataSource {
       getSphere: (key) => this._getSphere(key),
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
+      onSettled: () => {
+        this._lodDirty = true;
+      },
     });
   }
 
@@ -232,16 +269,28 @@ export class CopcDataSource {
     // NaN would otherwise flow into every point's height and blank the cloud
     // with no error.
     if (!Number.isFinite(resolved.geoidOffset)) {
-      throw new Error(`[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`);
+      throw new Error(
+        `[CopcDataSource] geoidOffset must be a finite number of meters, got ${resolved.geoidOffset}.`,
+      );
     }
 
     const hierarchy = await loadCopcHierarchy(url);
 
     const project = resolveCrs(url, hierarchy.copc, options, resolved);
 
-    const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
+    const pool =
+      workerPool ??
+      new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
 
-    const dataSource = new CopcDataSource(url, viewer, hierarchy, resolved, project, pool, !workerPool);
+    const dataSource = new CopcDataSource(
+      url,
+      viewer,
+      hierarchy,
+      resolved,
+      project,
+      pool,
+      !workerPool,
+    );
 
     // Deferred until after the initial camera framing (if any) so the fly-to
     // doesn't spend a debounce cycle computing LoD for wherever the camera
@@ -255,8 +304,12 @@ export class CopcDataSource {
   }
 
   private _startListening(): void {
-    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() => this._onPreRender());
-    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() => this._onMoveEnd());
+    this._removeUpdateListener = this._viewer.scene.preRender.addEventListener(() =>
+      this._onPreRender(),
+    );
+    this._removeMoveEndListener = this._viewer.scene.camera.moveEnd.addEventListener(() =>
+      this._onMoveEnd(),
+    );
     this._removeMoveStartListener = this._viewer.scene.camera.moveStart.addEventListener(() => {
       this._cameraMoving = true;
     });
@@ -291,11 +344,58 @@ export class CopcDataSource {
   private _onPreRender(): void {
     if (this._destroyed) return;
     this._updateVisibility();
+    this._trackMotion();
 
     const now = performance.now();
     if (now - this._lastUpdateTime < this._options.debounceMs) return;
+    if (this._options.skipIdleLoD && !this._lodNeeded()) return;
     this._lastUpdateTime = now;
     void this._updateLoD();
+  }
+
+  /** `skipIdleLoD`: whether a pass could decide anything new. Conservative: any
+   *  doubt (loads in flight or deferred, a page loading, the camera moving)
+   *  counts as needed. */
+  private _lodNeeded(): boolean {
+    if (this._lodDirty || this._lodUnsettled || this._cameraMoving) return true;
+    if (this._scheduler.pendingCount > 0 || this._scheduler.deferredCount > 0) return true;
+    return !sameView(this._lastViewSignature, this._currentViewSignature());
+  }
+
+  private _currentViewSignature(): number[] {
+    const canvas = this._viewer.scene.canvas;
+    return viewSignature(this._viewer.scene.camera, canvas.clientWidth, canvas.clientHeight);
+  }
+
+  /** Samples the camera each frame while it moves, for the predicted pose. A
+   *  jump (flyTo, teleport) restarts the tracker inside `update()`, so the
+   *  prediction falls back to the current pose until a new velocity forms. */
+  private _trackMotion(): void {
+    if (!this._options.prefetchLookaheadMs || !this._cameraMoving) return;
+    const camera = this._viewer.scene.camera;
+    const p = camera.positionWC;
+    const d = camera.directionWC;
+    const u = camera.upWC;
+    this._motion.update({
+      timeMs: performance.now(),
+      position: [p.x, p.y, p.z],
+      direction: [d.x, d.y, d.z],
+      up: [u.x, u.y, u.z],
+    });
+  }
+
+  /** The camera pose `prefetchLookaheadMs` ahead (capped), or undefined when
+   *  the option is off, the camera is at rest, or nothing has been sampled. */
+  private _predictedPose(): CameraPose | undefined {
+    const lookahead = this._options.prefetchLookaheadMs;
+    if (!lookahead || lookahead <= 0 || !this._cameraMoving) return undefined;
+    const pose = this._motion.predict(Math.min(lookahead, MAX_PREFETCH_LOOKAHEAD_MS), 'damped');
+    if (!pose) return undefined;
+    return {
+      positionWC: new Cesium.Cartesian3(...pose.position),
+      directionWC: new Cesium.Cartesian3(...pose.direction),
+      upWC: new Cesium.Cartesian3(...pose.up),
+    };
   }
 
   /** Camera has come to rest — run the LoD pass immediately rather than
@@ -303,6 +403,7 @@ export class CopcDataSource {
   private _onMoveEnd(): void {
     if (this._destroyed) return;
     this._cameraMoving = false;
+    this._motion.reset();
     this._lastUpdateTime = performance.now();
     void this._updateLoD();
   }
@@ -343,6 +444,9 @@ export class CopcDataSource {
       return;
     }
     this._isUpdating = true;
+    // Cleared before selecting so a load settling mid-pass re-arms it.
+    this._lodDirty = false;
+    this._lastViewSignature = this._currentViewSignature();
     try {
       const neededPages = new Set<string>();
       const newPrefetchKeys = new Set<string>();
@@ -360,6 +464,7 @@ export class CopcDataSource {
           prefetchFrustumFactor: this._options.prefetchFrustumFactor,
           maxPrefetchNodes: this._options.maxPrefetchNodes,
           onPrefetchCandidate: (key) => newPrefetchKeys.add(key),
+          predictedPose: this._predictedPose(),
           incumbents: this._selectedKeys,
           incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
           viewAxisBias: this._options.viewAxisBias,
@@ -390,7 +495,11 @@ export class CopcDataSource {
       }
       // Ordered before the backpressure check, so deferred loads resume in
       // the same shallowest-first, centre-first order.
-      for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
+      for (const key of orderForLoading(
+        toLoad,
+        (k) => this._getSphere(k),
+        this._viewer.scene.camera,
+      )) {
         if (this._options.decodeBackpressure && this._scheduler.decodeBound()) {
           deferred.push(key);
           continue;
@@ -431,6 +540,7 @@ export class CopcDataSource {
       // stay over budget until the next node is inserted.
       if (this._options.strictCacheBudget) this._nodeCache.trim();
       this._selectedKeys = stillShown;
+      this._lodUnsettled = neededPages.size > 0 || stillShown.size > newSelectedKeys.size;
       if (sceneChanged) this._viewer.scene.requestRender();
     } finally {
       this._isUpdating = false;
@@ -592,6 +702,7 @@ export class CopcDataSource {
   }
   set clipPlanes(value: Cesium.Plane[] | undefined) {
     this._styleCtl.clipPlanes = value;
+    this._lodDirty = true;
   }
 
   /**
@@ -604,6 +715,7 @@ export class CopcDataSource {
   }
   set clipBoxes(value: Cesium.Matrix4[] | undefined) {
     this._styleCtl.clipBoxes = value;
+    this._lodDirty = true;
   }
 
   /** Which side of the clip regions is drawn. */
@@ -612,6 +724,7 @@ export class CopcDataSource {
   }
   set clipMode(value: ClipMode) {
     this._styleCtl.clipMode = value;
+    this._lodDirty = true;
   }
 
   /** Screen-space error threshold (pixels) that triggers node subdivision. */
@@ -620,6 +733,7 @@ export class CopcDataSource {
   }
   set sseThreshold(value: number) {
     this._options.sseThreshold = value;
+    this._lodDirty = true;
     void this._updateLoD();
   }
 

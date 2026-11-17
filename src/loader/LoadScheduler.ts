@@ -24,18 +24,32 @@ import type { StyleController } from '../renderer/StyleController';
 import type { WorkerPool } from '../worker/WorkerPool';
 import type { NodeConversionPayload } from '../worker/messages';
 import { createNodePrimitive } from './loadNode';
+import { GpuInitBudget } from '../renderer/GpuInitBudget';
 
 // Below the default 0 visible nodes decode at, so under `decodeBackpressure`
 // a prefetched node never takes a worker ahead of one on screen.
 const PREFETCH_DECODE_PRIORITY = -1;
 
+// With `prefetchLookaheadMs`, a pending prefetch load that fell out of the
+// prefetch set survives this long before it is cancelled. The predicted view
+// wobbles from pass to pass, and a half-downloaded node is worth keeping if
+// the camera swings back within a few frames.
+const PREFETCH_CANCEL_GRACE_MS = 300;
+
 /** The option fields the scheduler reads; the live options object is passed in. */
 export type LoadSchedulerOptions = Required<
   Pick<
     CopcDataSourceOptions,
-    'decodeBackpressure' | 'prefetchIdleOnly' | 'proj' | 'projDef' | 'geoidOffset' | 'zFactor'
+    | 'decodeBackpressure'
+    | 'prefetchIdleOnly'
+    | 'preUploadHidden'
+    | 'proj'
+    | 'projDef'
+    | 'geoidOffset'
+    | 'zFactor'
   >
->;
+> &
+  Pick<CopcDataSourceOptions, 'maxGpuInitsPerFrame' | 'prefetchLookaheadMs'>;
 
 export interface LoadSchedulerDeps {
   options: LoadSchedulerOptions;
@@ -51,6 +65,8 @@ export interface LoadSchedulerDeps {
   isDestroyed: () => boolean;
   /** Whether the current selection includes `key`; read when a node finishes loading. */
   isSelected: (key: string) => boolean;
+  /** Called when a load ends for any reason: cached, failed, or cancelled. */
+  onSettled?: () => void;
 }
 
 export class LoadScheduler {
@@ -63,8 +79,13 @@ export class LoadScheduler {
   /** Under `decodeBackpressure`: loads of `_wantedKeys` held back because the
    *  decode queue was full, in selection order. */
   private _deferredLoads: string[] = [];
+  /** Pending loads started as prefetch, and when each was first seen outside the prefetch set. */
+  private readonly _prefetchLoads = new Set<string>();
+  private readonly _absentSince = new Map<string, number>();
 
   private readonly _o: LoadSchedulerOptions;
+  /** Shared per-frame upload cap; null when `maxGpuInitsPerFrame` is unset. */
+  private readonly _gpuBudget: GpuInitBudget | null;
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
   private readonly _nodes: Hierarchy.Node.Map;
@@ -76,9 +97,14 @@ export class LoadScheduler {
   private readonly _getSphere: (key: string) => Cesium.BoundingSphere;
   private readonly _isDestroyed: () => boolean;
   private readonly _isSelected: (key: string) => boolean;
+  private readonly _onSettled: () => void;
 
   constructor(deps: LoadSchedulerDeps) {
     this._o = deps.options;
+    this._gpuBudget =
+      deps.options.maxGpuInitsPerFrame === undefined
+        ? null
+        : new GpuInitBudget(Math.max(1, deps.options.maxGpuInitsPerFrame));
     this._viewer = deps.viewer;
     this._copc = deps.copc;
     this._nodes = deps.nodes;
@@ -90,6 +116,7 @@ export class LoadScheduler {
     this._getSphere = deps.getSphere;
     this._isDestroyed = deps.isDestroyed;
     this._isSelected = deps.isSelected;
+    this._onSettled = deps.onSettled ?? (() => {});
   }
 
   get pendingCount(): number {
@@ -145,6 +172,7 @@ export class LoadScheduler {
       if (this._pendingKeys.size >= concurrency) break;
       if (this._cache.peek(key)) continue;
       if (this._pendingKeys.has(key)) continue;
+      this._prefetchLoads.add(key);
       void this.load(key, priority);
     }
   }
@@ -176,7 +204,8 @@ export class LoadScheduler {
     let room = this._pool.concurrency - this._pool.backlog;
     while (room > 0 && this._deferredLoads.length > 0) {
       const key = this._deferredLoads.shift()!;
-      if (!this._wantedKeys.has(key) || this._cache.peek(key) || this._pendingKeys.has(key)) continue;
+      if (!this._wantedKeys.has(key) || this._cache.peek(key) || this._pendingKeys.has(key))
+        continue;
       void this.load(key);
       room--;
     }
@@ -186,10 +215,29 @@ export class LoadScheduler {
    *  decoding data nobody will show; cancel it so its worker slot frees up
    *  for the current selection instead (#86). `newPrefetchKeys` is included
    *  so a pending prefetch load isn't cancelled just for being outside the
-   *  actual frustum — that's exactly what makes it a prefetch candidate. */
-  cancelStale(newSelectedKeys: Set<string>, newPrefetchKeys: Set<string>): void {
+   *  actual frustum — that's exactly what makes it a prefetch candidate.
+   *  With `prefetchLookaheadMs`, a prefetch load gets `PREFETCH_CANCEL_GRACE_MS`
+   *  of grace before it is cancelled; `now` is injectable for tests. */
+  cancelStale(
+    newSelectedKeys: Set<string>,
+    newPrefetchKeys: Set<string>,
+    now: number = performance.now(),
+  ): void {
+    const grace = !!this._o.prefetchLookaheadMs && this._o.prefetchLookaheadMs > 0;
     for (const key of this._pendingKeys) {
-      if (!newSelectedKeys.has(key) && !newPrefetchKeys.has(key)) this._cancels.get(key)?.();
+      if (newSelectedKeys.has(key) || newPrefetchKeys.has(key)) {
+        this._absentSince.delete(key);
+        continue;
+      }
+      if (grace && this._prefetchLoads.has(key) && !this._wantedKeys.has(key)) {
+        const since = this._absentSince.get(key);
+        if (since === undefined) {
+          this._absentSince.set(key, now);
+          continue;
+        }
+        if (now - since <= PREFETCH_CANCEL_GRACE_MS) continue;
+      }
+      this._cancels.get(key)?.();
     }
   }
 
@@ -202,7 +250,10 @@ export class LoadScheduler {
       // Queued alongside every other node this same LoD pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._fetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
+      const rangeTask = this._fetcher.fetch(
+        node.pointDataOffset,
+        node.pointDataOffset + node.pointDataLength,
+      );
       this._cancels.set(key, rangeTask.cancel);
       const fetchStart = performance.now();
       const compressedBytes = await rangeTask;
@@ -239,9 +290,15 @@ export class LoadScheduler {
       // work happens on the first frame the node is drawn, because that is
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style.style, (start, end) => {
-        if (!this._isDestroyed()) this._stages.record('upload', start, end);
-      });
+      const primitive = await createNodePrimitive(
+        renderData,
+        boundingSphere,
+        this._style.style,
+        (start, end) => {
+          if (!this._isDestroyed()) this._stages.record('upload', start, end);
+        },
+        { preUploadHidden: this._o.preUploadHidden, budget: this._gpuBudget ?? undefined },
+      );
       if (this._isDestroyed()) {
         primitive.destroy();
         return;
@@ -263,6 +320,9 @@ export class LoadScheduler {
     } finally {
       this._pendingKeys.delete(key);
       this._cancels.delete(key);
+      this._prefetchLoads.delete(key);
+      this._absentSince.delete(key);
+      this._onSettled();
       if (!this._isDestroyed()) {
         // A finished (or abandoned) node is room in the decode queue.
         if (this._o.decodeBackpressure) this._drainDeferredLoads();
