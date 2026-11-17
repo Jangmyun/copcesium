@@ -347,8 +347,13 @@ export class CopcDataSource {
 
     const now = performance.now();
     if (now - this._lastUpdateTime < this._options.debounceMs) return;
-    if (this._options.skipIdleLoD && !this._lodNeeded()) return;
+    // A skipped tick still restarts the debounce clock. Otherwise the first
+    // tick after an idle stretch runs a pass at once, on the very frame a
+    // camera jump lands, and the passes after it fall out of step with
+    // debounceMs; benchmark replays settled 7-10% slower that way.
+    const skip = this._options.skipIdleLoD && !this._lodNeeded();
     this._lastUpdateTime = now;
+    if (skip) return;
     void this._updateLoD();
   }
 

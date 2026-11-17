@@ -15,6 +15,8 @@ All notable changes to this project are documented here. This project follows
   skipped while the camera, viewport, loads, hierarchy pages, cache and
   options are unchanged since the last pass, so an idle scene under
   continuous rendering stops re-running selection every `debounceMs`.
+  A skipped tick still counts as a pass for `debounceMs`, so passes keep
+  the same cadence as with the option off.
 - `prefetchLookaheadMs` (opt-in, off by default): while the camera moves,
   prefetch is built around the pose it is predicted to have that far ahead
   (damped constant-velocity, capped at 250 ms), candidates load nearest to
