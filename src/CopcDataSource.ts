@@ -26,16 +26,16 @@ import type {
   NodeRenderData,
   PickedPoint,
   PointSizeMode,
-  StageTiming,
 } from './types';
 import { loadCopcHierarchy } from './copc/hierarchy';
 import { HierarchyPager } from './copc/hierarchyPager';
 import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
 import { RangeFetcher } from './copc/RangeFetcher';
-import { percentile, pushSample } from './util/rollingSamples';
+import { StageTimer } from './util/StageTimer';
 import type { TransferCounter } from './copc/TransferCounter';
 import { resolveCrs } from './crs/resolveCrs';
-import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { getCullingVolume, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
@@ -139,40 +139,14 @@ export function resolveWorkerCount(
   return Math.min(AUTO_WORKERS_MAX, Math.max(AUTO_WORKERS_MIN, cores - 1));
 }
 
-type StageName = 'fetch' | 'decode' | 'upload';
-
-/** How many recent nodes each stage's percentiles are computed over. Bounded
- *  so a long session doesn't accumulate one sample per node forever; large
- *  enough that a single slow node can't drag the median. */
-const STAGE_SAMPLE_WINDOW = 256;
-
-// Bounds `_sphereCache` independently of `maxCacheNodes`: every candidate the
-// selectNodes() pass touches while walking the hierarchy gets a sphere
-// computed, not just currently-loaded/visible nodes, so this cache sees a much
-// larger working set per LoD pass than NodeCache does. Sized generously above
-// the default `maxCacheNodes` (150) to comfortably hold a pass's candidates
-// without thrashing.
-const MAX_SPHERE_CACHE_SIZE = 5000;
-
 export class CopcDataSource {
   private readonly _url: string;
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
   private readonly _pager: HierarchyPager;
   private readonly _counter: TransferCounter;
-  /** Bounded rolling samples per pipeline stage; see `stats`. */
-  private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
-  /** Monotonic completion counts. Kept apart from `_stageSamples` because that
-   *  window is capped at `STAGE_SAMPLE_WINDOW` for the percentiles' sake, and
-   *  reading its length back as a total silently pins every long session at
-   *  that cap (#194). */
-  private readonly _stageCounts: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
-  /** Emitted `performance.measure` entries since the last clear; see `_recordStage`. */
-  private readonly _measureCount: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
-  private readonly _rootCenter: { x: number; y: number; z: number };
-  private readonly _rootHalfSize: number;
+  private readonly _stages = new StageTimer();
   private readonly _options: ResolvedOptions;
-  private readonly _project: ProjectToCartesian;
   private readonly _styleCtl: StyleController;
   private readonly _nodeCache: NodeCache;
   private readonly _rangeFetcher: RangeFetcher;
@@ -180,7 +154,7 @@ export class CopcDataSource {
   private readonly _ownsPool: boolean;
   private readonly _pendingKeys = new Set<string>();
   private readonly _cancels = new Map<string, () => void>();
-  private readonly _sphereCache = new Map<string, Cesium.BoundingSphere>();
+  private readonly _spheres: SphereCache;
   private _selectedKeys = new Set<string>();
   /** The last LoD pass's selection and prefetch candidates, kept so
    *  `_dispatchPrefetch()` can run again when a load finishes. */
@@ -211,10 +185,8 @@ export class CopcDataSource {
     this._url = url;
     this._viewer = viewer;
     this._copc = hierarchy.copc;
-    this._rootCenter = hierarchy.rootCenter;
-    this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
-    this._project = project;
+    this._spheres = new SphereCache(hierarchy.rootCenter, hierarchy.rootHalfSize, project, options.xyFactor);
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
@@ -305,40 +277,13 @@ export class CopcDataSource {
     });
   }
 
-  /** LRU-cached, capped at `MAX_SPHERE_CACHE_SIZE`. Unlike `_nodeCache`, no
-   *  pinning is needed: a `Cesium.BoundingSphere` is pure arithmetic (no I/O,
-   *  no GPU work), so evicting even a currently-visible node's sphere is
-   *  safe — it's simply recomputed on the next call. */
   private _getSphere(key: string): Cesium.BoundingSphere {
-    const cached = this._sphereCache.get(key);
-    if (cached) {
-      // Bump recency: delete + re-insert moves this key to the end of the
-      // Map's iteration order, which the eviction below relies on.
-      this._sphereCache.delete(key);
-      this._sphereCache.set(key, cached);
-      return cached;
-    }
-    const sphere = getNodeBoundingSphere(
-      key,
-      this._rootCenter,
-      this._rootHalfSize,
-      this._project,
-      this._options.xyFactor,
-    );
-    this._sphereCache.set(key, sphere);
-    if (this._sphereCache.size > MAX_SPHERE_CACHE_SIZE) {
-      // Iterates in insertion (= least-recently-used-first) order.
-      const oldestKey = this._sphereCache.keys().next().value;
-      if (oldestKey !== undefined) this._sphereCache.delete(oldestKey);
-    }
-    return sphere;
+    return this._spheres.get(key);
   }
 
-  /** `_getSphere` without the LRU bump, for the per-frame visibility pass:
-   *  re-inserting up to 100 keys every frame is pure churn when nothing is
-   *  being evicted. Falls back to `_getSphere` on a miss so it still caches. */
-  private _peekSphere(key: string): Cesium.BoundingSphere {
-    return this._sphereCache.get(key) ?? this._getSphere(key);
+  /** The sphere cache's backing map; read by tests that check eviction. */
+  private get _sphereCache(): ReadonlyMap<string, Cesium.BoundingSphere> {
+    return this._spheres.entries;
   }
 
   /** Runs on every `Scene.preRender`: a cheap visibility pass every frame, an
@@ -374,7 +319,7 @@ export class CopcDataSource {
       const node = this._nodeCache.peek(key);
       if (!node) continue; // still loading
       const primitive = node.primitive;
-      const show = isInFrustum(this._peekSphere(key), cullingVolume);
+      const show = isInFrustum(this._spheres.peek(key), cullingVolume);
       if (primitive.show !== show) {
         primitive.show = show;
         changed = true;
@@ -619,7 +564,7 @@ export class CopcDataSource {
       this._cancels.set(key, rangeTask.cancel);
       const fetchStart = performance.now();
       const compressedBytes = await rangeTask;
-      this._recordStage('fetch', fetchStart);
+      this._stages.record('fetch', fetchStart);
       if (this._destroyed) return;
 
       const payload: NodeConversionPayload = {
@@ -643,7 +588,7 @@ export class CopcDataSource {
       this._cancels.set(key, task.cancel);
       const decodeStart = performance.now();
       const renderData = await task;
-      this._recordStage('decode', decodeStart);
+      this._stages.record('decode', decodeStart);
       if (this._destroyed) return;
 
       const boundingSphere = this._getSphere(key);
@@ -653,7 +598,7 @@ export class CopcDataSource {
       // when `frameState.context` exists. Wrapping the constructor measured
       // object allocation and duly reported 0 ms (#194).
       const primitive = await createNodePrimitive(renderData, boundingSphere, this._styleCtl.style, (start, end) => {
-        if (!this._destroyed) this._recordStage('upload', start, end);
+        if (!this._destroyed) this._stages.record('upload', start, end);
       });
       if (this._destroyed) {
         primitive.destroy();
@@ -852,40 +797,6 @@ export class CopcDataSource {
     return Object.keys(this._pager.nodes).length;
   }
 
-  /** Records one stage's elapsed time, and emits a `performance.measure` so
-   *  the same breakdown appears on DevTools' Performance timeline without the
-   *  caller wiring anything up. Measured from timestamps rather than paired
-   *  marks, so there are no marks left to clean up. */
-  private _recordStage(stage: StageName, startedAt: number, endedAt = performance.now()): void {
-    const end = endedAt;
-    this._stageCounts[stage]++;
-    const samples = this._stageSamples[stage];
-    pushSample(samples, end - startedAt, STAGE_SAMPLE_WINDOW);
-
-    const name = `copcesium ${stage}`;
-    try {
-      performance.measure(name, { start: startedAt, end });
-      // The User Timing buffer has no default cap, so three entries per node
-      // would accumulate for the page's lifetime — tens of MB over a long
-      // session on a large dataset, never reclaimed. Dropping our own
-      // measures periodically bounds that. A DevTools *recording* still
-      // captures them as they happen; only post-hoc `getEntriesByType()`
-      // sees just the recent window, which is what `stats` is for anyway.
-      if (++this._measureCount[stage] >= STAGE_SAMPLE_WINDOW) {
-        this._measureCount[stage] = 0;
-        performance.clearMeasures(name);
-      }
-    } catch {
-      // User Timing is unavailable in some embedders; the samples above
-      // remain the source of truth for `stats`.
-    }
-  }
-
-  private _stageTiming(stage: StageName): StageTiming {
-    const samples = this._stageSamples[stage];
-    return { count: this._stageCounts[stage], p50: percentile(samples, 0.5), p95: percentile(samples, 0.95) };
-  }
-
   /**
    * Bytes spent and per-stage latency for this data source (#181).
    *
@@ -908,9 +819,9 @@ export class CopcDataSource {
         evictions: this._nodeCache.evictionCount,
       },
       waste: this._counter.waste,
-      fetch: this._stageTiming('fetch'),
-      decode: this._stageTiming('decode'),
-      upload: this._stageTiming('upload'),
+      fetch: this._stages.timing('fetch'),
+      decode: this._stages.timing('decode'),
+      upload: this._stages.timing('upload'),
     };
   }
 
