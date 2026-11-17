@@ -44,17 +44,25 @@ declare function postMessage(message: unknown, transfer?: Transferable[]): void;
 const WGS84_A = 6378137.0;
 const WGS84_E2 = 0.00669437999014;
 
-export function lonLatAltToEcef(lonDeg: number, latDeg: number, altM: number): [number, number, number] {
+/**
+ * Writes the ECEF position into `out` instead of allocating, so the per-point
+ * loop in convertNode() stays allocation-free.
+ */
+export function lonLatAltToEcefInto(lonDeg: number, latDeg: number, altM: number, out: Float64Array): void {
   const lon = lonDeg * (Math.PI / 180);
   const lat = latDeg * (Math.PI / 180);
   const sinLat = Math.sin(lat);
   const cosLat = Math.cos(lat);
   const n = WGS84_A / Math.sqrt(1 - WGS84_E2 * sinLat * sinLat);
-  return [
-    (n + altM) * cosLat * Math.cos(lon),
-    (n + altM) * cosLat * Math.sin(lon),
-    (n * (1 - WGS84_E2) + altM) * sinLat,
-  ];
+  out[0] = (n + altM) * cosLat * Math.cos(lon);
+  out[1] = (n + altM) * cosLat * Math.sin(lon);
+  out[2] = (n * (1 - WGS84_E2) + altM) * sinLat;
+}
+
+export function lonLatAltToEcef(lonDeg: number, latDeg: number, altM: number): [number, number, number] {
+  const out = new Float64Array(3);
+  lonLatAltToEcefInto(lonDeg, latDeg, altM, out);
+  return [out[0]!, out[1]!, out[2]!];
 }
 
 const FLAT_COLOR: [number, number, number] = [200, 200, 200];
@@ -165,7 +173,7 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
   const { compressedBytes, copc, node, proj, projDef, geoidOffset, zFactor, zMin, zMax } = payload;
 
   const lazPerf = await getLazPerf();
-  const view = await Copc.loadPointDataView(createBufferGetter(compressedBytes), copc, node, { lazPerf });
+  const view = await Copc.loadPointDataView(createBufferGetter(compressedBytes), copc as Copc, node, { lazPerf });
   const n = view.pointCount;
 
   if (!Number.isInteger(n) || n < 0 || n > 10_000_000) {
@@ -188,9 +196,11 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
   const needsProj = proj !== 'EPSG:4326';
   const toLonLat = needsProj ? createLonLatTransform(proj) : null;
   const lonLat = new Float64Array(2);
+  const ecef = new Float64Array(3);
 
   const { rgbRaw, maxColor } = hasRGB ? readRgbRaw(n, getR!, getG!, getB!) : { rgbRaw: null, maxColor: 0 };
   const colorScale = maxColor > 255 ? 65535 : 255;
+  const useRgb = hasRGB && !!rgbRaw;
 
   // Positions leave the worker as Float32 offsets from the node origin (the
   // first point's ECEF), with the double-precision origin carried separately
@@ -233,7 +243,10 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
       lat = y;
     }
     const alt = z * zFactor + geoidOffset;
-    const [ecefX, ecefY, ecefZ] = lonLatAltToEcef(lon, lat, alt);
+    lonLatAltToEcefInto(lon, lat, alt, ecef);
+    const ecefX = ecef[0]!;
+    const ecefY = ecef[1]!;
+    const ecefZ = ecef[2]!;
 
     if (i === 0) {
       ox = ecefX;
@@ -258,10 +271,10 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
     elevations[i] = Math.max(0, Math.min(65535, Math.round((z - zMin) * zScale)));
 
     const i4 = i * 4;
-    if (hasRGB && rgbRaw) {
-      colors[i4] = clamp255((rgbRaw[i3] / colorScale) * 255);
-      colors[i4 + 1] = clamp255((rgbRaw[i3 + 1] / colorScale) * 255);
-      colors[i4 + 2] = clamp255((rgbRaw[i3 + 2] / colorScale) * 255);
+    if (useRgb) {
+      colors[i4] = clamp255((rgbRaw![i3]! / colorScale) * 255);
+      colors[i4 + 1] = clamp255((rgbRaw![i3 + 1]! / colorScale) * 255);
+      colors[i4 + 2] = clamp255((rgbRaw![i3 + 2]! / colorScale) * 255);
     } else if (getCls) {
       const [r, g, b] = CLASSIFICATION_COLORS[cls] ?? DEFAULT_CLASS_COLOR;
       colors[i4] = r;

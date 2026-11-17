@@ -71,21 +71,11 @@ export interface WorkerPoolTiming {
   runP50: number;
 }
 
+import { median, pushSample } from '../util/rollingSamples';
+
 // Enough to smooth over one slow node, short enough to follow a change of
 // view from sparse to dense data within a few seconds of decoding.
 const TIMING_WINDOW = 32;
-
-function median(xs: number[]): number {
-  if (!xs.length) return NaN;
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = s.length >> 1;
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-}
-
-function pushWindow(window: number[], value: number): void {
-  window.push(value);
-  if (window.length > TIMING_WINDOW) window.shift();
-}
 
 /**
  * Runs work across a fixed number of reused Workers instead of spawning one
@@ -113,12 +103,17 @@ export class WorkerPool {
   ) {
     this.workers = [];
     for (let i = 0; i < concurrency; i++) {
-      const worker = this.workerFactory();
-      worker.onmessage = (e: MessageEvent<WorkerResponse>) => this._handleMessage(worker, e);
-      worker.onerror = (e: ErrorEvent) => this._handleError(worker, e);
+      const worker = this._spawn();
       this.workers.push(worker);
       this.idleWorkers.push(worker);
     }
+  }
+
+  private _spawn(): Worker {
+    const worker = this.workerFactory();
+    worker.onmessage = (e: MessageEvent<WorkerResponse>) => this._handleMessage(worker, e);
+    worker.onerror = (e: ErrorEvent) => this._handleError(worker, e);
+    return worker;
   }
 
   /** How many tasks this pool can run at once — the number of workers it was built with. */
@@ -206,14 +201,14 @@ export class WorkerPool {
 
   private _start(worker: Worker, task: Task): void {
     task.startedAt = this.now();
-    pushWindow(this.waitTimes, task.startedAt - task.queuedAt);
+    pushSample(this.waitTimes, task.startedAt - task.queuedAt, TIMING_WINDOW);
     this.pending.set(worker, task);
     worker.postMessage({ id: task.id, payload: task.message } satisfies WorkerRequest, task.transfer);
   }
 
   /** Records how long a task held its worker, for `timing.runP50`. */
   private _finished(task: Task): void {
-    if (task.startedAt !== null) pushWindow(this.runTimes, this.now() - task.startedAt);
+    if (task.startedAt !== null) pushSample(this.runTimes, this.now() - task.startedAt, TIMING_WINDOW);
   }
 
   private _handleMessage(worker: Worker, e: MessageEvent<WorkerResponse>): void {
@@ -317,9 +312,7 @@ export class WorkerPool {
     }
     this.workerReplacementCount++;
 
-    const replacement = this.workerFactory();
-    replacement.onmessage = (e: MessageEvent<WorkerResponse>) => this._handleMessage(replacement, e);
-    replacement.onerror = (e: ErrorEvent) => this._handleError(replacement, e);
+    const replacement = this._spawn();
     this.workers.push(replacement);
     this._release(replacement); // picks up queued work if any, else goes idle
   }

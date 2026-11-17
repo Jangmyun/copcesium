@@ -16,79 +16,34 @@
  * `PointCloudPrimitive` (rendering) into one coherent stream.
  */
 import * as Cesium from 'cesium';
-import proj4 from 'proj4';
-import { Copc, type Hierarchy } from 'copc';
+import type { Copc } from 'copc';
 import type {
   ClipMode,
   ColorMode,
   CopcDataSourceOptions,
   CopcStats,
   LoadedNode,
-  NodeRenderData,
   PickedPoint,
   PointSizeMode,
-  StageTiming,
 } from './types';
-import { emptyInvalidNodes, loadCopcHierarchy } from './copc/hierarchy';
-import { bucketKeysByDepth, findRelevantKeys, getDepth, type ParsedKey } from './copc/node';
-import { isRetryable, RangeFetcher } from './copc/RangeFetcher';
-import { createCountingGetter, type TransferCounter } from './copc/TransferCounter';
-import { detectCrs } from './crs/detectCrs';
-import { createProjector } from './crs/project';
-import { getCullingVolume, getNodeBoundingSphere, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { loadCopcHierarchy } from './copc/hierarchy';
+import { HierarchyPager } from './copc/hierarchyPager';
+import { bucketKeysByDepth, findRelevantKeys, type ParsedKey } from './copc/node';
+import { RangeFetcher } from './copc/RangeFetcher';
+import { StageTimer } from './util/StageTimer';
+import type { TransferCounter } from './copc/TransferCounter';
+import { resolveCrs } from './crs/resolveCrs';
+import { getCullingVolume, isInFrustum, type ProjectToCartesian } from './lod/boundingVolume';
+import { SphereCache } from './lod/SphereCache';
 import { orderForLoading } from './lod/loadOrder';
+import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
-import { createNodePrimitive } from './loader/loadNode';
-import type { PointStyle } from './renderer/PointCloudPrimitive';
-import {
-  COLOR_MODE,
-  SIZE_MODE,
-  MAX_PICKABLE_NODE_SLOTS,
-  MAX_PICKABLE_POINT_INDEX,
-  buildClassMask,
-  decodePickColor,
-} from './renderer/shaders';
-import { PickFramebuffer } from './renderer/PickFramebuffer';
-import {
-  createClipState,
-  setClipBoxes,
-  validateClipMode,
-  validateClipPlanes,
-} from './renderer/clipping';
+import { LoadScheduler } from './loader/LoadScheduler';
+import { PointPicker } from './renderer/pickPoint';
+import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
-import type { NodeConversionPayload } from './worker/messages';
 import { NodeCache } from './cache/NodeCache';
 
-// `SceneTransforms.transformWindowToDrawingBuffer` and `Context.prototype.draw`
-// are Cesium renderer internals with no public type declarations — same
-// undeclared-but-present-at-runtime pattern as PointCloudPrimitive.ts's
-// CesiumInternal cast. `pickPoint()` is the only user.
-interface CesiumPickingInternal {
-  SceneTransforms: {
-    transformWindowToDrawingBuffer(scene: Cesium.Scene, windowPosition: Cesium.Cartesian2): Cesium.Cartesian2;
-  };
-}
-const CesiumPicking = Cesium as unknown as CesiumPickingInternal;
-interface CesiumContextDrawable {
-  draw(command: unknown, passState: unknown): void;
-  uniformState: {
-    updateCamera(camera: Cesium.Camera): void;
-    updateFrustum(frustum: PickFrustum): void;
-  };
-}
-/** The near/far-bearing subset of every Cesium frustum type (perspective,
- *  orthographic, and their off-center variants) that `pickPoint()` tightens. */
-interface PickFrustum {
-  near: number;
-  far: number;
-  clone(): PickFrustum;
-}
-/** Floor for the pick pass's tightened near plane — see `pickPoint()`. */
-const MIN_PICK_NEAR = 1;
-/** `Scene.context` (the renderer `Context`) has no public type declaration either. */
-interface CesiumSceneInternal {
-  context: unknown;
-}
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
 // instead of emitted as a separate chunk with a runtime-constructed URL — a
 // consumer's own bundler can't discover or copy an asset it never sees a
@@ -99,36 +54,6 @@ interface CesiumSceneInternal {
 import CopcWorker from './worker/worker.ts?worker&inline';
 
 export type { ClipMode, ColorMode, CopcDataSourceOptions };
-
-/** Shared by the constructor and the live setter so an out-of-range or non-finite
- *  value can never slip in through either path. */
-function validateOpacity(value: number): number {
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
-    throw new RangeError(`opacity must be between 0 and 1, got ${value}`);
-  }
-  return value;
-}
-
-/** Shared by the constructor and the live setter; a zero/negative factor would
- *  make every attenuated point collapse to (or below) `minPixelSize`. */
-function validateAttenuationFactor(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new RangeError(`attenuationFactor must be a positive finite number, got ${value}`);
-  }
-  return value;
-}
-
-/** Shared by the constructor and both min/max live setters — checked together
- *  because either one alone can't tell whether the *pair* still makes sense
- *  (e.g. raising min past the current max). */
-function validateSizeBounds(min: number, max: number): void {
-  if (!Number.isFinite(min) || min < 0) {
-    throw new RangeError(`minPixelSize must be a non-negative finite number, got ${min}`);
-  }
-  if (!Number.isFinite(max) || max < min) {
-    throw new RangeError(`maxPixelSize must be a finite number >= minPixelSize (${min}), got ${max}`);
-  }
-}
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
@@ -180,26 +105,6 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   clipMode: 'inside',
 };
 
-// Total attempts per hierarchy sub-page before giving up, mirroring
-// RangeFetcher's MAX_ATTEMPTS for node-level Range Requests (#117): a page
-// that keeps failing needs a bound so `onPageNeeded` doesn't refire the same
-// request forever on every LoD pass.
-const MAX_PAGE_LOAD_ATTEMPTS = 3;
-
-// Retries here aren't paced by a timer of their own — a page is re-requested
-// whenever the next LoD pass rediscovers it, which is as often as every
-// `debounceMs` (100ms by default) while the camera moves, and immediately on
-// `moveEnd`. Without a delay of its own, all three attempts can burn inside a
-// few hundred milliseconds, so a one-second network blip would exhaust the
-// budget and drop the subtree for good. These spread the attempts the way
-// RangeFetcher's backoff does, but longer: a give-up here is permanent for the
-// session, whereas a failed node load is simply re-requested by the next pass.
-const PAGE_RETRY_BASE_MS = 1000;
-// Failures far enough apart are unrelated incidents, not one page going bad:
-// without this, three isolated blips across a long session would still add up
-// to a permanent give-up.
-const PAGE_FAILURE_RESET_MS = 60_000;
-
 // Heap-priority multiplier `selectNodes` gives nodes already on screen while
 // the camera moves, so nodes straddling a budget cut stop trading places on
 // every pass (#192). Released on `moveEnd`, so the settled selection is exact:
@@ -207,10 +112,6 @@ const PAGE_FAILURE_RESET_MS = 60_000;
 // during the move. 1.05–1.30 all eliminated the flicker in the issue's
 // measurements; 1.15 sits in the middle.
 const INCUMBENT_BONUS = 1.15;
-
-// Below the default 0 visible nodes decode at, so under `decodeBackpressure`
-// a prefetched node never takes a worker ahead of one on screen.
-const PREFETCH_DECODE_PRIORITY = -1;
 
 // Bounds for `concurrency: 'auto'`. The top is today's fixed default, so
 // 'auto' never spends more cores than a desktop already gets. The bottom keeps
@@ -232,79 +133,22 @@ export function resolveWorkerCount(
   return Math.min(AUTO_WORKERS_MAX, Math.max(AUTO_WORKERS_MIN, cores - 1));
 }
 
-type StageName = 'fetch' | 'decode' | 'upload';
-
-/** How many recent nodes each stage's percentiles are computed over. Bounded
- *  so a long session doesn't accumulate one sample per node forever; large
- *  enough that a single slow node can't drag the median. */
-const STAGE_SAMPLE_WINDOW = 256;
-
-function percentile(sorted: number[], fraction: number): number {
-  if (sorted.length === 0) return 0;
-  const index = Math.min(sorted.length - 1, Math.floor(sorted.length * fraction));
-  return sorted[index]!;
-}
-
-// Bounds `_sphereCache` independently of `maxCacheNodes`: every candidate the
-// selectNodes() pass touches while walking the hierarchy gets a sphere
-// computed, not just currently-loaded/visible nodes, so this cache sees a much
-// larger working set per LoD pass than NodeCache does. Sized generously above
-// the default `maxCacheNodes` (150) to comfortably hold a pass's candidates
-// without thrashing.
-const MAX_SPHERE_CACHE_SIZE = 5000;
-
 export class CopcDataSource {
   private readonly _url: string;
   private readonly _viewer: Cesium.Viewer;
   private readonly _copc: Copc;
-  private readonly _nodes: Hierarchy.Node.Map;
-  /** Tracked incrementally as nodes are merged in, rather than recomputed with
-   *  `Math.max(...keys)` on every read — that spread blows the call stack once
-   *  a multi-page hierarchy's node count passes ~124k (#126). */
-  private _maxDepth: number;
-  /** Sub-page entry points not yet merged into `_nodes`; shrinks as pages load. */
-  private readonly _pages: Hierarchy.Page.Map;
-  private readonly _pendingPages = new Set<string>();
-  /** Failed attempts per hierarchy page key, with the timestamp of the last one
-   *  so retries can be spaced out and stale counts discarded; cleared once a
-   *  page loads. */
-  private readonly _pageFailures = new Map<string, { count: number; at: number }>();
+  private readonly _pager: HierarchyPager;
   private readonly _counter: TransferCounter;
-  /** Shared status-checked, counting Getter for hierarchy sub-pages. Retry
-   *  policy stays with `_loadPage()`, which already owns the attempt count and
-   *  backoff — this getter makes exactly one attempt (#139). */
-  private readonly _pageGetter: (begin: number, end: number) => Promise<Uint8Array>;
-  /** Bounded rolling samples per pipeline stage; see `stats`. */
-  private readonly _stageSamples: Record<StageName, number[]> = { fetch: [], decode: [], upload: [] };
-  /** Monotonic completion counts. Kept apart from `_stageSamples` because that
-   *  window is capped at `STAGE_SAMPLE_WINDOW` for the percentiles' sake, and
-   *  reading its length back as a total silently pins every long session at
-   *  that cap (#194). */
-  private readonly _stageCounts: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
-  /** Emitted `performance.measure` entries since the last clear; see `_recordStage`. */
-  private readonly _measureCount: Record<StageName, number> = { fetch: 0, decode: 0, upload: 0 };
-  private readonly _rootCenter: { x: number; y: number; z: number };
-  private readonly _rootHalfSize: number;
+  private readonly _stages = new StageTimer();
   private readonly _options: ResolvedOptions;
-  private readonly _project: ProjectToCartesian;
-  private readonly _style: PointStyle;
-  /** True while `intensityRange` is unpinned and grows with each node loaded. */
-  private _autoIntensityRange: boolean;
+  private readonly _styleCtl: StyleController;
   private readonly _nodeCache: NodeCache;
   private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
   private readonly _ownsPool: boolean;
-  private readonly _pendingKeys = new Set<string>();
-  private readonly _cancels = new Map<string, () => void>();
-  private readonly _sphereCache = new Map<string, Cesium.BoundingSphere>();
+  private readonly _scheduler: LoadScheduler;
+  private readonly _spheres: SphereCache;
   private _selectedKeys = new Set<string>();
-  /** The last LoD pass's selection and prefetch candidates, kept so
-   *  `_dispatchPrefetch()` can run again when a load finishes. */
-  private _wantedKeys = new Set<string>();
-  private _prefetchCandidates = new Set<string>();
-  /** Under `decodeBackpressure`: loads of `_wantedKeys` held back because the
-   *  decode queue was full, in selection order. */
-  private _deferredLoads: string[] = [];
   private _isUpdating = false;
   private _pendingUpdate = false;
   private _lastUpdateTime = 0;
@@ -313,10 +157,7 @@ export class CopcDataSource {
   private _removeMoveStartListener: () => void = () => {};
   private _cameraMoving = false;
   private _destroyed = false;
-  /** Lazily built, resized to the canvas on demand — see `pickPoint()`. */
-  private readonly _pickFramebuffer = new PickFramebuffer();
-  /** So a WebGL1 session logs the pickPoint() limitation once, not on every click. */
-  private _warnedNoWebgl2 = false;
+  private readonly _picker = new PointPicker();
 
   private constructor(
     url: string,
@@ -330,35 +171,21 @@ export class CopcDataSource {
     this._url = url;
     this._viewer = viewer;
     this._copc = hierarchy.copc;
-    this._nodes = hierarchy.nodes;
-    this._maxDepth = hierarchy.maxDepth;
-    this._pages = hierarchy.pages;
-    this._rootCenter = hierarchy.rootCenter;
-    this._rootHalfSize = hierarchy.rootHalfSize;
     this._options = options;
-    this._project = project;
-    validateSizeBounds(options.minPixelSize, options.maxPixelSize);
-    this._style = {
-      pixelSize: options.pixelSize,
-      sizeMode: SIZE_MODE[options.pointSizeMode],
-      attenuationFactor: validateAttenuationFactor(options.attenuationFactor),
-      minPixelSize: options.minPixelSize,
-      maxPixelSize: options.maxPixelSize,
-      colorMode: COLOR_MODE[options.colorMode],
-      intensityRange: new Cesium.Cartesian2(options.intensityRange?.[0] ?? 0, options.intensityRange?.[1] ?? 1),
-      classMask: buildClassMask(options.classificationFilter),
-      heightOffset: 0,
-      opacity: validateOpacity(options.opacity),
-      clip: createClipState(options.clipPlanes, options.clipBoxes, options.clipMode),
-    };
-    this._autoIntensityRange = options.intensityRange === undefined;
+    this._spheres = new SphereCache(hierarchy.rootCenter, hierarchy.rootHalfSize, project, options.xyFactor);
+    this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
       (_key, node) => this._destroyLoadedNode(node),
       options.maxCacheBytes,
     );
     this._counter = hierarchy.counter;
-    this._pageGetter = createCountingGetter(url, this._counter);
+    this._pager = new HierarchyPager(
+      url,
+      hierarchy,
+      () => this._destroyed,
+      () => void this._updateLoD(),
+    );
     this._rangeFetcher = new RangeFetcher(
       url,
       undefined,
@@ -373,6 +200,20 @@ export class CopcDataSource {
     );
     this._workerPool = workerPool;
     this._ownsPool = ownsPool;
+    this._scheduler = new LoadScheduler({
+      options,
+      viewer,
+      copc: this._copc,
+      nodes: this._pager.nodes,
+      rangeFetcher: this._rangeFetcher,
+      workerPool,
+      nodeCache: this._nodeCache,
+      stages: this._stages,
+      style: this._styleCtl,
+      getSphere: (key) => this._getSphere(key),
+      isDestroyed: () => this._destroyed,
+      isSelected: (key) => this._selectedKeys.has(key),
+    });
   }
 
   /**
@@ -396,70 +237,7 @@ export class CopcDataSource {
 
     const hierarchy = await loadCopcHierarchy(url);
 
-    // Run WKT detection unconditionally — even when the caller overrides
-    // proj/projDef, the file's WKT may still be the only source of the true
-    // zFactor/xyFactor (e.g. a compound CRS with foot-based vertical units).
-    // proj/projDef and zFactor/xyFactor are therefore applied independently,
-    // each only when the user did not explicitly set that particular field.
-    const detected = detectCrs(hierarchy.copc.wkt, url);
-    if (detected) {
-      if (!resolved.projDef) {
-        resolved.proj = detected.proj;
-        resolved.projDef = detected.projDef;
-      }
-      // Check the raw `options` argument, not `resolved`, since `resolved`
-      // already carries the (indistinguishable) default of 1.
-      if (options.zFactor === undefined) resolved.zFactor = detected.zFactor;
-      if (options.xyFactor === undefined) resolved.xyFactor = detected.xyFactor;
-      if (detected.warning && !options.projDef) console.warn(`[CopcDataSource] ${url}: ${detected.warning}`);
-    }
-    // Without a CRS the coordinates are read as degrees. For projected data
-    // (meters or feet) that puts every point off the globe or in the wrong
-    // place with no error at all, so refuse it while it can still be told
-    // apart: longitude/latitude never leave ±180/±90.
-    if (resolved.proj === 'EPSG:4326') {
-      const { min, max } = hierarchy.copc.header;
-      if ([min[0], max[0]].some((x) => Math.abs(x) > 180) || [min[1], max[1]].some((y) => Math.abs(y) > 90)) {
-        throw new Error(
-          `[CopcDataSource] ${url}: no CRS could be determined from the file, and its extent ` +
-            `(x ${min[0]}..${max[0]}, y ${min[1]}..${max[1]}) is not longitude/latitude. ` +
-            'Pass `proj` and `projDef` for its coordinate system.',
-        );
-      }
-    }
-    if (resolved.projDef && resolved.proj !== 'EPSG:4326') {
-      proj4.defs(resolved.proj, resolved.projDef);
-    }
-
-    const converter = resolved.proj !== 'EPSG:4326' ? proj4(resolved.proj, 'EPSG:4326') : null;
-    const project = createProjector(converter, resolved.geoidOffset, resolved.zFactor);
-
-    // A CRS proj4 can define but not evaluate here — most often a +nadgrids
-    // definition whose grid file was never registered — turns every point
-    // into NaN and fails each node's decode one by one. Try the middle of
-    // the data once, up front, and say why instead.
-    if (converter) {
-      const { min, max } = hierarchy.copc.header;
-      const [lon, lat] = converter.forward([(min[0] + max[0]) / 2, (min[1] + max[1]) / 2]);
-      if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
-        throw new Error(
-          `[CopcDataSource] ${url}: the CRS "${resolved.proj}" cannot transform this file's coordinates to WGS84 ` +
-            '(a +nadgrids definition needs its grid registered with proj4.nadgrid() first). ' +
-            'Pass a usable `projDef`.',
-        );
-      }
-    }
-
-    // A compound CRS gives heights against a vertical datum, which for
-    // nearly every survey is a geoid; Cesium places them on the WGS84
-    // ellipsoid. Without `geoidOffset` the cloud floats or sinks by the local
-    // geoid height, tens of meters in much of the world.
-    if (options.geoidOffset === undefined && /\b(?:VERT_CS|VERTCRS|VERTICALCRS)\s*[[(]/i.test(hierarchy.copc.wkt ?? '')) {
-      console.warn(
-        `[CopcDataSource] ${url}: heights are relative to a vertical datum (usually a geoid), not the WGS84 ` +
-          'ellipsoid Cesium uses. Pass `geoidOffset` (the local geoid height in meters) to place them correctly.',
-      );
-    }
+    const project = resolveCrs(url, hierarchy.copc, options, resolved);
 
     const pool = workerPool ?? new WorkerPool(() => new CopcWorker(), resolveWorkerCount(resolved.concurrency));
 
@@ -488,11 +266,8 @@ export class CopcDataSource {
   async zoomTo(): Promise<void> {
     const rootSphere = this._getSphere('0-0-0-0');
     const camera = this._viewer.scene.camera;
-    const fovy =
-      (camera.frustum instanceof Cesium.PerspectiveFrustum ? camera.frustum.fovy : undefined) ??
-      Cesium.Math.toRadians(60);
-    const sseScale = this._viewer.scene.canvas.clientHeight / (2 * Math.tan(fovy / 2));
-    const initRange = (rootSphere.radius * sseScale) / (this._options.sseThreshold * 2);
+    const scale = sseScale(this._viewer.scene.canvas.clientHeight, getFovy(camera.frustum));
+    const initRange = (rootSphere.radius * scale) / (this._options.sseThreshold * 2);
 
     return new Promise<void>((resolve) => {
       camera.flyToBoundingSphere(rootSphere, {
@@ -502,33 +277,13 @@ export class CopcDataSource {
     });
   }
 
-  /** LRU-cached, capped at `MAX_SPHERE_CACHE_SIZE`. Unlike `_nodeCache`, no
-   *  pinning is needed: a `Cesium.BoundingSphere` is pure arithmetic (no I/O,
-   *  no GPU work), so evicting even a currently-visible node's sphere is
-   *  safe — it's simply recomputed on the next call. */
   private _getSphere(key: string): Cesium.BoundingSphere {
-    const cached = this._sphereCache.get(key);
-    if (cached) {
-      // Bump recency: delete + re-insert moves this key to the end of the
-      // Map's iteration order, which the eviction below relies on.
-      this._sphereCache.delete(key);
-      this._sphereCache.set(key, cached);
-      return cached;
-    }
-    const sphere = getNodeBoundingSphere(
-      key,
-      this._rootCenter,
-      this._rootHalfSize,
-      this._project,
-      this._options.xyFactor,
-    );
-    this._sphereCache.set(key, sphere);
-    if (this._sphereCache.size > MAX_SPHERE_CACHE_SIZE) {
-      // Iterates in insertion (= least-recently-used-first) order.
-      const oldestKey = this._sphereCache.keys().next().value;
-      if (oldestKey !== undefined) this._sphereCache.delete(oldestKey);
-    }
-    return sphere;
+    return this._spheres.get(key);
+  }
+
+  /** The sphere cache's backing map; read by tests that check eviction. */
+  private get _sphereCache(): ReadonlyMap<string, Cesium.BoundingSphere> {
+    return this._spheres.entries;
   }
 
   /** Runs on every `Scene.preRender`: a cheap visibility pass every frame, an
@@ -564,7 +319,7 @@ export class CopcDataSource {
       const node = this._nodeCache.peek(key);
       if (!node) continue; // still loading
       const primitive = node.primitive;
-      const show = isInFrustum(this._getSphere(key), cullingVolume);
+      const show = isInFrustum(this._spheres.peek(key), cullingVolume);
       if (primitive.show !== show) {
         primitive.show = show;
         changed = true;
@@ -593,8 +348,8 @@ export class CopcDataSource {
       const newPrefetchKeys = new Set<string>();
       const newSelectedKeys = new Set(
         selectNodes({
-          nodes: this._nodes,
-          pages: this._pages,
+          nodes: this._pager.nodes,
+          pages: this._pager.pages,
           onPageNeeded: (key) => neededPages.add(key),
           getSphere: (key) => this._getSphere(key),
           camera: this._viewer.scene.camera,
@@ -612,7 +367,7 @@ export class CopcDataSource {
       );
 
       this._dispatchPageLoads(neededPages);
-      this._cancelStaleLoads(newSelectedKeys, newPrefetchKeys);
+      this._scheduler.cancelStale(newSelectedKeys, newPrefetchKeys);
 
       let sceneChanged = false;
 
@@ -630,25 +385,20 @@ export class CopcDataSource {
           }
           continue;
         }
-        if (this._pendingKeys.has(key)) continue;
+        if (this._scheduler.isPending(key)) continue;
         toLoad.push(key);
       }
       // Ordered before the backpressure check, so deferred loads resume in
       // the same shallowest-first, centre-first order.
       for (const key of orderForLoading(toLoad, (k) => this._getSphere(k), this._viewer.scene.camera)) {
-        if (this._options.decodeBackpressure && this._decodeBound()) {
+        if (this._options.decodeBackpressure && this._scheduler.decodeBound()) {
           deferred.push(key);
           continue;
         }
-        void this._loadNode(key);
+        void this._scheduler.load(key);
       }
 
-      this._wantedKeys = newSelectedKeys;
-      // Replaced, not appended: keys the camera has since moved past must not
-      // be loaded later just because they were once deferred.
-      this._deferredLoads = deferred;
-      this._prefetchCandidates = newPrefetchKeys;
-      this._dispatchPrefetch();
+      this._scheduler.commit(newSelectedKeys, deferred, newPrefetchKeys);
 
       const stillShown = new Set(newSelectedKeys);
       // Bucketed once per pass (not once per deselected key) so
@@ -691,87 +441,11 @@ export class CopcDataSource {
     }
   }
 
-  /**
-   * Prefetch candidates never set `show` — they're outside the actual frustum
-   * — and only get a request once the visible loads have already claimed
-   * their slots, so a pan never waits on prefetch traffic for the detail it
-   * needs right now (#212).
-   *
-   * Claiming slots first is not enough on a link that is bandwidth-bound
-   * rather than latency-bound: a prefetch request that starts while visible
-   * loads are still downloading takes its share of the bytes, and every
-   * visible node arrives that much later. With `prefetchIdleOnly`, prefetch
-   * waits until no load for the current selection is still pending, and
-   * `_loadNode()` calls back here when the last one finishes, so prefetch
-   * still runs in the pauses between camera moves without another LoD pass.
-   *
-   * Every prefetch rule is decided here, in `_prefetchBlocked()`, and the
-   * rules only ever add conditions: with both `prefetchIdleOnly` and
-   * `decodeBackpressure` on, prefetch waits until *both* the visible loads
-   * have finished and the decode queue is empty. Neither option can let
-   * prefetch through when the other holds it back.
-   */
-  private _dispatchPrefetch(): void {
-    if (this._prefetchBlocked()) return;
-    const concurrency = this._workerPool.concurrency;
-    const priority = this._options.decodeBackpressure ? PREFETCH_DECODE_PRIORITY : 0;
-    for (const key of this._prefetchCandidates) {
-      if (this._pendingKeys.size >= concurrency) break;
-      if (this._nodeCache.peek(key)) continue;
-      if (this._pendingKeys.has(key)) continue;
-      void this._loadNode(key, priority);
-    }
-  }
-
-  /** True while any enabled prefetch rule holds prefetch back. */
-  private _prefetchBlocked(): boolean {
-    if (this._options.decodeBackpressure && this._workerPool.backlog > 0) return true;
-    if (this._options.prefetchIdleOnly) {
-      for (const key of this._pendingKeys) if (this._wantedKeys.has(key)) return true;
-    }
-    return false;
-  }
-
-  /**
-   * True when a full round of decoding (one task per worker) is already
-   * waiting for a worker. Downloads are then outrunning the CPU: another
-   * node fetched now would only wait in the decode queue, holding bandwidth
-   * and memory that the next view's nodes could have used, and be cancelled
-   * outright if the camera moves on first.
-   */
-  private _decodeBound(): boolean {
-    return this._workerPool.backlog >= this._workerPool.concurrency;
-  }
-
-  /** Under decode backpressure, starts deferred loads still wanted by the
-   *  current selection, at most as many as the decode queue has room for in
-   *  one round, so they go out in one tick and their ranges can still merge. */
-  private _drainDeferredLoads(): void {
-    let room = this._workerPool.concurrency - this._workerPool.backlog;
-    while (room > 0 && this._deferredLoads.length > 0) {
-      const key = this._deferredLoads.shift()!;
-      if (!this._wantedKeys.has(key) || this._nodeCache.peek(key) || this._pendingKeys.has(key)) continue;
-      void this._loadNode(key);
-      room--;
-    }
-  }
-
   /** Kicks off a hierarchy page load for every page the current selection
    *  pass needed but that isn't already loading. */
   private _dispatchPageLoads(neededPages: Set<string>): void {
     for (const key of neededPages) {
-      if (!this._pendingPages.has(key)) void this._loadPage(key);
-    }
-  }
-
-  /** A load still in flight for a key the camera has since moved past is
-   *  decoding data nobody will show; cancel it so its worker slot frees up
-   *  for the current selection instead (#86). `newPrefetchKeys` is included
-   *  so a pending prefetch load isn't cancelled just for being outside the
-   *  actual frustum — that's exactly what makes it a prefetch candidate. */
-  private _cancelStaleLoads(newSelectedKeys: Set<string>, newPrefetchKeys: Set<string>): void {
-    for (const key of this._pendingKeys) {
-      if (!newSelectedKeys.has(key) && !newPrefetchKeys.has(key)) this._cancels.get(key)?.();
+      if (!this._pager.isPending(key)) void this._pager.loadPage(key);
     }
   }
 
@@ -796,174 +470,25 @@ export class CopcDataSource {
     });
   }
 
-  private async _loadNode(key: string, decodePriority = 0): Promise<void> {
-    this._pendingKeys.add(key);
-    try {
-      // selectNodes() only ever returns keys it found present in this._nodes.
-      const node = this._nodes[key]!;
-
-      // Queued alongside every other node this same _updateLoD() pass just
-      // selected — RangeFetcher merges same-tick requests for adjacent byte
-      // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._rangeFetcher.fetch(node.pointDataOffset, node.pointDataOffset + node.pointDataLength);
-      this._cancels.set(key, rangeTask.cancel);
-      const fetchStart = performance.now();
-      const compressedBytes = await rangeTask;
-      this._recordStage('fetch', fetchStart);
-      if (this._destroyed) return;
-
-      const payload: NodeConversionPayload = {
-        compressedBytes,
-        copc: this._copc,
-        node,
-        proj: this._options.proj,
-        projDef: this._options.projDef,
-        geoidOffset: this._options.geoidOffset,
-        zFactor: this._options.zFactor,
-        zMin: this._copc.header.min[2],
-        zMax: this._copc.header.max[2],
-      };
-      const transfer = [compressedBytes.buffer];
-      // Priority only under decodeBackpressure; otherwise the call is the
-      // plain one, so an injected pool sees exactly what it always has.
-      const task =
-        decodePriority === 0
-          ? this._workerPool.run<NodeRenderData>(payload, transfer)
-          : this._workerPool.run<NodeRenderData>(payload, transfer, undefined, decodePriority);
-      this._cancels.set(key, task.cancel);
-      const decodeStart = performance.now();
-      const renderData = await task;
-      this._recordStage('decode', decodeStart);
-      if (this._destroyed) return;
-
-      const boundingSphere = this._getSphere(key);
-      this._growAutoIntensityRange(renderData.maxIntensity);
-      // Timed from inside the primitive rather than around this call: the GPU
-      // work happens on the first frame the node is drawn, because that is
-      // when `frameState.context` exists. Wrapping the constructor measured
-      // object allocation and duly reported 0 ms (#194).
-      const primitive = await createNodePrimitive(renderData, boundingSphere, this._style, (start, end) => {
-        if (!this._destroyed) this._recordStage('upload', start, end);
-      });
-      if (this._destroyed) {
-        primitive.destroy();
-        return;
-      }
-      // The selection may have moved on while this node was decoding; only
-      // show it if it's still wanted, but keep it cached either way.
-      primitive.show = this._selectedKeys.has(key);
-      this._viewer.scene.primitives.add(primitive);
-      this._nodeCache.set(key, { key, primitive, pointCount: renderData.pointCount });
-      // Required under `requestRenderMode: true` for the new primitive to actually
-      // appear; harmless (no-op) under continuous rendering otherwise.
-      this._viewer.scene.requestRender();
-    } catch (err) {
-      if (this._destroyed) return;
-      // Cancelled because the selection moved on (see the deselect loop in
-      // _updateLoD) — expected, not a failure worth logging.
-      if ((err as Error).name === 'AbortError') return;
-      console.error(`[CopcDataSource] Failed to load node "${key}":`, err);
-    } finally {
-      this._pendingKeys.delete(key);
-      this._cancels.delete(key);
-      if (!this._destroyed) {
-        // A finished (or abandoned) node is room in the decode queue.
-        if (this._options.decodeBackpressure) this._drainDeferredLoads();
-        // It may also have been the last thing holding prefetch back.
-        if (this._options.decodeBackpressure || (this._options.prefetchIdleOnly && this._wantedKeys.has(key))) {
-          this._dispatchPrefetch();
-        }
-      }
-    }
-  }
-
-  /** Loads a hierarchy sub-page, merges its nodes/pages into the live maps,
-   *  and re-runs LoD selection so the newly revealed depth can be picked up. */
-  private async _loadPage(key: string): Promise<void> {
-    const page = this._pages[key];
-    if (!page) return;
-    const failure = this._pageFailures.get(key);
-    // Still inside this attempt's backoff — skip the pass rather than spend an
-    // attempt on it. The next LoD pass to rediscover the page picks it up once
-    // the delay has elapsed.
-    if (failure && performance.now() - failure.at < PAGE_RETRY_BASE_MS * 2 ** (failure.count - 1)) {
-      return;
-    }
-    this._pendingPages.add(key);
-    try {
-      const { nodes, pages } = await Copc.loadHierarchyPage(this._pageGetter, page);
-      if (this._destroyed) return;
-      emptyInvalidNodes(nodes, this._copc.header.pointCount, this._url);
-      Object.assign(this._nodes, nodes);
-      for (const nodeKey of Object.keys(nodes)) {
-        const depth = getDepth(nodeKey);
-        if (depth > this._maxDepth) this._maxDepth = depth;
-      }
-      delete this._pages[key];
-      Object.assign(this._pages, pages);
-      this._pageFailures.delete(key);
-      void this._updateLoD();
-    } catch (err) {
-      const now = performance.now();
-      const recent = failure && now - failure.at < PAGE_FAILURE_RESET_MS;
-      const attempts = recent ? failure.count + 1 : 1;
-      this._pageFailures.set(key, { count: attempts, at: now });
-      // A settled 4xx (e.g. 404 on a removed page, 416 on a bad range) never
-      // succeeds on retry, so it gives up on the first attempt instead of
-      // burning MAX_PAGE_LOAD_ATTEMPTS and their backoff delays (#139).
-      if (attempts >= MAX_PAGE_LOAD_ATTEMPTS || !isRetryable(err)) {
-        // Give up: drop the entry point so `onPageNeeded` never fires for it
-        // again, and log an error once here rather than on every attempt so a
-        // transient outage doesn't scroll the console.
-        delete this._pages[key];
-        this._pageFailures.delete(key);
-        console.error(
-          `[CopcDataSource] Giving up on hierarchy page "${key}" after ${attempts} attempt${attempts === 1 ? '' : 's'}:`,
-          err,
-        );
-      } else {
-        // Not silent before the cap: a page that eventually loads leaves no
-        // error behind, so without this the failures that a field report would
-        // need to explain a stall would be invisible.
-        console.warn(
-          `[CopcDataSource] Hierarchy page "${key}" failed (attempt ${attempts}/${MAX_PAGE_LOAD_ATTEMPTS}), will retry:`,
-          err,
-        );
-      }
-    } finally {
-      this._pendingPages.delete(key);
-    }
-  }
-
   private _destroyLoadedNode(node: LoadedNode): void {
     this._viewer.scene.primitives.remove(node.primitive);
     this._viewer.scene.requestRender();
   }
 
-  /** Widens the auto intensity range as nodes arrive; a no-op once pinned. */
-  private _growAutoIntensityRange(maxIntensity: number): void {
-    if (!this._autoIntensityRange) return;
-    if (maxIntensity <= this._style.intensityRange.y) return;
-    this._style.intensityRange.y = maxIntensity;
-  }
-
   /** Point size in pixels, shared live by every loaded primitive (no reload needed). */
   get pixelSize(): number {
-    return this._style.pixelSize;
+    return this._styleCtl.pixelSize;
   }
   set pixelSize(value: number) {
-    this._style.pixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.pixelSize = value;
   }
 
   /** How `gl_PointSize` is computed. Shared live by every loaded primitive (no reload needed). */
   get pointSizeMode(): PointSizeMode {
-    return this._options.pointSizeMode;
+    return this._styleCtl.pointSizeMode;
   }
   set pointSizeMode(value: PointSizeMode) {
-    this._options.pointSizeMode = value;
-    this._style.sizeMode = SIZE_MODE[value];
-    this._viewer.scene.requestRender();
+    this._styleCtl.pointSizeMode = value;
   }
 
   /**
@@ -972,31 +497,26 @@ export class CopcDataSource {
    * by every loaded primitive (no reload needed).
    */
   get attenuationFactor(): number {
-    return this._style.attenuationFactor;
+    return this._styleCtl.attenuationFactor;
   }
   set attenuationFactor(value: number) {
-    this._style.attenuationFactor = validateAttenuationFactor(value);
-    this._viewer.scene.requestRender();
+    this._styleCtl.attenuationFactor = value;
   }
 
   /** Lower clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
   get minPixelSize(): number {
-    return this._style.minPixelSize;
+    return this._styleCtl.minPixelSize;
   }
   set minPixelSize(value: number) {
-    validateSizeBounds(value, this._style.maxPixelSize);
-    this._style.minPixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.minPixelSize = value;
   }
 
   /** Upper clamp (pixels) for attenuated point size. Shared live by every loaded primitive. */
   get maxPixelSize(): number {
-    return this._style.maxPixelSize;
+    return this._styleCtl.maxPixelSize;
   }
   set maxPixelSize(value: number) {
-    validateSizeBounds(this._style.minPixelSize, value);
-    this._style.maxPixelSize = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.maxPixelSize = value;
   }
 
   /**
@@ -1006,11 +526,10 @@ export class CopcDataSource {
    * blend out of order.
    */
   get opacity(): number {
-    return this._style.opacity;
+    return this._styleCtl.opacity;
   }
   set opacity(value: number) {
-    this._style.opacity = validateOpacity(value);
-    this._viewer.scene.requestRender();
+    this._styleCtl.opacity = value;
   }
 
   /**
@@ -1019,12 +538,10 @@ export class CopcDataSource {
    * and the node cache is untouched.
    */
   get colorMode(): ColorMode {
-    return this._options.colorMode;
+    return this._styleCtl.colorMode;
   }
   set colorMode(value: ColorMode) {
-    this._options.colorMode = value;
-    this._style.colorMode = COLOR_MODE[value];
-    this._viewer.scene.requestRender();
+    this._styleCtl.colorMode = value;
   }
 
   /**
@@ -1033,15 +550,10 @@ export class CopcDataSource {
    * — this hides points, it doesn't reclaim anything.
    */
   get classificationFilter(): number[] | undefined {
-    return this._options.classificationFilter;
+    return this._styleCtl.classificationFilter;
   }
   set classificationFilter(value: number[] | undefined) {
-    // Built before either field is assigned, so an out-of-range code throws
-    // without leaving the filter half-applied.
-    const mask = buildClassMask(value);
-    this._options.classificationFilter = value;
-    this._style.classMask = mask;
-    this._viewer.scene.requestRender();
+    this._styleCtl.classificationFilter = value;
   }
 
   /**
@@ -1050,14 +562,10 @@ export class CopcDataSource {
    * the nodes loaded from then on rather than the ones already resident.
    */
   get intensityRange(): [number, number] {
-    return [this._style.intensityRange.x, this._style.intensityRange.y];
+    return this._styleCtl.intensityRange;
   }
   set intensityRange(value: [number, number] | undefined) {
-    this._autoIntensityRange = value === undefined;
-    this._options.intensityRange = value;
-    this._style.intensityRange.x = value?.[0] ?? 0;
-    this._style.intensityRange.y = value?.[1] ?? 1;
-    this._viewer.scene.requestRender();
+    this._styleCtl.intensityRange = value;
   }
 
   /**
@@ -1067,11 +575,10 @@ export class CopcDataSource {
    * needed) — moves the model matrix, not the geometry.
    */
   get heightOffset(): number {
-    return this._style.heightOffset;
+    return this._styleCtl.heightOffset;
   }
   set heightOffset(value: number) {
-    this._style.heightOffset = value;
-    this._viewer.scene.requestRender();
+    this._styleCtl.heightOffset = value;
   }
 
   /**
@@ -1081,11 +588,10 @@ export class CopcDataSource {
    * effect until they're assigned again.
    */
   get clipPlanes(): Cesium.Plane[] {
-    return this._style.clip.planes.map((plane) => Cesium.Plane.clone(plane));
+    return this._styleCtl.clipPlanes;
   }
   set clipPlanes(value: Cesium.Plane[] | undefined) {
-    this._style.clip.planes = validateClipPlanes(value);
-    this._clipChanged();
+    this._styleCtl.clipPlanes = value;
   }
 
   /**
@@ -1094,27 +600,18 @@ export class CopcDataSource {
    * `[]` to clear. Copied on assignment, like `clipPlanes`.
    */
   get clipBoxes(): Cesium.Matrix4[] {
-    return this._style.clip.boxes.map((box) => Cesium.Matrix4.clone(box));
+    return this._styleCtl.clipBoxes;
   }
   set clipBoxes(value: Cesium.Matrix4[] | undefined) {
-    setClipBoxes(this._style.clip, value);
-    this._clipChanged();
+    this._styleCtl.clipBoxes = value;
   }
 
   /** Which side of the clip regions is drawn. */
   get clipMode(): ClipMode {
-    return this._options.clipMode;
+    return this._styleCtl.clipMode;
   }
   set clipMode(value: ClipMode) {
-    const mode = validateClipMode(value);
-    this._options.clipMode = value;
-    this._style.clip.mode = mode;
-    this._clipChanged();
-  }
-
-  private _clipChanged(): void {
-    this._style.clip.version++;
-    this._viewer.scene.requestRender();
+    this._styleCtl.clipMode = value;
   }
 
   /** Screen-space error threshold (pixels) that triggers node subdivision. */
@@ -1127,50 +624,15 @@ export class CopcDataSource {
   }
 
   /** Deepest octree level present in the loaded hierarchy so far — grows as
-   *  sub-pages load, and is tracked incrementally in `_loadPage()` rather than
-   *  recomputed on every read (see `_maxDepth`). */
+   *  sub-pages load, and is tracked incrementally by the pager rather than
+   *  recomputed on every read. */
   get maxDepth(): number {
-    return this._maxDepth;
+    return this._pager.maxDepth;
   }
 
   /** Total number of nodes in the loaded hierarchy (loaded or not). */
   get nodeCount(): number {
-    return Object.keys(this._nodes).length;
-  }
-
-  /** Records one stage's elapsed time, and emits a `performance.measure` so
-   *  the same breakdown appears on DevTools' Performance timeline without the
-   *  caller wiring anything up. Measured from timestamps rather than paired
-   *  marks, so there are no marks left to clean up. */
-  private _recordStage(stage: StageName, startedAt: number, endedAt = performance.now()): void {
-    const end = endedAt;
-    this._stageCounts[stage]++;
-    const samples = this._stageSamples[stage];
-    samples.push(end - startedAt);
-    if (samples.length > STAGE_SAMPLE_WINDOW) samples.shift();
-
-    const name = `copcesium ${stage}`;
-    try {
-      performance.measure(name, { start: startedAt, end });
-      // The User Timing buffer has no default cap, so three entries per node
-      // would accumulate for the page's lifetime — tens of MB over a long
-      // session on a large dataset, never reclaimed. Dropping our own
-      // measures periodically bounds that. A DevTools *recording* still
-      // captures them as they happen; only post-hoc `getEntriesByType()`
-      // sees just the recent window, which is what `stats` is for anyway.
-      if (++this._measureCount[stage] >= STAGE_SAMPLE_WINDOW) {
-        this._measureCount[stage] = 0;
-        performance.clearMeasures(name);
-      }
-    } catch {
-      // User Timing is unavailable in some embedders; the samples above
-      // remain the source of truth for `stats`.
-    }
-  }
-
-  private _stageTiming(stage: StageName): StageTiming {
-    const sorted = [...this._stageSamples[stage]].sort((a, b) => a - b);
-    return { count: this._stageCounts[stage], p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95) };
+    return Object.keys(this._pager.nodes).length;
   }
 
   /**
@@ -1186,8 +648,8 @@ export class CopcDataSource {
       fileBytes: this._counter.fileBytes,
       requestCount: this._counter.requestCount,
       transferredBytes: this._counter.transferredBytes,
-      pendingNodes: this._pendingKeys.size,
-      decodeQueue: { ...this._workerPool.timing, deferredLoads: this._deferredLoads.length },
+      pendingNodes: this._scheduler.pendingCount,
+      decodeQueue: { ...this._workerPool.timing, deferredLoads: this._scheduler.deferredCount },
       cache: {
         nodes: this._nodeCache.size,
         estimatedBytes: this._nodeCache.estimatedBytes,
@@ -1195,9 +657,9 @@ export class CopcDataSource {
         evictions: this._nodeCache.evictionCount,
       },
       waste: this._counter.waste,
-      fetch: this._stageTiming('fetch'),
-      decode: this._stageTiming('decode'),
-      upload: this._stageTiming('upload'),
+      fetch: this._stages.timing('fetch'),
+      decode: this._stages.timing('decode'),
+      upload: this._stages.timing('upload'),
     };
   }
 
@@ -1230,138 +692,17 @@ export class CopcDataSource {
    */
   pickPoint(windowPosition: Cesium.Cartesian2, tolerancePixels = 4): PickedPoint | undefined {
     if (this._destroyed) return undefined;
-    const scene = this._viewer.scene;
-    if (!Cesium.FeatureDetection.supportsWebgl2(scene)) {
-      if (!this._warnedNoWebgl2) {
-        this._warnedNoWebgl2 = true;
-        console.warn(
-          '[CopcDataSource] pickPoint() requires a WebGL2 context; this session is running WebGL1 ' +
-            '(either the browser lacks WebGL2, or the Viewer was created with contextOptions.requestWebgl1). ' +
-            'Returning undefined for every call.',
-        );
-      }
-      return undefined;
-    }
-
-    const context = (scene as unknown as CesiumSceneInternal).context as unknown as CesiumContextDrawable;
-    const width = scene.drawingBufferWidth;
-    const height = scene.drawingBufferHeight;
-    if (width === 0 || height === 0) return undefined;
-
-    const { framebuffer, passState } = this._pickFramebuffer.ensure(context, width, height);
-    this._pickFramebuffer.clear(context);
-    // The czm_* view/projection uniforms still hold whatever the last draw
-    // left there — e.g. the narrow off-center frustum of a scene.pick() the
-    // Viewer's own click handler ran just before this, or the nearest slice
-    // of a multi-frustum render. Re-sync them to the full current camera,
-    // as Cesium's Picking.js does before its own pick pass.
-    context.uniformState.updateCamera(scene.camera);
-
-    // 1-based: slotToKey[slot - 1] === key — see decodePickColor()'s doc for
-    // why node slot 0 is reserved as "no hit". Commands are collected first
-    // and drawn only after the frustum is tightened to exactly these nodes.
-    const slotToKey: string[] = [];
-    const commands: unknown[] = [];
-    for (const key of this._selectedKeys) {
-      // Past these limits the pick encoding wraps and would silently report a
-      // different point — see MAX_PICKABLE_NODE_SLOTS's doc comment.
-      if (slotToKey.length >= MAX_PICKABLE_NODE_SLOTS) break;
-      const node = this._nodeCache.peek(key);
-      if (!node || !node.primitive.show) continue; // not actually on screen
-      if (node.pointCount > MAX_PICKABLE_POINT_INDEX + 1) continue;
-      const cmd = node.primitive.preparePickCommand(context, slotToKey.length + 1, framebuffer);
-      if (!cmd) continue;
-      slotToKey.push(key);
-      commands.push(cmd);
-    }
-    if (slotToKey.length === 0) return undefined;
-
-    this._tightenPickFrustum(scene, context, slotToKey);
-    for (const cmd of commands) context.draw(cmd, passState);
-
-    const drawingBufferPos = CesiumPicking.SceneTransforms.transformWindowToDrawingBuffer(scene, windowPosition);
-    const glX = Math.round(drawingBufferPos.x);
-    // Window/drawing-buffer Y grows downward from the top; GL readback Y grows upward from the bottom.
-    const glY = Math.round(height - drawingBufferPos.y);
-
-    const rectX = Cesium.Math.clamp(glX - tolerancePixels, 0, width - 1);
-    const rectY = Cesium.Math.clamp(glY - tolerancePixels, 0, height - 1);
-    const rectRight = Cesium.Math.clamp(glX + tolerancePixels, 0, width - 1);
-    const rectTop = Cesium.Math.clamp(glY + tolerancePixels, 0, height - 1);
-    const rectW = rectRight - rectX + 1;
-    const rectH = rectTop - rectY + 1;
-    if (rectW <= 0 || rectH <= 0) return undefined;
-
-    const pixels = this._pickFramebuffer.readPixels(context, rectX, rectY, rectW, rectH);
-
-    // Among every hit in the tolerance window, the one closest to the exact
-    // click wins — each pixel already reflects the GPU depth test's own
-    // nearest-to-camera winner, so no depth comparison is needed here.
-    let best: { pointIndex: number; nodeSlot: number; distSq: number } | undefined;
-    for (let row = 0; row < rectH; row++) {
-      for (let col = 0; col < rectW; col++) {
-        const decoded = decodePickColor(pixels, (row * rectW + col) * 4);
-        if (!decoded) continue;
-        const dx = rectX + col - glX;
-        const dy = rectY + row - glY;
-        const distSq = dx * dx + dy * dy;
-        if (!best || distSq < best.distSq) best = { ...decoded, distSq };
-      }
-    }
-    if (!best) return undefined;
-
-    const nodeKey = slotToKey[best.nodeSlot - 1];
-    const node = nodeKey ? this._nodeCache.peek(nodeKey) : undefined;
-    if (!nodeKey || !node) return undefined;
-
-    const attrs = node.primitive.readPointAttributes(best.pointIndex, context);
-    return {
-      nodeKey,
-      pointIndex: best.pointIndex,
-      position: attrs.position,
-      dataPosition: attrs.dataPosition,
-      classification: attrs.classification,
-      intensity: attrs.intensity,
-    };
-  }
-
-  /**
-   * Narrows the pick pass's near/far to the depth range the drawn nodes
-   * actually span. The camera's own frustum runs 0.1 m–1e10 m, which leaves
-   * even a 24-bit pick depth buffer unable to order points kilometres away —
-   * the GPU depth test then keeps an arbitrary point instead of the front-most
-   * one. Depth is measured along the view direction (not Euclidean distance)
-   * so off-axis points near the screen edge are never clipped, and each
-   * sphere is widened by `|heightOffset|`, which shifts drawn positions but
-   * not the cached spheres. Leaves the uniforms untouched in a non-3D scene
-   * mode or for a frustum without plain near/far.
-   */
-  private _tightenPickFrustum(scene: Cesium.Scene, context: CesiumContextDrawable, keys: string[]): void {
-    if (scene.mode !== Cesium.SceneMode.SCENE3D) return;
-    const original = scene.camera.frustum as unknown as Partial<PickFrustum>;
-    if (typeof original.near !== 'number' || typeof original.far !== 'number' || typeof original.clone !== 'function') {
-      return;
-    }
-    const camPos = scene.camera.positionWC;
-    const camDir = scene.camera.directionWC;
-    const extra = Math.abs(this._style.heightOffset);
-    const toCenter = new Cesium.Cartesian3();
-    let near = Infinity;
-    let far = -Infinity;
-    for (const key of keys) {
-      const sphere = this._getSphere(key);
-      const depth = Cesium.Cartesian3.dot(Cesium.Cartesian3.subtract(sphere.center, camPos, toCenter), camDir);
-      const radius = sphere.radius + extra;
-      near = Math.min(near, depth - radius);
-      far = Math.max(far, depth + radius);
-    }
-    const frustum = (original as PickFrustum).clone();
-    // Camera inside (or right next to) a node drives `depth - radius` to zero
-    // or below; floor it rather than letting near collapse and squander the
-    // depth precision this exists to recover.
-    frustum.near = Math.max(near, MIN_PICK_NEAR, original.near);
-    frustum.far = Math.max(Math.min(far, original.far), frustum.near + 1);
-    context.uniformState.updateFrustum(frustum);
+    return this._picker.pick(
+      {
+        scene: this._viewer.scene,
+        selectedKeys: this._selectedKeys,
+        peekNode: (key) => this._nodeCache.peek(key),
+        getSphere: (key) => this._getSphere(key),
+        heightOffset: this._styleCtl.heightOffset,
+      },
+      windowPosition,
+      tolerancePixels,
+    );
   }
 
   destroy(): void {
@@ -1373,6 +714,6 @@ export class CopcDataSource {
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
-    this._pickFramebuffer.destroy();
+    this._picker.destroy();
   }
 }

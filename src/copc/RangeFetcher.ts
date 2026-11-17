@@ -17,6 +17,8 @@
  * the same way.
  */
 import { NetworkEstimator, OverlapClock } from './NetworkEstimator';
+import { fetchPartial, httpStatusError } from './rangeRequest';
+import { backoffMs, MAX_ATTEMPTS, RETRY_BASE_MS } from './retryPolicy';
 import type { TransferCounter } from './TransferCounter';
 
 /**
@@ -72,11 +74,10 @@ function abortError(message: string): Error {
 
 /** Carries `status` so the retry policy can tell a 5xx from a 4xx. */
 function httpError(status: number, begin: number, end: number): Error {
-  const err = new Error(
+  return httpStatusError(
     `RangeFetcher: server returned HTTP ${status} for bytes=${begin}-${end - 1} (expected 206 Partial Content)`,
-  ) as Error & { status: number };
-  err.status = status;
-  return err;
+    status,
+  );
 }
 
 /** Exported so other callers hitting the same file over HTTP (e.g.
@@ -142,8 +143,7 @@ const DEFAULT_MAX_CONCURRENT = 6;
 // pre-signed URL, 416 on a bad range) is a settled answer — retrying it just
 // delays the inevitable failure — and an AbortError means the caller already
 // said it no longer wants the result (#117).
-const MAX_ATTEMPTS = 3;
-const RETRY_BASE_MS = 250;
+// Both constants live in `retryPolicy.ts`, shared with hierarchy page loads.
 
 // Clamps for the adaptive gap. 256 KiB is roughly `RTT × bandwidth ÷
 // concurrency` at 100 ms, 100 Mbps and five fetches, the widest link this was
@@ -393,9 +393,11 @@ export class RangeFetcher {
         reach = req;
       }
     }
-    const firstAsked = (group: RangeRequest[]): number =>
-      Math.min(...group.map((req) => askedAt.get(req)!));
-    return groups.sort((a, b) => firstAsked(a) - firstAsked(b));
+    const firstAsked = new Map<RangeRequest[], number>();
+    for (const group of groups) {
+      firstAsked.set(group, Math.min(...group.map((req) => askedAt.get(req)!)));
+    }
+    return groups.sort((a, b) => firstAsked.get(a)! - firstAsked.get(b)!);
   }
 
   private async _fetchGroup(group: RangeRequest[], state: GroupState): Promise<void> {
@@ -414,7 +416,10 @@ export class RangeFetcher {
         } else {
           // A copy, not a view — each member is handed off independently
           // (e.g. transferred to a worker), which a shared buffer can't be.
-          req.resolve(bytes.slice(req.begin - groupBegin, req.end - groupBegin));
+          // Sole member spanning the whole body: nothing else holds `bytes`
+          // (it is fresh from `readBody`), so hand it over without copying.
+          const whole = group.length === 1 && req.begin === groupBegin && req.end - groupBegin === bytes.length && bytes.byteOffset === 0 && bytes.buffer.byteLength === bytes.length;
+          req.resolve(whole ? bytes : bytes.slice(req.begin - groupBegin, req.end - groupBegin));
           // Members are in offset order and may overlap; count each byte once.
           used += Math.max(0, req.end - Math.max(req.begin, usedEnd));
           usedEnd = Math.max(usedEnd, req.end);
@@ -489,7 +494,7 @@ export class RangeFetcher {
         if (signal.aborted) this.counter?.recordAborted(begin, end, afterHeaders);
         else this.counter?.recordFailed(begin, end);
         if (attempt >= MAX_ATTEMPTS || signal.aborted || !isRetryable(err)) throw err;
-        await delay(RETRY_BASE_MS * 2 ** (attempt - 1), signal);
+        await delay(backoffMs(RETRY_BASE_MS, attempt), signal);
         // Cancelled while backing off — don't resurrect work nobody wants.
         if (signal.aborted) throw abortError('RangeFetcher: request cancelled while waiting to retry');
       }
@@ -525,22 +530,23 @@ export class RangeFetcher {
     };
     try {
       touch();
-      const response = await fetch(this.url, {
-        headers: { Range: `bytes=${begin}-${end - 1}` },
-        signal: controller.signal,
-      });
-      onHeaders();
-      touch();
+      const response = await fetchPartial(
+        this.url,
+        begin,
+        end,
+        (status) => httpError(status, begin, end).message,
+        controller.signal,
+        () => {
+          onHeaders();
+          touch();
+        },
+      );
       // Strictly 206, not merely `ok`: a 200 means the server ignored the
       // Range header and sent the whole file, and those bytes would then be
       // sliced at range-relative offsets — silently handing the decoder data
       // from the wrong part of the file instead of failing (#117). That body
       // can be the whole multi-GB file, so release it rather than leave the
       // stream open until it is garbage-collected.
-      if (response.status !== 206) {
-        void response.body?.cancel().catch(() => {});
-        throw httpError(response.status, begin, end);
-      }
       const bytes = await readBody(response, touch);
       // A short body would otherwise reach the decoder as a truncated chunk.
       // A longer one is harmless: members are sliced from its start.
