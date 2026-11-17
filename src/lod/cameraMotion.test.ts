@@ -90,4 +90,49 @@ describe('CameraMotionTracker', () => {
     expect(wj.persistence).toBeGreaterThan(wj.cv);
     expect(wj.persistence + wj.cv).toBeCloseTo(1, 12);
   });
+  describe('extrapolation modes', () => {
+    const moving = (t: number) => sample(t, [R, t * 0.01, 100]); // 10 m/s along y
+    const trained = (opts: ConstructorParameters<typeof CameraMotionTracker>[0]) => {
+      const tr = new CameraMotionTracker(opts);
+      feed(tr, 2, moving);
+      return tr;
+    };
+
+    it('damped saturates at v * tau', () => {
+      const tr = trained({ dampTauMs: 300 });
+      const last = tr.lastSample!.position[1];
+      const far = tr.predict(10_000, 'damped')!.position[1] - last;
+      expect(far).toBeCloseTo(0.01 * 300, 1);
+      const near = tr.predict(10, 'damped')!.position[1] - last;
+      expect(near).toBeCloseTo(0.1, 1);
+      const mid = tr.predict(600, 'damped')!.position[1] - last;
+      expect(mid).toBeLessThan(0.01 * 600);
+      expect(mid).toBeGreaterThan(near);
+    });
+
+    it('capped holds after capMs', () => {
+      const tr = trained({ capMs: 250 });
+      const last = tr.lastSample!.position[1];
+      expect(tr.predict(100, 'capped')!.position[1] - last).toBeCloseTo(1, 1);
+      expect(tr.predict(250, 'capped')!.position[1] - last).toBeCloseTo(2.5, 1);
+      expect(tr.predict(2000, 'capped')!.position[1] - last).toBeCloseTo(2.5, 1);
+    });
+
+    it('rotDamped keeps linear position and saturates rotation', () => {
+      const tr = new CameraMotionTracker({ dampTauMs: 300 });
+      const dir = (t: number): Vec3 => [Math.cos(t * 0.0005), Math.sin(t * 0.0005), 0];
+      feed(tr, 2, (t) => sample(t, [R, t * 0.01, 100], dir(t)));
+      const last = tr.lastSample!;
+      const p = tr.predict(2000, 'rotDamped')!;
+      expect(p.position[1] - last.position[1]).toBeCloseTo(20, 0);
+      expect(angleBetween(p.direction, last.direction)).toBeCloseTo(0.0005 * 300, 2);
+    });
+
+    it('blend can use a damped hypothesis', () => {
+      const tr = trained({ blendMode: 'damped', dampTauMs: 300 });
+      const last = tr.lastSample!.position[1];
+      const p = tr.predict(10_000, 'blend')!.position[1] - last;
+      expect(p).toBeLessThanOrEqual(0.01 * 300 + 1e-6);
+    });
+  });
 });
