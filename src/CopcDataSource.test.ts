@@ -2232,6 +2232,40 @@ describe('CopcDataSource skipIdleLoD', () => {
     expect(selectNodesMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the debounce cadence across skipped ticks', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      mockCopc();
+      workerPoolRun.mockResolvedValueOnce(renderData);
+      const fake = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fake.viewer, {
+        debounceMs: 100,
+        skipIdleLoD: true,
+      });
+      const tick = (ms: number) => {
+        now += ms;
+        fake.triggerUpdate();
+      };
+      tick(1000);
+      await vi.waitFor(() => expect(fake.addPrimitive).toHaveBeenCalledTimes(1));
+      tick(1000);
+      await vi.waitFor(() => expect(ds.stats.pendingNodes).toBe(0));
+      tick(1000);
+      selectNodesMock.mockClear();
+
+      tick(1000); // idle: skipped, but restarts the debounce clock
+      expect(selectNodesMock).not.toHaveBeenCalled();
+      (fake.viewer.scene.camera.positionWC as Cesium.Cartesian3).x += 1;
+      tick(50); // the view changed, but only 50 ms after the skipped tick
+      expect(selectNodesMock).not.toHaveBeenCalled();
+      tick(60);
+      expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('keeps running passes while the camera is moving', async () => {
     const { triggerUpdate, triggerMoveStart } = await settle(true);
     triggerMoveStart();
