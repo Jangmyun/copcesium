@@ -206,8 +206,11 @@ interface CopcDataSourceOptions {
   prefetchFrustumFactor?: number;
   maxPrefetchNodes?: number;
   prefetchIdleOnly?: boolean;
+  prefetchLookaheadMs?: number;
   decodeBackpressure?: boolean;
   strictCacheBudget?: boolean;
+  preUploadHidden?: boolean;
+  maxGpuInitsPerFrame?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -230,7 +233,7 @@ interface CopcDataSourceOptions {
 | `xyFactor` | 자동 감지 | 파일의 XY 단위를 미터로 변환하는 계수(bounding sphere 크기 계산에 사용). |
 | `concurrency` | `5` | 노드를 병렬로 디코딩하는 Worker 스레드 개수. `'auto'`면 `navigator.hardwareConcurrency − 1`을 2~5 사이로 씁니다(브라우저가 알려 주지 않으면 4코어로 봅니다). `load()`에 `workerPool`을 넘기면 무시됨. |
 | `maxConcurrentRequests` | = `concurrency` | 동시에 진행할 HTTP Range Request 수. 네트워크는 지연 바운드, 디코드는 CPU 바운드라 포화하는 폭이 다릅니다. 할 일 없는 워커를 늘리지 않고 전송만 넓히려면 `concurrency` 대신 이쪽을 올리세요. |
-| `adaptiveMergeGap` | `false` | 이웃한 두 노드 사이에 쓰지 않는 바이트가 조금 있어도 한 요청으로 함께 받습니다. 요청이 빈 슬롯을 기다릴 때만 그렇게 합니다. 함께 받을 틈의 최대 크기는 링크에서 잽니다(첫 바이트 시간 × 수신 속도 ÷ `maxConcurrentRequests`, 0~256 KiB). 빠르고 지연이 큰 링크에서는 왕복을 줄이고, 느린 링크에서는 대역을 낭비하지 않습니다. 고정 간격으로는 둘을 함께 맞출 수 없습니다. 기본값은 꺼짐이며, 이어진 range만 묶습니다. |
+| `adaptiveMergeGap` | `true` | 이웃한 두 노드 사이에 쓰지 않는 바이트가 조금 있어도 한 요청으로 함께 받습니다. 요청이 빈 슬롯을 기다릴 때만 그렇게 합니다. 함께 받을 틈의 최대 크기는 링크에서 잽니다(첫 바이트 시간 × 수신 속도 ÷ `maxConcurrentRequests`, 0~256 KiB). 빠르고 지연이 큰 링크에서는 왕복을 줄이고, 느린 링크에서는 대역을 낭비하지 않습니다. 고정 간격으로는 둘을 함께 맞출 수 없습니다. `false`로 두면 이어진 range만 묶습니다. |
 | `debounceMs` | `100` | 전체 LoD 재선택 패스 사이의 최소 간격. 더 가벼운 frustum 전용 가시성 체크는 매 프레임 계속 돕니다. |
 | `maxCacheNodes` | `150` | 메모리에 유지하는 최대 노드 수(LRU) — 초과하면 선택되지 않은 것 중 가장 오래 안 쓰인 노드부터 정리됩니다. |
 | `maxCacheBytes` | 없음 | `maxCacheNodes`에 더해 적용되는 메모리 상한(추정 바이트) — 둘 중 먼저 초과하는 쪽으로 축출합니다. 노드당 `pointCount * 21`(고정된 포인트당 버퍼 레이아웃)로 추정됩니다. 데이터셋마다 적절한 노드당 포인트 수가 달라 기본값은 없습니다. |
@@ -240,8 +243,12 @@ interface CopcDataSourceOptions {
 | `prefetchFrustumFactor` | `1.8` | 뷰 프러스텀을 이 배수만큼 넓혀(near plane의 너비·높이 기준) 화면 바로 바깥의 노드를 찾습니다. 이 노드들은 미리 로드해 캐시만 하고 그리지는 않으므로, 카메라를 옮기면 이미 받아 둔 데이터가 바로 나타납니다. 프리페치 로드는 화면에 보이는 노드 로드가 쓰고 남은 워커 풀 여유분만 사용합니다. `1` 이하로 설정하면 프리페치를 끕니다. |
 | `maxPrefetchNodes` | `50` | 한 번의 LoD 패스에서 프리페치 전용으로 로드할 수 있는 최대 노드 수. 렌더링 대상만 제한하는 `maxVisibleNodes`/`maxPoints`와는 별개입니다. 프리페치가 꺼져 있으면 무시됩니다. |
 | `prefetchIdleOnly` | `false` | 지금 화면의 노드 로드가 모두 시작될 때까지가 아니라 모두 끝날 때까지 프리페치를 미룹니다. 대역이 좁은 링크에서는 프리페치 바이트가 화면 노드를 늦추기 때문입니다. 카메라가 멈춰 있는 동안에는 프리페치가 그대로 진행됩니다. |
+| `skipIdleLoD` | `false` | 카메라, 뷰포트, 로드, 계층 페이지, 캐시, 옵션이 모두 지난 패스 이후 그대로면 주기적인 LoD 패스를 건너뜁니다. 계속 렌더링할 때 쉬는 동안의 CPU 비용을 줄입니다. 무엇이든 바뀌거나 아직 로드 중인 것이 있으면 패스를 다시 돌립니다. |
+| `prefetchLookaheadMs` | 없음 | 켜야 동작하는 예측 프리페치입니다. 카메라가 움직이는 동안, 이 시간(ms) 뒤에 카메라가 있을 것으로 예상되는 자세를 기준으로 프리페치를 고릅니다(감쇠 등속 외삽, 최대 250 ms). 그 자세에 가까운 후보부터 로드하고, 프리페치 집합에서 빠진 프리페치 로드는 300 ms가 지난 뒤에야 취소합니다. 사람이 조작한 카메라 경로를 오프라인으로 재생했을 때 250 ms까지만 지금 자세를 유지하는 것보다 나았습니다. 권장값은 `250`입니다. |
 | `decodeBackpressure` | `false` | 네트워크가 아니라 디코딩이 병목인 기기를 위한 옵션입니다. 한 바퀴 분량의 디코딩(worker당 노드 하나)이 worker를 기다리고 있으면, 그 화면의 나머지 다운로드를 미뤘다가 디코딩이 끝나는 대로 다시 시작합니다. 카메라가 지나간 노드는 버립니다. 프리페치는 디코드 대기열이 빌 때만 보내고 화면 노드 뒤에 디코딩합니다. `prefetchIdleOnly`도 켜면 두 조건을 모두 만족할 때만 프리페치합니다. 대기열 상태는 옵션과 관계없이 `stats.decodeQueue`에서 볼 수 있습니다. |
 | `strictCacheBudget` | `false` | `maxCacheNodes`/`maxCacheBytes`를 노드를 넣을 때만이 아니라 LoD 패스마다 다시 적용합니다. 화면을 막 떠난 노드가 바로 축출됩니다. 화면에 있는 노드는 축출하지 않으므로, 그것만으로도 예산을 넘을 수 있습니다. |
+| `preUploadHidden` | `false` | 노드가 로드되면 숨겨진(프리페치된) 상태여도 바로 GPU 버퍼를 올립니다. 화면을 옮길 때 그 프레임에서 업로드 비용 없이 나타납니다. 대신 GPU 메모리를 더 일찍 씁니다. |
+| `maxGpuInitsPerFrame` | 없음 | 한 프레임에 GPU 버퍼를 올리는 노드 수를 제한합니다. 나머지는 다음 프레임으로 넘깁니다. 화면에 있는 노드는 모든 슬롯을 쓸 수 있고, 숨겨진 노드의 사전 업로드는 프레임당 한 슬롯까지만 씁니다. 지정하지 않으면 제한이 없습니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
 | `pointSizeMode` | `'fixed'` | `'fixed'`는 모든 포인트를 `pixelSize`로 그립니다. `'attenuated'`는 카메라 거리에 따라 크기를 줄입니다(`attenuationFactor / sqrt(dist_m)`, `[minPixelSize, maxPixelSize]`로 클램프) — 가까이 갈 때 포인트 사이 빈틈이 보이지 않도록 합니다. `dataSource.pointSizeMode`로 실시간 조정 가능. |
 | `attenuationFactor` | `100` | 거리 감쇠 크기 공식의 분자값(pixel·√meters 단위). `pointSizeMode`가 `'attenuated'`일 때만 사용됩니다. 데이터셋 밀도에 맞게 조정하세요. `dataSource.attenuationFactor`로 실시간 조정 가능. |
