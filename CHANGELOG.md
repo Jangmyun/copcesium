@@ -7,6 +7,16 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
+  (default off), `eyeDomeLightingStrength` (default `1`) and
+  `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how
+  far its screen neighbours sit in front of it, which brings out edges and
+  shape on clouds without colour. Only these points are shaded; terrain and
+  other scene objects still occlude them. Points drawn with `opacity < 1`
+  skip it, and without WebGL2 (or `WEBGL_draw_buffers` + `EXT_frag_depth`)
+  the points draw unshaded with one warning. Like Cesium's own point-cloud
+  EDL, the points render single-sampled while it is on, so they lose MSAA
+  edge smoothing. Clipping applies on the EDL path as well. (#210)
 - Opt-in GPU upload options, both off by default: `preUploadHidden` uploads
   a node's vertex buffers while it is still hidden (prefetched), and
   `maxGpuInitsPerFrame` caps uploads per frame, with hidden pre-uploads

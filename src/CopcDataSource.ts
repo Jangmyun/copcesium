@@ -41,6 +41,7 @@ import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
 import { LoadScheduler } from './loader/LoadScheduler';
+import { EyeDomeLighting } from './renderer/EyeDomeLighting';
 import { PointPicker } from './renderer/pickPoint';
 import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
@@ -56,6 +57,22 @@ import { NodeCache } from './cache/NodeCache';
 import CopcWorker from './worker/worker.ts?worker&inline';
 
 export type { ClipMode, ColorMode, CopcDataSourceOptions };
+
+/** Shared by the constructor and the live setter. */
+function validateEdlStrength(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`eyeDomeLightingStrength must be a non-negative finite number, got ${value}`);
+  }
+  return value;
+}
+
+/** Shared by the constructor and the live setter. */
+function validateEdlRadius(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`eyeDomeLightingRadius must be a positive finite number, got ${value}`);
+  }
+  return value;
+}
 
 /**
  * Options with every defaultable field filled in. `classificationFilter`,
@@ -107,6 +124,9 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   autoFrame: true,
   colorMode: 'rgb',
   opacity: 1,
+  eyeDomeLighting: false,
+  eyeDomeLightingStrength: 1,
+  eyeDomeLightingRadius: 1,
   clipMode: 'inside',
   skipIdleLoD: false,
 };
@@ -149,6 +169,7 @@ export class CopcDataSource {
   private readonly _stages = new StageTimer();
   private readonly _options: ResolvedOptions;
   private readonly _styleCtl: StyleController;
+  private readonly _edl: EyeDomeLighting;
   private readonly _nodeCache: NodeCache;
   private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
@@ -201,6 +222,12 @@ export class CopcDataSource {
       options.xyFactor,
     );
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
+    this._edl = new EyeDomeLighting(
+      this._getSphere('0-0-0-0'),
+      options.eyeDomeLighting,
+      validateEdlStrength(options.eyeDomeLightingStrength),
+      validateEdlRadius(options.eyeDomeLightingRadius),
+    );
     this._nodeCache = new NodeCache(
       options.maxCacheNodes,
       (_key, node) => {
@@ -243,6 +270,7 @@ export class CopcDataSource {
       nodeCache: this._nodeCache,
       stages: this._stages,
       style: this._styleCtl,
+      edl: this._edl,
       getSphere: this._getSphere,
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
@@ -649,6 +677,33 @@ export class CopcDataSource {
     this._styleCtl.opacity = value;
   }
 
+  /** Eye-Dome Lighting on/off; see `CopcDataSourceOptions.eyeDomeLighting`. */
+  get eyeDomeLighting(): boolean {
+    return this._edl.enabled;
+  }
+  set eyeDomeLighting(value: boolean) {
+    this._edl.enabled = value;
+    this._viewer.scene.requestRender();
+  }
+
+  /** EDL shading strength, `>= 0`. */
+  get eyeDomeLightingStrength(): number {
+    return this._edl.strength;
+  }
+  set eyeDomeLightingStrength(value: number) {
+    this._edl.strength = validateEdlStrength(value);
+    this._viewer.scene.requestRender();
+  }
+
+  /** EDL neighbour sampling distance, in CSS pixels, `> 0`. */
+  get eyeDomeLightingRadius(): number {
+    return this._edl.radius;
+  }
+  set eyeDomeLightingRadius(value: number) {
+    this._edl.radius = validateEdlRadius(value);
+    this._viewer.scene.requestRender();
+  }
+
   /**
    * How points are coloured. Every mode reads attributes already uploaded to
    * the GPU, so switching costs one uniform update — no refetch, no re-decode,
@@ -835,6 +890,7 @@ export class CopcDataSource {
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
+    this._edl.destroy();
     this._picker.destroy();
   }
 }

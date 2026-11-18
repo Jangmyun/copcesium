@@ -9,6 +9,7 @@
 
 import type * as Cesium from 'cesium';
 import { PointCloudPrimitive, type PointStyle } from '../renderer/PointCloudPrimitive';
+import type { EyeDomeLighting } from '../renderer/EyeDomeLighting';
 import type { NodeRenderData } from '../types';
 import type { GpuInitBudget } from '../renderer/GpuInitBudget';
 
@@ -29,7 +30,7 @@ export async function createNodePrimitive(
   boundingSphere: Cesium.BoundingSphere,
   style: PointStyle,
   onGpuInit?: (startedAt: number, endedAt: number) => void,
-  gpu?: { preUploadHidden?: boolean; budget?: GpuInitBudget },
+  gpu?: { preUploadHidden?: boolean; budget?: GpuInitBudget; edl?: EyeDomeLighting },
 ): Promise<PointCloudPrimitive> {
   return new PointCloudPrimitive(renderData, boundingSphere, style, onGpuInit, gpu);
 }

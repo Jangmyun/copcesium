@@ -21,6 +21,7 @@ import type { RangeFetcher } from '../copc/RangeFetcher';
 import type { CopcDataSourceOptions, NodeRenderData } from '../types';
 import { StageTimer } from '../util/StageTimer';
 import type { StyleController } from '../renderer/StyleController';
+import type { EyeDomeLighting } from '../renderer/EyeDomeLighting';
 import type { WorkerPool } from '../worker/WorkerPool';
 import type { NodeConversionPayload } from '../worker/messages';
 import { createNodePrimitive } from './loadNode';
@@ -61,6 +62,8 @@ export interface LoadSchedulerDeps {
   nodeCache: NodeCache;
   stages: StageTimer;
   style: StyleController;
+  /** Shared by every node primitive; see `CopcDataSourceOptions.eyeDomeLighting`. */
+  edl?: EyeDomeLighting;
   getSphere: (key: string) => Cesium.BoundingSphere;
   isDestroyed: () => boolean;
   /** Whether the current selection includes `key`; read when a node finishes loading. */
@@ -94,6 +97,7 @@ export class LoadScheduler {
   private readonly _cache: NodeCache;
   private readonly _stages: StageTimer;
   private readonly _style: StyleController;
+  private readonly _edl: EyeDomeLighting | undefined;
   private readonly _getSphere: (key: string) => Cesium.BoundingSphere;
   private readonly _isDestroyed: () => boolean;
   private readonly _isSelected: (key: string) => boolean;
@@ -113,6 +117,7 @@ export class LoadScheduler {
     this._cache = deps.nodeCache;
     this._stages = deps.stages;
     this._style = deps.style;
+    this._edl = deps.edl;
     this._getSphere = deps.getSphere;
     this._isDestroyed = deps.isDestroyed;
     this._isSelected = deps.isSelected;
@@ -297,7 +302,11 @@ export class LoadScheduler {
         (start, end) => {
           if (!this._isDestroyed()) this._stages.record('upload', start, end);
         },
-        { preUploadHidden: this._o.preUploadHidden, budget: this._gpuBudget ?? undefined },
+        {
+          preUploadHidden: this._o.preUploadHidden,
+          budget: this._gpuBudget ?? undefined,
+          edl: this._edl,
+        },
       );
       if (this._isDestroyed()) {
         primitive.destroy();

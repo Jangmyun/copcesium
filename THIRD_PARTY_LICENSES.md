@@ -246,6 +246,19 @@ WASM build is inlined (base64) into `dist/copc-cesium.mjs` by
    limitations under the License.
 ```
 
+## CesiumJS (Apache-2.0)
+
+Cesium itself is a peer dependency and is not bundled, but the Eye-Dome
+Lighting composite shader and point-shader rewrite in
+`src/renderer/shaders.ts` and `src/renderer/EyeDomeLighting.ts` are adapted
+from CesiumJS's `PointCloudEyeDomeLighting`
+(https://github.com/CesiumGS/cesium). Licensed under the Apache License,
+Version 2.0 — full text reproduced in the laz-perf section above.
+
+```
+Copyright 2011-2024 CesiumJS Contributors
+```
+
 ## proj4 / mgrs / wkt-parser (MIT)
 
 proj4, mgrs, and wkt-parser share the same copyright holders and license text.

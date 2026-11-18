@@ -67,3 +67,45 @@ describe('LoadScheduler prefetch cancel grace', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('LoadScheduler eye-dome lighting', () => {
+  it('hands the shared EDL to every node primitive it creates', async () => {
+    const loadNode = await import('./loadNode');
+    const primitive = { show: false, destroy: vi.fn() };
+    const create = vi.spyOn(loadNode, 'createNodePrimitive').mockResolvedValue(primitive as never);
+    const edl = {};
+    const done = Object.assign(Promise.resolve(new Uint8Array(1)), { cancel: () => {} });
+    const decoded = Object.assign(Promise.resolve({ pointCount: 1, maxIntensity: 0 }), {
+      cancel: () => {},
+    });
+    const scheduler = new LoadScheduler({
+      options: {
+        decodeBackpressure: false,
+        prefetchIdleOnly: false,
+        preUploadHidden: false,
+        proj: 'EPSG:4326',
+        projDef: null,
+        geoidOffset: 0,
+        zFactor: 1,
+      },
+      viewer: { scene: { primitives: { add: vi.fn() }, requestRender: vi.fn() } },
+      copc: { header: { min: [0, 0, 0], max: [0, 0, 1] } },
+      nodes: { k: { pointCount: 1, pointDataOffset: 0, pointDataLength: 1 } },
+      rangeFetcher: { fetch: () => done },
+      workerPool: { run: () => decoded },
+      nodeCache: { set: vi.fn() },
+      stages: { record: () => {} },
+      style: { style: {}, growAutoIntensityRange: () => {} },
+      edl,
+      getSphere: () => ({}),
+      isDestroyed: () => false,
+      isSelected: () => true,
+    } as unknown as LoadSchedulerDeps);
+
+    await scheduler.load('k');
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][4]).toMatchObject({ edl });
+    create.mockRestore();
+  });
+});
