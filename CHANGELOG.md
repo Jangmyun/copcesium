@@ -7,6 +7,44 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
+  (default off), `eyeDomeLightingStrength` (default `1`) and
+  `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how
+  far its screen neighbours sit in front of it, which brings out edges and
+  shape on clouds without colour. Only these points are shaded; terrain and
+  other scene objects still occlude them. Points drawn with `opacity < 1`
+  skip it, and without WebGL2 (or `WEBGL_draw_buffers` + `EXT_frag_depth`)
+  the points draw unshaded with one warning. Like Cesium's own point-cloud
+  EDL, the points render single-sampled while it is on, so they lose MSAA
+  edge smoothing. Clipping applies on the EDL path as well. (#210)
+- Opt-in GPU upload options, both off by default: `preUploadHidden` uploads
+  a node's vertex buffers while it is still hidden (prefetched), and
+  `maxGpuInitsPerFrame` caps uploads per frame, with hidden pre-uploads
+  limited to one slot per frame so visible nodes keep priority.
+- `skipIdleLoD` option (default `false`). When on, the throttled LoD pass is
+  skipped while the camera, viewport, loads, hierarchy pages, cache and
+  options are unchanged since the last pass, so an idle scene under
+  continuous rendering stops re-running selection every `debounceMs`.
+  A skipped tick still counts as a pass for `debounceMs`, so passes keep
+  the same cadence as with the option off.
+- `prefetchLookaheadMs` (opt-in, off by default): while the camera moves,
+  prefetch is built around the pose it is predicted to have that far ahead
+  (damped constant-velocity, capped at 250 ms), candidates load nearest to
+  that pose first, and a prefetch load that drops out of the prefetch set is
+  cancelled only after 300 ms. Offline on a recorded human camera path this
+  prediction beat holding the pose only up to 250 ms. Recommended: `250`.
+
+### Changed
+
+- `adaptiveMergeGap` is now on by default. In controlled-network replays
+  it matched the best fixed gap on every dataset and link, was up to 17%
+  faster than contiguous-only merging (Millsite, 100 ms), and did not slow
+  the pan route. Pass `adaptiveMergeGap: false` for the previous behaviour.
+
+## [1.4.3] - 2026-11-16
+
+### Added
+
 - **Opt-in network, decode and cache options, all off by default.** With
   them off, requests and decode calls are unchanged.
   - `adaptiveMergeGap`: while requests queue for a fetch slot, nearby ranges
@@ -24,16 +62,8 @@ All notable changes to this project are documented here. This project follows
     when the cache is over budget.
   - `stats.decodeQueue` and `stats.cache` report decode-queue wait/run times
     and cache size, pinned nodes and evictions.
-- **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
-  (default off), `eyeDomeLightingStrength` (default `1`) and
-  `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how
-  far its screen neighbours sit in front of it, which brings out edges and
-  shape on clouds without colour. Only these points are shaded; terrain and
-  other scene objects still occlude them. Points drawn with `opacity < 1`
-  skip it, and without WebGL2 (or `WEBGL_draw_buffers` + `EXT_frag_depth`)
-  the points draw unshaded with one warning. Like Cesium's own point-cloud
-  EDL, the points render single-sampled while it is on, so they lose MSAA
-  edge smoothing. Clipping applies on the EDL path as well. (#210)
+
+  (#258)
 
 - **Distance measurement between picked points.** `measureSegment(a, b)`
   returns the straight-line distance, the horizontal (geodesic) distance and
@@ -55,7 +85,14 @@ All notable changes to this project are documented here. This project follows
   order). The SSE threshold is unchanged, so a view that fits the budget
   selects the same nodes. On a recorded low-pitch pass over Montréal, the
   centre half of the screen went from 0.50 to 0.97 SSIM against an
-  unbudgeted reference, at the same bytes.
+  unbudgeted reference, at the same bytes. (#263)
+
+### Examples
+
+- The advanced viewer gains a **Clip** tab: click a point to place a box or a
+  plane, switch inside/outside, and clear it. (#264)
+- Values interpolated into the advanced viewer's HTML are escaped, and the
+  React examples' `dompurify` is patched to 3.4.17. (#262)
 
 ## [1.4.2] - 2026-11-14
 

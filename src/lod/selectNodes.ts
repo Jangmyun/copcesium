@@ -15,20 +15,15 @@
  */
 import * as Cesium from 'cesium';
 import type { Hierarchy } from 'copc';
-import { getChildKeys } from '../copc/node';
-import { getCullingVolume, getExpandedCullingVolume, isInFrustum } from './boundingVolume';
+import {
+  getCullingVolume,
+  getExpandedCullingVolume,
+  isInFrustum,
+  type CameraPose,
+  type CameraView,
+} from './boundingVolume';
 import { viewAlignment } from './loadOrder';
-import { computeScreenSpaceError } from './screenSpaceError';
-
-// Camera.frustum is PerspectiveFrustum | PerspectiveOffCenterFrustum | OrthographicFrustum;
-// only PerspectiveFrustum exposes fovy. The other two aren't used for this library's default
-// scene setup, so we fall back to a typical 60° vertical FOV rather than threading an explicit
-// fovy option through every call site.
-const DEFAULT_FOVY = Cesium.Math.toRadians(60);
-
-function getFovy(frustum: Cesium.Camera['frustum']): number {
-  return (frustum instanceof Cesium.PerspectiveFrustum ? frustum.fovy : undefined) ?? DEFAULT_FOVY;
-}
+import { computeScreenSpaceError, getFovy, sseScale } from './screenSpaceError';
 
 /**
  * Max-heap ordered by `score`. Expands the highest screen-space-error node
@@ -39,46 +34,62 @@ function getFovy(frustum: Cesium.Camera['frustum']): number {
  * on-screen region flicker in and out as camera noise reshuffles the
  * insertion order pass to pass.
  */
-class MaxHeap<T> {
-  private readonly data: T[] = [];
+interface HeapEntry {
+  key: string;
+  d: number;
+  x: number;
+  y: number;
+  z: number;
+  priority: number;
+  /** Bounding sphere and raw SSE, computed once when pushed (absent on the root, filled at pop). */
+  sphere?: Cesium.BoundingSphere;
+  sse?: number;
+}
 
-  constructor(private readonly score: (item: T) => number) {}
+class MaxHeap {
+  private readonly data: HeapEntry[] = [];
 
   get size(): number {
     return this.data.length;
   }
 
-  push(item: T): void {
+  push(item: HeapEntry): void {
     const d = this.data;
     d.push(item);
     let i = d.length - 1;
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      if (this.score(d[parent]) >= this.score(d[i])) break;
-      [d[parent], d[i]] = [d[i], d[parent]];
+      const p = d[parent];
+      if (p.priority >= item.priority) break;
+      d[i] = p;
       i = parent;
     }
+    d[i] = item;
   }
 
-  pop(): T | undefined {
+  pop(): HeapEntry | undefined {
     const d = this.data;
     if (d.length === 0) return undefined;
     const top = d[0];
     const last = d.pop()!;
     if (d.length > 0) {
-      d[0] = last;
       let i = 0;
       const n = d.length;
       for (;;) {
         const l = 2 * i + 1;
         const r = 2 * i + 2;
         let largest = i;
-        if (l < n && this.score(d[l]) > this.score(d[largest])) largest = l;
-        if (r < n && this.score(d[r]) > this.score(d[largest])) largest = r;
+        let best = last.priority;
+        if (l < n && d[l].priority > best) {
+          largest = l;
+          best = d[l].priority;
+        }
+        if (r < n && d[r].priority > best) largest = r;
         if (largest === i) break;
-        [d[i], d[largest]] = [d[largest], d[i]];
+        d[i] = d[largest];
         i = largest;
       }
+      d[i] = last;
     }
     return top;
   }
@@ -107,7 +118,7 @@ export interface SelectNodesOptions {
    * selection pass.
    */
   getSphere: (key: string) => Cesium.BoundingSphere;
-  camera: Cesium.Camera;
+  camera: CameraView;
   viewportHeight: number;
   sseThreshold: number;
   maxVisibleNodes: number;
@@ -143,6 +154,14 @@ export interface SelectNodesOptions {
    * and cache it ahead of time.
    */
   onPrefetchCandidate?: (key: string) => void;
+  /**
+   * Where the camera is expected to be a short moment from now. When set, the
+   * prefetch region is the expanded frustum placed at this pose, the prefetch
+   * screen-space error is measured from its eye, and candidates are reported
+   * nearest to that eye first (instead of in traversal order). The visible
+   * selection still uses `camera`. Unset: prefetch is built around `camera`.
+   */
+  predictedPose?: CameraPose;
   /**
    * Keys currently on screen. Their heap priority is multiplied by
    * `incumbentBonus`, so when a budget cuts the traversal mid-heap, a visible
@@ -211,6 +230,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     prefetchFrustumFactor,
     maxPrefetchNodes = 50,
     onPrefetchCandidate,
+    predictedPose,
     incumbents,
     incumbentBonus = 1,
     viewAxisBias = 0,
@@ -224,7 +244,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   // nothing to gain from deferring it, and doing so up front keeps the
   // per-node branch below a plain frustum test.
   const expandedCullingVolume = prefetchEnabled
-    ? getExpandedCullingVolume(camera, prefetchFactor)
+    ? getExpandedCullingVolume(camera, prefetchFactor, predictedPose)
     : undefined;
   const fovy = getFovy(camera.frustum);
   const selected: string[] = [];
@@ -234,8 +254,16 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   // `positionWC`, not `position` — the latter is relative to `camera.transform`
   // and goes local the moment anything calls `camera.lookAt()`, which would
   // measure every node's screen-space error against the wrong viewpoint.
-  const sseOf = (key: string): number =>
-    computeScreenSpaceError(getSphere(key), camera.positionWC, viewportHeight, fovy);
+  const scale = sseScale(viewportHeight, fovy);
+  const sseOf = (sphere: Cesium.BoundingSphere): number =>
+    computeScreenSpaceError(sphere, camera.positionWC, viewportHeight, fovy, scale);
+
+  // Prefetch candidates are measured from the predicted eye, when there is one.
+  const prefetchEye = predictedPose?.positionWC ?? camera.positionWC;
+  const prefetchSseOf = (sphere: Cesium.BoundingSphere): number =>
+    computeScreenSpaceError(sphere, prefetchEye, viewportHeight, fovy, scale);
+  // Only filled with a predicted pose: candidates are then sorted before they are reported.
+  const ranked: { key: string; distance: number }[] = [];
 
   // The angle from the view axis to a corner of the screen.
   const aspectRatio =
@@ -243,24 +271,39 @@ export function selectNodes(options: SelectNodesOptions): string[] {
   const tanHalfFovy = Math.tan(fovy / 2);
   const halfDiagonal = Math.atan(Math.hypot(tanHalfFovy, tanHalfFovy * aspectRatio));
 
-  const viewAxisFactor = (key: string): number => {
+  const viewAxisFactor = (sphere: Cesium.BoundingSphere): number => {
     if (viewAxisBias === 0) return 1;
-    const alignment = viewAlignment(getSphere(key).center, camera.positionWC, camera.directionWC);
+    const alignment = viewAlignment(sphere.center, camera.positionWC, camera.directionWC);
     return 1 + viewAxisBias * Math.max(0, 1 - Cesium.Math.acosClamped(alignment) / halfDiagonal);
   };
 
-  const heap = new MaxHeap<{ key: string; priority: number }>((entry) => entry.priority);
+  const heap = new MaxHeap();
   // The root's priority never matters — it's the only entry until popped.
-  heap.push({ key: '0-0-0-0', priority: Infinity });
+  heap.push({ key: '0-0-0-0', d: 0, x: 0, y: 0, z: 0, priority: Infinity });
 
-  const expandChildren = (key: string): void => {
-    for (const childKey of getChildKeys(key)) {
+  const expandChildren = (entry: HeapEntry): void => {
+    // Child order: x varies fastest, then y, then z.
+    const nd = entry.d + 1;
+    const nx = entry.x * 2;
+    const ny = entry.y * 2;
+    const nz = entry.z * 2;
+    for (let i = 0; i < 8; i++) {
+      const cx = nx + (i & 1);
+      const cy = ny + ((i >> 1) & 1);
+      const cz = nz + (i >> 2);
+      const childKey = `${nd}-${cx}-${cy}-${cz}`;
       if (nodes[childKey]) {
-        const sse = sseOf(childKey);
+        const sphere = getSphere(childKey);
+        const sse = sseOf(sphere);
         heap.push({
           key: childKey,
-          priority:
-            (incumbents?.has(childKey) ? sse * incumbentBonus : sse) * viewAxisFactor(childKey),
+          d: nd,
+          x: cx,
+          y: cy,
+          z: cz,
+          priority: (incumbents?.has(childKey) ? sse * incumbentBonus : sse) * viewAxisFactor(sphere),
+          sphere,
+          sse,
         });
       } else if (pages[childKey]) {
         onPageNeeded?.(childKey);
@@ -278,11 +321,12 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     // as before.
     if (heap.size === 0 || (!visibleBudgetLeft && !prefetchBudgetLeft)) break;
 
-    const { key } = heap.pop()!;
+    const entry = heap.pop()!;
+    const key = entry.key;
     const nodeInfo = nodes[key];
     if (!nodeInfo) continue;
 
-    const sphere = getSphere(key);
+    const sphere = entry.sphere ?? getSphere(key);
     const onscreen = isInFrustum(sphere, cullingVolume);
 
     if (!onscreen) {
@@ -293,14 +337,22 @@ export function selectNodes(options: SelectNodesOptions): string[] {
       if (!prefetchBudgetLeft) continue; // prefetch budget spent; prune the subtree
 
       if (nodeInfo.pointCount > 0) {
-        onPrefetchCandidate?.(key);
+        if (predictedPose) {
+          ranked.push({
+            key,
+            distance: Cesium.Cartesian3.distance(sphere.center, prefetchEye),
+          });
+        } else {
+          onPrefetchCandidate?.(key);
+        }
         prefetchCount++;
       }
       // Same empty-node/SSE expansion rule as the onscreen branch below, so a
       // prefetched node ends up at roughly the LOD it would render at once
       // panned into view, not an arbitrarily coarse one.
-      if (nodeInfo.pointCount > 0 && sseOf(key) <= sseThreshold) continue;
-      expandChildren(key);
+      const prefetchSse = predictedPose ? prefetchSseOf(sphere) : (entry.sse ?? sseOf(sphere));
+      if (nodeInfo.pointCount > 0 && prefetchSse <= sseThreshold) continue;
+      expandChildren(entry);
       continue;
     }
 
@@ -314,9 +366,14 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     // An empty node is descended through regardless of SSE — it contributes
     // nothing itself, so its populated children are the only way to fill the
     // volume it covers.
-    if (nodeInfo.pointCount > 0 && sseOf(key) <= sseThreshold) continue;
+    if (nodeInfo.pointCount > 0 && (entry.sse ?? sseOf(sphere)) <= sseThreshold) continue;
 
-    expandChildren(key);
+    expandChildren(entry);
+  }
+
+  if (predictedPose) {
+    ranked.sort((a, b) => a.distance - b.distance);
+    for (const { key } of ranked) onPrefetchCandidate?.(key);
   }
 
   return selected;

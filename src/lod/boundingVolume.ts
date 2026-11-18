@@ -9,6 +9,19 @@
 
 import * as Cesium from 'cesium';
 import { parseKey } from '../copc/key';
+import { DEFAULT_FOVY } from './screenSpaceError';
+
+/** A camera pose in world coordinates; what the culling volumes need besides the frustum. */
+export interface CameraPose {
+  positionWC: Cesium.Cartesian3;
+  directionWC: Cesium.Cartesian3;
+  upWC: Cesium.Cartesian3;
+}
+
+/** The part of `Cesium.Camera` the LoD pass reads: a pose and the frustum. */
+export interface CameraView extends CameraPose {
+  frustum: Cesium.Camera['frustum'];
+}
 
 export type ProjectToCartesian = (x: number, y: number, z: number) => Cesium.Cartesian3;
 
@@ -32,7 +45,7 @@ export function getNodeBoundingSphere(
   return new Cesium.BoundingSphere(center, radius);
 }
 
-export function getCullingVolume(camera: Cesium.Camera): Cesium.CullingVolume {
+export function getCullingVolume(camera: CameraView): Cesium.CullingVolume {
   // The `WC` variants, not `position`/`direction`/`up`: those are relative to
   // `camera.transform`, which is the identity only until something calls
   // `camera.lookAt()` — a routine way to orbit a target. Under a lookAt the
@@ -45,11 +58,6 @@ export function getCullingVolume(camera: Cesium.Camera): Cesium.CullingVolume {
 export function isInFrustum(sphere: Cesium.BoundingSphere, cullingVolume: Cesium.CullingVolume): boolean {
   return cullingVolume.computeVisibility(sphere) !== Cesium.Intersect.OUTSIDE;
 }
-
-// Camera.frustum has no settable near-plane fov once it's a plain
-// PerspectiveFrustum built without one (unusual, but the type allows it) —
-// matches selectNodes.ts's own fallback for the same reason.
-const DEFAULT_FOVY = Cesium.Math.toRadians(60);
 
 /**
  * Builds the culling volume for a frustum widened by `factor`, for
@@ -65,8 +73,9 @@ const DEFAULT_FOVY = Cesium.Math.toRadians(60);
  * those are scaled as-is.
  */
 export function getExpandedCullingVolume(
-  camera: Cesium.Camera,
+  camera: CameraView,
   factor: number,
+  pose: CameraPose = camera,
 ): Cesium.CullingVolume {
   const frustum = camera.frustum;
   let expanded:
@@ -88,5 +97,7 @@ export function getExpandedCullingVolume(
   }
 
   // See getCullingVolume() above for why these are the `WC` variants.
-  return expanded.computeCullingVolume(camera.positionWC, camera.directionWC, camera.upWC);
+  // `pose` places the cloned frustum elsewhere (a predicted camera); the clone
+  // also keeps computeCullingVolume's internal scratch object off the real one.
+  return expanded.computeCullingVolume(pose.positionWC, pose.directionWC, pose.upWC);
 }

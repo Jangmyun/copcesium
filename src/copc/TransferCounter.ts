@@ -7,6 +7,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+import { fetchPartial } from './rangeRequest';
+
 /**
  * Byte accounting for one COPC file.
  *
@@ -153,15 +155,6 @@ export function parseContentRangeTotal(header: string | null): number | undefine
   return Number.isFinite(total) ? total : undefined;
 }
 
-/** Carries `status` so `isRetryable()` can tell a settled 4xx from a 5xx. */
-function httpError(url: string, status: number, begin: number, end: number): Error {
-  const err = new Error(
-    `copcesium: server returned HTTP ${status} for bytes=${begin}-${end - 1} of ${url} (expected 206 Partial Content)`,
-  ) as Error & { status: number };
-  err.status = status;
-  return err;
-}
-
 /**
  * A `copc` `Getter` that fetches one range, insists on `206`, and reports the
  * bytes to `counter`.
@@ -180,12 +173,13 @@ export function createCountingGetter(
   counter: TransferCounter,
 ): (begin: number, end: number) => Promise<Uint8Array> {
   return async (begin: number, end: number): Promise<Uint8Array> => {
-    const response = await fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
-    if (response.status !== 206) {
-      // A 200 can be the whole file streaming in; release it.
-      void response.body?.cancel().catch(() => {});
-      throw httpError(url, response.status, begin, end);
-    }
+    const response = await fetchPartial(
+      url,
+      begin,
+      end,
+      (status) =>
+        `copcesium: server returned HTTP ${status} for bytes=${begin}-${end - 1} of ${url} (expected 206 Partial Content)`,
+    );
     if (counter.fileBytes === 0) {
       const total = parseContentRangeTotal(response.headers?.get('Content-Range') ?? null);
       if (total !== undefined) counter.setFileBytes(total);

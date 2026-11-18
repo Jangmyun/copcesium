@@ -93,8 +93,8 @@ export interface CopcDataSourceOptions {
    * the link's download rate divided by `maxConcurrentRequests` (≈ RTT ×
    * bandwidth ÷ concurrent requests), clamped to 0–256 KiB. Bridging a gap downloads bytes no node needs to save
    * one request, which pays on a fast, high-latency link and costs on a slow
-   * one; a fixed gap gets one of the two wrong. Default `false` (merge only
-   * contiguous ranges).
+   * one; a fixed gap gets one of the two wrong. Default `true`; `false`
+   * merges only contiguous ranges.
    */
   adaptiveMergeGap?: boolean;
   debounceMs?: number;
@@ -159,6 +159,20 @@ export interface CopcDataSourceOptions {
    */
   prefetchIdleOnly?: boolean;
   /**
+   * Opt-in predictive prefetch, in milliseconds. While the camera moves, the
+   * prefetch region is built around the pose the camera is expected to have
+   * this far ahead (damped constant-velocity extrapolation, time constant
+   * 150 ms) instead of the current one, prefetch candidates load nearest to
+   * that pose first, and a pending prefetch load that drops out of the
+   * prefetch set is kept for 300 ms before it is cancelled. The visible
+   * selection is unaffected. The look-ahead is capped at 250 ms: an offline
+   * evaluation on a recorded human camera path found damped extrapolation
+   * beats holding the pose only up to about 250 ms (median position error
+   * 51 m against 69 m) and loses beyond 500 ms. Unset (the default), or `0`,
+   * prefetch behaves exactly as before. Recommended: `250`.
+   */
+  prefetchLookaheadMs?: number;
+  /**
    * Stops starting new node downloads while the CPU is the bottleneck: once a
    * full round of decoding (one task per worker) is already waiting for a
    * worker, further nodes of the view are held back and started as decodes
@@ -170,11 +184,36 @@ export interface CopcDataSourceOptions {
    */
   decodeBackpressure?: boolean;
   /**
+   * Skips the throttled LoD pass while nothing that feeds it has changed: the
+   * camera and viewport are where the last pass saw them, no load or hierarchy
+   * page is in flight, and no option, clip or cache eviction has changed since.
+   * Cuts the idle cost of continuous rendering, where the pass would otherwise
+   * run every `debounceMs` on an unchanged view. Default `false`.
+   */
+  skipIdleLoD?: boolean;
+  /**
    * Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass, not only
    * when a node is inserted, so nodes that just left the screen are evicted
    * right away if the cache is over budget. Default `false`.
    */
   strictCacheBudget?: boolean;
+  /**
+   * Uploads a node's vertex buffers to the GPU as soon as it has loaded,
+   * even while it is hidden (prefetched, not yet on screen), instead of on
+   * the first frame it is shown. A prefetched node then appears on a pan
+   * without that frame's upload cost, at the price of holding its GPU
+   * memory earlier. Combine with `maxGpuInitsPerFrame` to spread the
+   * uploads out. Default `false`.
+   */
+  preUploadHidden?: boolean;
+  /**
+   * Caps how many nodes may upload their vertex buffers in one frame; the
+   * rest wait for later frames. Limits the frame-time spike when many nodes
+   * arrive together. Nodes on screen may use every slot, while hidden
+   * pre-uploads (`preUploadHidden`) take at most one slot per frame. Unset
+   * (the default) means no cap.
+   */
+  maxGpuInitsPerFrame?: number;
   /** Factor that converts the Z axis unit to meters. Auto-detected from the WKT when omitted. */
   zFactor?: number;
   /** Factor that converts the XY axis unit to meters. Auto-detected from the WKT when omitted. */

@@ -11,30 +11,8 @@ import { parseKey } from './key';
 
 /** Extracts the depth (D) from a COPC hierarchy node key (VoxelKey, "D-X-Y-Z"). */
 export function getDepth(key: string): number {
-  return parseInt(key.split('-')[0]);
-}
-
-/**
- * Returns the parent key of a node key, or `null` for the root (depth 0).
- * D-X-Y-Z → (D-1)-(X>>1)-(Y>>1)-(Z>>1)
- */
-export function getParentKey(key: string): string | null {
-  const [d, x, y, z] = parseKey(key);
-  if (d === 0) return null;
-  return `${d - 1}-${x >> 1}-${y >> 1}-${z >> 1}`;
-}
-
-/**
- * True when `ancestorKey` is a proper ancestor of `key` — `key`'s cell lies
- * inside `ancestorKey`'s cell, at any depth below it. Shifting `key`'s indices
- * right by the depth difference yields its ancestor's indices at that depth.
- */
-export function isAncestorOf(ancestorKey: string, key: string): boolean {
-  const [ad, ax, ay, az] = parseKey(ancestorKey);
-  const [d, x, y, z] = parseKey(key);
-  const shift = d - ad;
-  if (shift <= 0) return false;
-  return x >> shift === ax && y >> shift === ay && z >> shift === az;
+  // parseInt stops at the first '-', so this reads just the leading D component.
+  return parseInt(key, 10);
 }
 
 /** A node key split into its integer parts, kept alongside the original
@@ -62,11 +40,9 @@ export function bucketKeysByDepth(keys: Iterable<string>): Map<number, ParsedKey
 
 /**
  * Returns the keys in `buckets` that are an ancestor or descendant of `key`
- * at any depth -- equivalent to scanning every candidate with two
- * `isAncestorOf()` calls apiece, but without re-parsing `buckets`' keys on
- * every call, and skipping candidates at `key`'s own depth outright (neither
- * relationship is possible there, since `isAncestorOf` requires a depth
- * difference).
+ * at any depth. A candidate at `key`'s own depth is skipped outright (neither
+ * relationship is possible there); otherwise the deeper key's indices,
+ * shifted right by the depth difference, must equal the shallower key's.
  */
 export function findRelevantKeys(key: string, buckets: Map<number, ParsedKey[]>): string[] {
   const [d, x, y, z] = parseKey(key);
@@ -83,26 +59,4 @@ export function findRelevantKeys(key: string, buckets: Map<number, ParsedKey[]>)
     }
   }
   return relevant;
-}
-
-/**
- * Returns the 8 child keys of a node key.
- * D-X-Y-Z → (D+1)-(2X+dx)-(2Y+dy)-(2Z+dz), dx/dy/dz ∈ {0,1}
- */
-export function getChildKeys(key: string): string[] {
-  const [d, x, y, z] = parseKey(key);
-  const nd = d + 1,
-    nx = x * 2,
-    ny = y * 2,
-    nz = z * 2;
-  return [
-    `${nd}-${nx}-${ny}-${nz}`,
-    `${nd}-${nx + 1}-${ny}-${nz}`,
-    `${nd}-${nx}-${ny + 1}-${nz}`,
-    `${nd}-${nx + 1}-${ny + 1}-${nz}`,
-    `${nd}-${nx}-${ny}-${nz + 1}`,
-    `${nd}-${nx + 1}-${ny}-${nz + 1}`,
-    `${nd}-${nx}-${ny + 1}-${nz + 1}`,
-    `${nd}-${nx + 1}-${ny + 1}-${nz + 1}`,
-  ];
 }

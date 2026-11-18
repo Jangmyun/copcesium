@@ -54,9 +54,13 @@ const TUNING_PARAMS = [
   'lodHysteresis',
   'prefetchFrustumFactor',
   'prefetchIdleOnly',
+  'prefetchLookaheadMs',
   'adaptiveMergeGap',
   'decodeBackpressure',
   'strictCacheBudget',
+  'preUploadHidden',
+  'maxGpuInitsPerFrame',
+  'skipIdleLoD',
 ] as const;
 
 export function tuningOptions(): Record<string, number> {
@@ -86,7 +90,8 @@ function asStatsCapable(ds: CopcDataSource): StatsCapable | null {
  */
 interface LoadInternals {
   _selectedKeys: Set<string>;
-  _pendingKeys: Set<string>;
+  /** In-flight loads live in the scheduler since #272. */
+  _scheduler: { isPending(key: string): boolean };
   _nodeCache: { peek(key: string): unknown };
   _copc: { info: { cube: number[] }; header: { max: number[] } };
   _options: { zFactor?: number };
@@ -116,7 +121,7 @@ function dataTopSphere(root: Cesium.BoundingSphere, internals: LoadInternals): C
 function visiblePending(internals: LoadInternals): number {
   let count = 0;
   for (const key of internals._selectedKeys) {
-    if (internals._pendingKeys.has(key)) count++;
+    if (internals._scheduler.isPending(key)) count++;
   }
   return count;
 }

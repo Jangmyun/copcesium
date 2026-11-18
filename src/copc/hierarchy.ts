@@ -150,14 +150,22 @@ export async function loadCopcHierarchy(url: string): Promise<CopcHierarchy> {
 
   const { nodes, pages } = await Copc.loadHierarchyPage(getter, copc.info.rootHierarchyPage);
   emptyInvalidNodes(nodes, copc.header.pointCount, url);
-  // A manual reduce instead of `Math.max(...keys.map(getDepth))` — spreading a
-  // large array into call arguments can blow the call stack (see #126).
-  let maxDepth = 0;
+  const maxDepth = maxNodeDepth(nodes);
+
+  await fileSize;
+  return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize, counter };
+}
+
+/**
+ * Deepest level among `nodes`' keys, starting from `floor`. A manual reduce
+ * instead of `Math.max(...keys.map(getDepth))` — spreading a large array into
+ * call arguments can blow the call stack (see #126).
+ */
+export function maxNodeDepth(nodes: Hierarchy.Node.Map, floor = 0): number {
+  let maxDepth = floor;
   for (const key of Object.keys(nodes)) {
     const depth = getDepth(key);
     if (depth > maxDepth) maxDepth = depth;
   }
-
-  await fileSize;
-  return { copc, nodes, pages, maxDepth, rootCenter, rootHalfSize, counter };
+  return maxDepth;
 }

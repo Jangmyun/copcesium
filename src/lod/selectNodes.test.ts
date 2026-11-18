@@ -504,6 +504,37 @@ describe('selectNodes', () => {
       return { nodes, getSphere };
     }
 
+    it('shifts prefetch candidates toward a predicted pose and sorts them nearest first', () => {
+      const { nodes, getSphere } = makeFixture();
+      const run = (predictedPose?: { positionWC: Cesium.Cartesian3; directionWC: Cesium.Cartesian3; upWC: Cesium.Cartesian3 }) => {
+        const prefetched: string[] = [];
+        selectNodes({
+          nodes,
+          getSphere,
+          camera: prefetchCamera,
+          viewportHeight: 1000,
+          sseThreshold: 0,
+          maxVisibleNodes: 100,
+          prefetchFrustumFactor: 1.8,
+          onPrefetchCandidate: (key) => prefetched.push(key),
+          predictedPose,
+        });
+        return prefetched;
+      };
+      const towards = (x: number) => ({
+        positionWC: new Cesium.Cartesian3(x, 0, 0),
+        directionWC: new Cesium.Cartesian3(0, 0, -1),
+        upWC: new Cesium.Cartesian3(0, 1, 0),
+      });
+
+      // Moving toward +x puts x=200 inside the expanded region and keeps x=80.
+      expect(run(towards(100))).toEqual([PREFETCH_ONLY_KEY, FAR_OUTSIDE_KEY]);
+      // Moving away from the +x nodes drops both.
+      expect(run(towards(-100))).toEqual([]);
+      // Same position as the real camera: the same candidates as without a pose.
+      expect(run(towards(0))).toEqual(run());
+    });
+
     it('reports no candidates when prefetchFrustumFactor is omitted', () => {
       const { nodes, getSphere } = makeFixture();
       const prefetched: string[] = [];

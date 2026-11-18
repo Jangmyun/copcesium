@@ -66,9 +66,8 @@ const rangeFetcherFetch = vi.fn();
 const rangeFetcherDestroy = vi.fn();
 /** Constructor calls, so the concurrency cap it receives can be asserted on. */
 const rangeFetcherCtor = vi.fn();
-// `isRetryable` is kept real (via `importOriginal`) rather than mocked — it's
-// a pure function with no fetch dependency, and `_loadPage()`'s give-up tests
-// below rely on its actual status-based classification.
+// The module's other exports are kept real (via `importOriginal`); only the
+// fetcher class is replaced.
 vi.mock('./copc/RangeFetcher', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./copc/RangeFetcher')>();
   return {
@@ -1324,14 +1323,26 @@ describe('CopcDataSource update loop', () => {
     });
   });
 
-  it('builds the fetcher with a fixed gap and no adaptive options by default', async () => {
+  it('builds the fetcher with the adaptive gap by default', async () => {
     mockCopc(undefined);
     const { viewer } = makeFakeViewer();
 
     await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
 
-    expect(rangeFetcherCtor.mock.calls[0]![6]).toBeUndefined();
+    expect(rangeFetcherCtor.mock.calls[0]![6]).toEqual({});
     expect(workerPoolSizes).toEqual([5]);
+  });
+
+  it('builds the fetcher with a fixed gap when adaptiveMergeGap is false', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+
+    await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      debounceMs: 0,
+      adaptiveMergeGap: false,
+    });
+
+    expect(rangeFetcherCtor.mock.calls[0]![6]).toBeUndefined();
   });
 
   describe('decodeBackpressure', () => {
@@ -2168,5 +2179,148 @@ describe('CopcDataSource._sphereCache', () => {
     // ...and re-requesting an evicted key transparently recomputes a valid sphere.
     const recomputed = ds._getSphere('0-0-0-0');
     expect(recomputed.radius).toBeGreaterThan(0);
+  });
+});
+
+describe('CopcDataSource skipIdleLoD', () => {
+  beforeEach(() => {
+    selectNodesMock.mockReset();
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+  });
+
+  /** Loads with the option set, runs passes until the root node is cached and
+   *  the scheduler is quiet, and returns handles to poke the view afterwards. */
+  async function settle(skipIdleLoD: boolean, extraNodes = false) {
+    mockCopc(undefined, extraNodes ? EXTRA_NODES : undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    const fake = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fake.viewer, {
+      debounceMs: 0,
+      skipIdleLoD,
+    });
+    fake.triggerUpdate();
+    await vi.waitFor(() => expect(fake.addPrimitive).toHaveBeenCalledTimes(1));
+    fake.triggerUpdate(); // load settled -> dirty -> one more pass
+    await vi.waitFor(() => expect(ds.stats.pendingNodes).toBe(0));
+    fake.triggerUpdate();
+    selectNodesMock.mockClear();
+    return { ...fake, ds };
+  }
+
+  it('does not run a pass on an idle frame once settled', async () => {
+    const { triggerUpdate } = await settle(true);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps running a pass every tick when the option is off', async () => {
+    const { triggerUpdate } = await settle(false);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs a pass after the camera moves', async () => {
+    const { viewer, triggerUpdate } = await settle(true);
+    triggerUpdate();
+    expect(selectNodesMock).not.toHaveBeenCalled();
+    (viewer.scene.camera.positionWC as Cesium.Cartesian3).x += 1;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after the viewport is resized', async () => {
+    const { viewer, triggerUpdate } = await settle(true);
+    (viewer.scene.canvas as { clientHeight: number }).clientHeight = 700;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a node load completes', async () => {
+    const { ds, triggerUpdate, addPrimitive } = await settle(true, true);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0', '1-0-0-0']);
+    (ds as unknown as { _lodDirty: boolean })._lodDirty = true;
+    triggerUpdate(); // dispatches the load
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(2));
+    selectNodesMock.mockClear();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a hierarchy page loads', async () => {
+    const { ds } = await settle(true);
+    const inner = ds as unknown as {
+      _pager: { pages: Record<string, unknown>; loadPage(key: string): Promise<void> };
+    };
+    inner._pager.pages['1-1-1-1'] = { pageOffset: 100, pageLength: 20 };
+    loadHierarchyPage.mockResolvedValueOnce({ nodes: {}, pages: {} });
+    await inner._pager.loadPage('1-1-1-1');
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a setter that affects selection', async () => {
+    const { ds, triggerUpdate } = await settle(true);
+    ds.sseThreshold = 100;
+    await vi.waitFor(() => expect(selectNodesMock).toHaveBeenCalledTimes(1));
+    selectNodesMock.mockClear();
+    (ds as unknown as { _lodDirty: boolean })._lodDirty = true;
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs a pass after a clip setting changes', async () => {
+    const { ds, triggerUpdate } = await settle(true);
+    ds.clipMode = 'outside';
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the debounce cadence across skipped ticks', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      mockCopc();
+      workerPoolRun.mockResolvedValueOnce(renderData);
+      const fake = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fake.viewer, {
+        debounceMs: 100,
+        skipIdleLoD: true,
+      });
+      const tick = (ms: number) => {
+        now += ms;
+        fake.triggerUpdate();
+      };
+      tick(1000);
+      await vi.waitFor(() => expect(fake.addPrimitive).toHaveBeenCalledTimes(1));
+      tick(1000);
+      await vi.waitFor(() => expect(ds.stats.pendingNodes).toBe(0));
+      tick(1000);
+      selectNodesMock.mockClear();
+
+      tick(1000); // idle: skipped, but restarts the debounce clock
+      expect(selectNodesMock).not.toHaveBeenCalled();
+      (fake.viewer.scene.camera.positionWC as Cesium.Cartesian3).x += 1;
+      tick(50); // the view changed, but only 50 ms after the skipped tick
+      expect(selectNodesMock).not.toHaveBeenCalled();
+      tick(60);
+      expect(selectNodesMock).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('keeps running passes while the camera is moving', async () => {
+    const { triggerUpdate, triggerMoveStart } = await settle(true);
+    triggerMoveStart();
+    triggerUpdate();
+    triggerUpdate();
+    expect(selectNodesMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "copcesium",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "CesiumJS provider for real-time COPC point cloud streaming and rendering",
   "type": "module",
   "license": "MIT",

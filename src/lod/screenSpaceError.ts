@@ -7,7 +7,23 @@
  * SPDX-License-Identifier: MIT
  */
 
-import type * as Cesium from 'cesium';
+import * as Cesium from 'cesium';
+
+// Camera.frustum is PerspectiveFrustum | PerspectiveOffCenterFrustum | OrthographicFrustum;
+// only PerspectiveFrustum exposes fovy. The other two aren't used for this library's default
+// scene setup, so we fall back to a typical 60° vertical FOV rather than threading an explicit
+// fovy option through every call site.
+export const DEFAULT_FOVY = Cesium.Math.toRadians(60);
+
+/** Vertical field of view of `frustum`, or the 60° default when it has none. */
+export function getFovy(frustum: Cesium.Camera['frustum']): number {
+  return (frustum instanceof Cesium.PerspectiveFrustum ? frustum.fovy : undefined) ?? DEFAULT_FOVY;
+}
+
+/** Pixels per unit of (size / distance) for a viewport of `viewportHeight` at `fovy`. */
+export function sseScale(viewportHeight: number, fovy: number): number {
+  return viewportHeight / (2 * Math.tan(fovy / 2));
+}
 
 /**
  * Approximates how many screen pixels a node's bounding sphere radius covers,
@@ -18,6 +34,7 @@ export function computeScreenSpaceError(
   cameraPosition: Cesium.Cartesian3,
   viewportHeight: number,
   fovy: number,
+  scale: number = sseScale(viewportHeight, fovy),
 ): number {
   const dx = boundingSphere.center.x - cameraPosition.x;
   const dy = boundingSphere.center.y - cameraPosition.y;
@@ -28,6 +45,5 @@ export function computeScreenSpaceError(
   // division below, so short-circuit to "always subdivide further" instead.
   if (distance <= 1e-6) return Infinity;
 
-  const k = viewportHeight / (2 * Math.tan(fovy / 2));
-  return (boundingSphere.radius * k) / distance;
+  return (boundingSphere.radius * scale) / distance;
 }

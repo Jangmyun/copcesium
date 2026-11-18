@@ -23,9 +23,15 @@ import {
   pickVertexShaderSource,
   pickFragmentShaderSource,
 } from './shaders';
-import { MAX_CLIP_BOXES, MAX_CLIP_PLANES, writeLocalClipUniforms, type ClipState } from './clipping';
+import {
+  MAX_CLIP_BOXES,
+  MAX_CLIP_PLANES,
+  writeLocalClipUniforms,
+  type ClipState,
+} from './clipping';
 import type { EyeDomeLighting } from './EyeDomeLighting';
 import type { NodeRenderData } from '../types';
+import type { GpuInitBudget } from './GpuInitBudget';
 
 /**
  * Style state shared live by every loaded primitive. Mutated in place by
@@ -128,6 +134,31 @@ interface DrawCommandLike {
   framebuffer: unknown;
 }
 
+/** Position attribute (node-relative offset), shared by the main and pick vertex arrays. */
+function positionAttribute(vertexBuffer: unknown) {
+  return {
+    index: 0,
+    vertexBuffer,
+    componentsPerAttribute: 3,
+    componentDatatype: Cesium.ComponentDatatype.FLOAT,
+    offsetInBytes: 0,
+    strideInBytes: 12,
+  };
+}
+
+/** Classification attribute; its slot differs between the main (3) and pick (1) vertex arrays. */
+function classificationAttribute(index: number, vertexBuffer: unknown) {
+  return {
+    index,
+    vertexBuffer,
+    componentsPerAttribute: 1,
+    componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
+    normalize: true,
+    offsetInBytes: 0,
+    strideInBytes: 1,
+  };
+}
+
 // Cesium.Primitive allocates a JS object per point; this DrawCommand-based
 // wrapper instead uploads the node's TypedArrays as a single GPU buffer.
 //
@@ -144,7 +175,10 @@ export class PointCloudPrimitive {
   // Node-local clip uniforms, rebuilt whenever the clip regions or this
   // node's origin (heightOffset) change. Fixed-length: the shader declares
   // MAX_* slots and reads only the first `count`.
-  private readonly _clipPlanes = Array.from({ length: MAX_CLIP_PLANES }, () => new Cesium.Cartesian4());
+  private readonly _clipPlanes = Array.from(
+    { length: MAX_CLIP_PLANES },
+    () => new Cesium.Cartesian4(),
+  );
   private readonly _clipBoxes = Array.from({ length: MAX_CLIP_BOXES }, () => new Cesium.Matrix4());
   private _clipUniforms = { mode: 0, planeCount: 0, boxCount: 0 };
   private _colors: Uint8Array | null;
@@ -162,6 +196,8 @@ export class PointCloudPrimitive {
   private _sp: { destroy(): void } | null;
   /** Fired once, after the first successful `_initGpu()`, then dropped. */
   private _onGpuInit: ((startedAt: number, endedAt: number) => void) | null;
+  private readonly _preUploadHidden: boolean;
+  private readonly _gpuBudget: GpuInitBudget | null;
   // Raw buffer handles retained past `_initGpu()` (unlike the CPU TypedArrays,
   // which are freed) so `readPointAttributes()` can read a single point's
   // worth of bytes back from the GPU on demand, without keeping a full CPU
@@ -183,7 +219,7 @@ export class PointCloudPrimitive {
     boundingSphere: Cesium.BoundingSphere,
     style: PointStyle,
     onGpuInit?: (startedAt: number, endedAt: number) => void,
-    edl?: EyeDomeLighting,
+    gpu?: { preUploadHidden?: boolean; budget?: GpuInitBudget; edl?: EyeDomeLighting },
   ) {
     this._positions = renderData.positions;
     this._origin = renderData.origin;
@@ -201,13 +237,15 @@ export class PointCloudPrimitive {
     this._pointCount = renderData.pointCount;
     this._boundingSphere = boundingSphere;
     this._style = style;
-    this._edl = edl ?? null;
+    this._edl = gpu?.edl ?? null;
     this.show = true;
     this._destroyed = false;
     this._cmd = null;
     this._va = null;
     this._sp = null;
     this._onGpuInit = onGpuInit ?? null;
+    this._preUploadHidden = gpu?.preUploadHidden ?? false;
+    this._gpuBudget = gpu?.budget ?? null;
     this._positionBuffer = null;
     this._intensityBuffer = null;
     this._classificationBuffer = null;
@@ -218,9 +256,12 @@ export class PointCloudPrimitive {
   }
 
   // Called by PrimitiveCollection every frame.
-  update(frameState: { context: unknown; commandList: unknown[] }): void {
-    if (!this.show || this._destroyed) return;
+  update(frameState: { context: unknown; commandList: unknown[]; frameNumber?: number }): void {
+    if (this._destroyed || (!this.show && !(this._preUploadHidden && !this._cmd))) return;
     if (!this._cmd) {
+      // Over the per-frame budget: stay un-uploaded and retry next frame.
+      if (this._gpuBudget && !this._gpuBudget.tryAcquire(frameState.frameNumber ?? 0, !this.show))
+        return;
       // A GPU init failure (context loss, out of VRAM, ...) must not throw here:
       // that would abort Cesium's whole frame loop. Skip just this node instead.
       try {
@@ -232,7 +273,10 @@ export class PointCloudPrimitive {
         this._onGpuInit?.(startedAt, performance.now());
         this._onGpuInit = null;
       } catch (err) {
-        console.error('[PointCloudPrimitive] GPU initialization failed; excluding this node from rendering:', err);
+        console.error(
+          '[PointCloudPrimitive] GPU initialization failed; excluding this node from rendering:',
+          err,
+        );
         this._destroyed = true;
         return;
       }
@@ -247,6 +291,8 @@ export class PointCloudPrimitive {
         this._appliedOpaque = opaque;
       }
     }
+    // A hidden pre-upload stops here: the buffers are ready, nothing is drawn.
+    if (!this.show) return;
     frameState.commandList.push(
       this._edl && this._appliedOpaque ? this._edl.apply(frameState, this._cmd!) : this._cmd,
     );
@@ -278,14 +324,40 @@ export class PointCloudPrimitive {
   /** Re-expresses the world-space clip regions relative to this node's current origin. */
   private _updateClipUniforms(): void {
     const origin = Cesium.Matrix4.getTranslation(this._cmd!.modelMatrix, new Cesium.Cartesian3());
-    this._clipUniforms = writeLocalClipUniforms(this._style.clip, origin, this._clipPlanes, this._clipBoxes);
+    this._clipUniforms = writeLocalClipUniforms(
+      this._style.clip,
+      origin,
+      this._clipPlanes,
+      this._clipBoxes,
+    );
     this._appliedClipVersion = this._style.clip.version;
+  }
+
+  /** Uniforms the main and pick shaders both read. */
+  private _sharedUniforms(style: PointStyle) {
+    return {
+      u_pixelSize: () => style.pixelSize,
+      u_sizeMode: () => style.sizeMode,
+      u_attenuationFactor: () => style.attenuationFactor,
+      u_minPixelSize: () => style.minPixelSize,
+      u_maxPixelSize: () => style.maxPixelSize,
+      u_classMask: () => style.classMask,
+      u_clipMode: () => this._clipUniforms.mode,
+      u_clipPlaneCount: () => this._clipUniforms.planeCount,
+      u_clipPlanes: () => this._clipPlanes,
+      u_clipBoxCount: () => this._clipUniforms.boxCount,
+      u_clipBoxes: () => this._clipBoxes,
+    };
   }
 
   /** Node origin shifted `heightOffset` meters along the node's local "up". */
   private _modelMatrix(heightOffset: number): Cesium.Matrix4 {
     const origin = new Cesium.Cartesian3(this._origin[0], this._origin[1], this._origin[2]);
-    const shift = Cesium.Cartesian3.multiplyByScalar(this._up, heightOffset, new Cesium.Cartesian3());
+    const shift = Cesium.Cartesian3.multiplyByScalar(
+      this._up,
+      heightOffset,
+      new Cesium.Cartesian3(),
+    );
     return Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.add(origin, shift, origin));
   }
 
@@ -313,14 +385,7 @@ export class PointCloudPrimitive {
       va = new CesiumAny.VertexArray({
         context,
         attributes: [
-          {
-            index: 0, // position (node-relative offset)
-            vertexBuffer: positionBuffer,
-            componentsPerAttribute: 3,
-            componentDatatype: Cesium.ComponentDatatype.FLOAT,
-            offsetInBytes: 0,
-            strideInBytes: 12,
-          },
+          positionAttribute(positionBuffer),
           {
             index: 1, // color
             vertexBuffer: colorBuffer,
@@ -339,15 +404,7 @@ export class PointCloudPrimitive {
             offsetInBytes: 0,
             strideInBytes: 2,
           },
-          {
-            index: 3, // classification
-            vertexBuffer: classificationBuffer,
-            componentsPerAttribute: 1,
-            componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
-            normalize: true,
-            offsetInBytes: 0,
-            strideInBytes: 1,
-          },
+          classificationAttribute(3, classificationBuffer),
           {
             index: 4, // elevation
             vertexBuffer: elevationBuffer,
@@ -394,20 +451,10 @@ export class PointCloudPrimitive {
         // ECEF from this plus the node-relative offsets.
         modelMatrix: this._modelMatrix(this._style.heightOffset),
         uniformMap: {
-          u_pixelSize: () => style.pixelSize,
-          u_sizeMode: () => style.sizeMode,
-          u_attenuationFactor: () => style.attenuationFactor,
-          u_minPixelSize: () => style.minPixelSize,
-          u_maxPixelSize: () => style.maxPixelSize,
+          ...this._sharedUniforms(style),
           u_colorMode: () => style.colorMode,
           u_intensityRange: () => style.intensityRange,
-          u_classMask: () => style.classMask,
           u_opacity: () => style.opacity,
-          u_clipMode: () => this._clipUniforms.mode,
-          u_clipPlaneCount: () => this._clipUniforms.planeCount,
-          u_clipPlanes: () => this._clipPlanes,
-          u_clipBoxCount: () => this._clipUniforms.boxCount,
-          u_clipBoxes: () => this._clipBoxes,
         },
       }) as DrawCommandLike;
       this._appliedHeightOffset = this._style.heightOffset;
@@ -449,8 +496,18 @@ export class PointCloudPrimitive {
    * check `Cesium.FeatureDetection.supportsWebgl2(scene)` before ever reaching
    * this (`CopcDataSource.pickPoint()` does).
    */
-  preparePickCommand(context: unknown, nodeSlot: number, framebuffer: unknown): DrawCommandLike | null {
-    if (!this.show || this._destroyed || !this._cmd || !this._positionBuffer || !this._classificationBuffer) {
+  preparePickCommand(
+    context: unknown,
+    nodeSlot: number,
+    framebuffer: unknown,
+  ): DrawCommandLike | null {
+    if (
+      !this.show ||
+      this._destroyed ||
+      !this._cmd ||
+      !this._positionBuffer ||
+      !this._classificationBuffer
+    ) {
       return null;
     }
     this._pickNodeSlot = nodeSlot;
@@ -468,23 +525,9 @@ export class PointCloudPrimitive {
     const pickVa = new CesiumAny.VertexArray({
       context,
       attributes: [
-        {
-          index: 0, // position (node-relative offset) — same buffer as the main VA's
-          vertexBuffer: this._positionBuffer,
-          componentsPerAttribute: 3,
-          componentDatatype: Cesium.ComponentDatatype.FLOAT,
-          offsetInBytes: 0,
-          strideInBytes: 12,
-        },
-        {
-          index: 1, // classification — same buffer as the main VA's, for the same allow-list cull
-          vertexBuffer: this._classificationBuffer,
-          componentsPerAttribute: 1,
-          componentDatatype: Cesium.ComponentDatatype.UNSIGNED_BYTE,
-          normalize: true,
-          offsetInBytes: 0,
-          strideInBytes: 1,
-        },
+        // Same buffers as the main VA's; classification for the same allow-list cull.
+        positionAttribute(this._positionBuffer),
+        classificationAttribute(1, this._classificationBuffer),
       ],
     });
     const pickSp = CesiumAny.ShaderProgram.fromCache({
@@ -504,24 +547,17 @@ export class PointCloudPrimitive {
       // Always opaque depth test/write, independent of the style's live
       // opacity: blending two points' encoded IDs together would decode to
       // neither, and a decisive nearest-wins hit is exactly what picking wants.
-      renderState: CesiumAny.RenderState.fromCache({ depthTest: { enabled: true }, depthMask: true }),
+      renderState: CesiumAny.RenderState.fromCache({
+        depthTest: { enabled: true },
+        depthMask: true,
+      }),
       boundingVolume: this._boundingSphere,
       count: this._pointCount,
       modelMatrix: this._modelMatrix(this._style.heightOffset),
       framebuffer,
       uniformMap: {
-        u_pixelSize: () => style.pixelSize,
-        u_sizeMode: () => style.sizeMode,
-        u_attenuationFactor: () => style.attenuationFactor,
-        u_minPixelSize: () => style.minPixelSize,
-        u_maxPixelSize: () => style.maxPixelSize,
-        u_classMask: () => style.classMask,
+        ...this._sharedUniforms(style),
         u_nodeSlot: () => this._pickNodeSlot,
-        u_clipMode: () => this._clipUniforms.mode,
-        u_clipPlaneCount: () => this._clipUniforms.planeCount,
-        u_clipPlanes: () => this._clipPlanes,
-        u_clipBoxCount: () => this._clipUniforms.boxCount,
-        u_clipBoxes: () => this._clipBoxes,
       },
     }) as DrawCommandLike;
     return this._pickCmd;
@@ -536,7 +572,9 @@ export class PointCloudPrimitive {
    */
   readPointAttributes(pointIndex: number, context: unknown): PickedPointAttributes {
     if (pointIndex < 0 || pointIndex >= this._pointCount) {
-      throw new RangeError(`pointIndex ${pointIndex} is out of range for a node with ${this._pointCount} points`);
+      throw new RangeError(
+        `pointIndex ${pointIndex} is out of range for a node with ${this._pointCount} points`,
+      );
     }
     if (!this._positionBuffer || !this._intensityBuffer || !this._classificationBuffer) {
       throw new Error('readPointAttributes() called before this node reached the GPU');
@@ -568,7 +606,11 @@ export class PointCloudPrimitive {
     // The shift is applied per node along that node's own "up", so only this
     // primitive can undo it exactly; a caller holding just `position` could
     // only guess the direction.
-    const dataPosition = Cesium.Matrix4.multiplyByPoint(this._modelMatrix(0), offset, new Cesium.Cartesian3());
+    const dataPosition = Cesium.Matrix4.multiplyByPoint(
+      this._modelMatrix(0),
+      offset,
+      new Cesium.Cartesian3(),
+    );
 
     return {
       position,

@@ -19,7 +19,9 @@ export interface NodeConversionPayload {
   /** This node's compressed point data, already fetched (and possibly merged
    *  with adjacent sibling ranges) by `RangeFetcher` on the main thread. */
   compressedBytes: Uint8Array;
-  copc: Copc;
+  /** The only parts of the parsed COPC file the decoder reads (header for point
+   *  layout, `eb` for extra-byte dimensions); the rest is not worth cloning. */
+  copc: Pick<Copc, 'header' | 'eb'>;
   node: Hierarchy.Node;
   /** proj4-registered CRS name; 'EPSG:4326' skips the proj4 transform entirely. */
   proj: string;

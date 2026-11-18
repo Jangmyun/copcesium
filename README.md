@@ -4,7 +4,7 @@
 
 # [copcesium](https://github.com/Jangmyun/copcesium)
 
-[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-95.4%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/copcesium.svg)](https://www.npmjs.com/package/copcesium) [![CI](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml) [![Publish](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml/badge.svg)](https://github.com/Jangmyun/copcesium/actions/workflows/publish.yml) [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Jangmyun/copcesium/blob/main/LICENSE) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Jangmyun/copcesium/issues) [![Lines](https://img.shields.io/badge/lines-96.33%25-brightgreen.svg?style=flat)](https://github.com/Jangmyun/copcesium/actions/workflows/ci.yml)
 
 <table align="center">
   <tr>
@@ -206,8 +206,11 @@ interface CopcDataSourceOptions {
   prefetchFrustumFactor?: number;
   maxPrefetchNodes?: number;
   prefetchIdleOnly?: boolean;
+  prefetchLookaheadMs?: number;
   decodeBackpressure?: boolean;
   strictCacheBudget?: boolean;
+  preUploadHidden?: boolean;
+  maxGpuInitsPerFrame?: number;
   zFactor?: number;
   xyFactor?: number;
   autoFrame?: boolean;
@@ -233,7 +236,7 @@ interface CopcDataSourceOptions {
 | `xyFactor` | auto-detected | Factor converting the file's XY unit to meters (used for bounding-sphere sizing). |
 | `concurrency` | `5` | Number of Worker threads decoding nodes in parallel. `'auto'` uses `navigator.hardwareConcurrency − 1`, kept between 2 and 5 (4 cores assumed if the browser doesn't say). Ignored if a `workerPool` is passed to `load()`. |
 | `maxConcurrentRequests` | = `concurrency` | HTTP Range Requests in flight at once. Fetching is latency-bound and decoding is CPU-bound, so they saturate at different widths; raise this instead of `concurrency` to widen fetching without spawning workers that have nothing to do. |
-| `adaptiveMergeGap` | `false` | Lets a request for one node also cover a small gap of unneeded bytes up to the next node, so the two go out as one request, but only while requests are waiting for a free slot. The largest gap worth covering is measured from the link: time to first byte × download rate ÷ `maxConcurrentRequests`, kept between 0 and 256 KiB. That saves round trips on fast, high-latency links without wasting bandwidth on slow ones, which no fixed gap does. Off by default: only contiguous ranges are merged. |
+| `adaptiveMergeGap` | `true` | Lets a request for one node also cover a small gap of unneeded bytes up to the next node, so the two go out as one request, but only while requests are waiting for a free slot. The largest gap worth covering is measured from the link: time to first byte × download rate ÷ `maxConcurrentRequests`, kept between 0 and 256 KiB. That saves round trips on fast, high-latency links without wasting bandwidth on slow ones, which no fixed gap does. Set `false` to merge only contiguous ranges. |
 | `debounceMs` | `100` | Minimum interval between full LoD re-selection passes. A lighter frustum-only visibility check still runs every frame. |
 | `maxCacheNodes` | `150` | Maximum nodes kept in memory (LRU) before the least-recently-used, currently-unselected ones are torn down. |
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
@@ -243,8 +246,12 @@ interface CopcDataSourceOptions {
 | `prefetchFrustumFactor` | `1.8` | Widens the view frustum by this factor (scaling its near-plane width and height) to find nodes just off-screen. They're loaded and cached but not drawn, so a pan reveals data that's already there. Prefetch loads only use worker-pool capacity the visible loads leave free. Set to `1` (or less) to disable. |
 | `maxPrefetchNodes` | `50` | Maximum prefetch-only nodes a single LoD pass may load. Independent of `maxVisibleNodes`/`maxPoints`, which bound only what's rendered. Ignored when prefetching is disabled. |
 | `prefetchIdleOnly` | `false` | Holds prefetch loads back until every load for the current view has finished, instead of only until they have all been started. On a bandwidth-limited link, prefetch bytes otherwise delay the nodes on screen; prefetching still happens whenever the camera rests. |
+| `skipIdleLoD` | `false` | Skips the periodic LoD pass while the camera, viewport, loads, hierarchy pages, cache and options are all unchanged since the last one. Saves the idle CPU cost under continuous rendering; any change, or anything still loading, resumes the passes. |
+| `prefetchLookaheadMs` | unset | Opt-in predictive prefetch. While the camera moves, prefetch is built around the pose it is expected to have this many milliseconds ahead (damped constant-velocity extrapolation, capped at 250 ms), candidates load nearest to that pose first, and a prefetch load that leaves the prefetch set is cancelled only after 300 ms. Offline on a recorded human camera path this beat holding the pose only up to 250 ms. Recommended: `250`. |
 | `decodeBackpressure` | `false` | For devices where decoding, not the network, is the bottleneck. Once a full round of decoding (one node per worker) is waiting for a worker, further downloads for the view are held back and resume as decodes finish; nodes the camera has moved past are dropped. Prefetch waits until the decode queue is empty and decodes after visible nodes. With `prefetchIdleOnly` also on, prefetch waits for both conditions. `stats.decodeQueue` shows the queue either way. |
 | `strictCacheBudget` | `false` | Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass instead of only when a node is inserted, so nodes that just left the screen are evicted right away. Nodes on screen are never evicted, so they alone can still exceed the budget. |
+| `preUploadHidden` | `false` | Uploads a node's GPU buffers as soon as it has loaded, even while it is hidden (prefetched), so it appears on a pan without that frame's upload cost. Holds GPU memory earlier. |
+| `maxGpuInitsPerFrame` | unset | Caps how many nodes upload their GPU buffers per frame; the rest wait for later frames. Nodes on screen may use every slot; hidden pre-uploads take at most one slot per frame. Unset means no cap. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
 | `pointSizeMode` | `'fixed'` | `'fixed'` draws every point at `pixelSize`. `'attenuated'` scales size down with camera distance (`attenuationFactor / sqrt(dist_m)`, clamped to `[minPixelSize, maxPixelSize]`) so close-up points don't show gaps. Live-adjustable via `dataSource.pointSizeMode`. |
 | `attenuationFactor` | `100` | Numerator of the attenuated-size formula, in pixel·√meters. Only used when `pointSizeMode` is `'attenuated'`. Tune per dataset density. Live-adjustable via `dataSource.attenuationFactor`. |

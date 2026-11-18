@@ -33,7 +33,14 @@ proj4Mock.defs = (...args: unknown[]) => proj4Defs(...args);
 proj4Mock.Proj = () => ({ projName: 'longlat', inverse: () => null });
 vi.mock('proj4', () => ({ default: proj4Mock }));
 
-const { convertNode, lonLatAltToEcef } = await import('./worker');
+const { convertNode, lonLatAltToEcefInto } = await import('./worker');
+
+/** Allocating tuple wrapper over `lonLatAltToEcefInto`, for readable assertions. */
+function lonLatAltToEcef(lon: number, lat: number, alt: number): [number, number, number] {
+  const out = new Float64Array(3);
+  lonLatAltToEcefInto(lon, lat, alt, out);
+  return [out[0]!, out[1]!, out[2]!];
+}
 
 /** Builds a fake `copc` View backed by plain arrays, matching the real
  * getter contract: throws for a dimension that wasn't supplied. */
@@ -62,7 +69,18 @@ const BASE_PAYLOAD = {
   zMax: 100,
 };
 
-describe('lonLatAltToEcef', () => {
+describe('lonLatAltToEcefInto', () => {
+  it('overwrites the whole buffer on every call, so it can be reused', () => {
+    const out = new Float64Array([1, 2, 3]);
+    lonLatAltToEcefInto(0, 0, 0, out);
+    lonLatAltToEcefInto(0, 90, 0, out);
+    expect(out[0]).toBeCloseTo(0, 6);
+    expect(out[1]).toBeCloseTo(0, 6);
+    expect(out[2]).toBeGreaterThan(6.3e6);
+  });
+});
+
+describe('lonLatAltToEcefInto reference values', () => {
   it('places (0, 0, 0) on the equator at the WGS84 equatorial radius', () => {
     const [x, y, z] = lonLatAltToEcef(0, 0, 0);
     expect(x).toBeCloseTo(6378137.0, 3);
