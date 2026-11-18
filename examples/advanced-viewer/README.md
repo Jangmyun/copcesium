@@ -53,6 +53,15 @@ were placed in world space, so moving the Points tab's height offset
 afterwards slides the cloud through them. Loading another dataset clears
 them.
 
+## Eye-Dome Lighting
+
+The **Points** tab turns Eye-Dome Lighting on and off and sets its
+strength and radius (`eyeDomeLighting`, `eyeDomeLightingStrength`,
+`eyeDomeLightingRadius`). The choice carries over to the next dataset you
+load. EDL is newer than copcesium 1.4.3: with an installed version that
+lacks it, the controls are disabled. Run `npm run dev:src` to try it
+against this repo's `src/`.
+
 ## Benchmark
 
 The sidebar's **Benchmark** tab measures what a session actually cost: file

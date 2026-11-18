@@ -189,6 +189,12 @@ const heightOffsetSlider = document.getElementById('heightOffsetSlider') as HTML
 const heightOffsetDisplay = document.getElementById('heightOffsetDisplay')!;
 const heightOffsetReset = document.getElementById('heightOffsetReset') as HTMLButtonElement;
 const pixelSizeDisplay = document.getElementById('pixelSizeDisplay')!;
+const edlGrid = document.getElementById('edlGrid')!;
+const edlStrengthSlider = document.getElementById('edlStrengthSlider') as HTMLInputElement;
+const edlStrengthDisplay = document.getElementById('edlStrengthDisplay')!;
+const edlRadiusSlider = document.getElementById('edlRadiusSlider') as HTMLInputElement;
+const edlRadiusDisplay = document.getElementById('edlRadiusDisplay')!;
+const edlHint = document.getElementById('edlHint')!;
 
 const infoName = document.getElementById('infoName')!;
 const infoMeta = document.getElementById('infoMeta')!;
@@ -363,6 +369,52 @@ heightOffsetSlider.addEventListener('input', () =>
 // double-click on the slider snap straight back to it.
 heightOffsetReset.addEventListener('click', () => setHeightOffset(0));
 heightOffsetSlider.addEventListener('dblclick', () => setHeightOffset(0));
+
+// ── Eye-Dome Lighting ───────────────────────────────────────
+// Described structurally, like `stats` in bench.ts (#194): the published
+// copcesium this example installs may predate EDL, and then the data source
+// simply has no such properties.
+interface EdlControls {
+  eyeDomeLighting: boolean;
+  eyeDomeLightingStrength: number;
+  eyeDomeLightingRadius: number;
+}
+const edlOf = (ds: CopcDataSource): EdlControls | null =>
+  'eyeDomeLighting' in ds ? (ds as unknown as EdlControls) : null;
+const edlOptions = (): EdlControls => ({
+  eyeDomeLighting: edlGrid.querySelector('.color-btn.active')?.getAttribute('data-edl') === 'on',
+  eyeDomeLightingStrength: parseFloat(edlStrengthSlider.value),
+  eyeDomeLightingRadius: parseFloat(edlRadiusSlider.value),
+});
+function applyEdl(): void {
+  const edl = currentDs && edlOf(currentDs);
+  if (edl) Object.assign(edl, edlOptions());
+}
+edlGrid.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLElement>('.color-btn');
+  if (!btn || btn.hasAttribute('disabled')) return;
+  edlGrid.querySelectorAll('.color-btn').forEach((b) => b.classList.toggle('active', b === btn));
+  applyEdl();
+});
+edlStrengthSlider.addEventListener('input', () => {
+  edlStrengthDisplay.textContent = parseFloat(edlStrengthSlider.value).toFixed(1);
+  applyEdl();
+});
+edlRadiusSlider.addEventListener('input', () => {
+  edlRadiusDisplay.textContent = `${parseFloat(edlRadiusSlider.value).toFixed(1)} px`;
+  applyEdl();
+});
+/** Disables the EDL controls when the loaded copcesium has no EDL. */
+function syncEdlSupport(ds: CopcDataSource): void {
+  const supported = edlOf(ds) !== null;
+  for (const el of [...edlGrid.querySelectorAll('.color-btn'), edlStrengthSlider, edlRadiusSlider]) {
+    el.toggleAttribute('disabled', !supported);
+  }
+  if (!supported) {
+    edlHint.textContent =
+      'This copcesium build has no Eye-Dome Lighting yet (added after 1.4.3). Run the example with npm run dev:src to try it.';
+  }
+}
 
 // ── Appearance: color mode ──────────────────────────────────
 // Matches renderer/shaders.ts's `elevationColor()` ramp stops exactly, so
@@ -618,6 +670,7 @@ async function loadCopc(
       // example compiles against would not typecheck here yet — the same
       // reason bench.ts describes `stats` structurally (#194).
       ...(tuningOptions() as Partial<CopcDataSourceOptions>),
+      ...(edlOptions() as Partial<CopcDataSourceOptions>),
       pixelSize: parseFloat(pixelSizeSlider.value),
       sseThreshold: parseInt(sseSlider.value, 10),
       colorMode: activeMode,
@@ -633,6 +686,7 @@ async function loadCopc(
     // heightOffset is a live property only — it isn't part of
     // CopcDataSourceOptions, so it's applied after load rather than passed in.
     ds.heightOffset = parseFloat(heightOffsetSlider.value);
+    syncEdlSupport(ds);
 
     currentDs = ds;
     currentUrl = url;
