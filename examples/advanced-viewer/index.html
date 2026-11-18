@@ -221,6 +221,7 @@
     .url-row button:hover { filter: brightness(1.08); }
     .url-row button:disabled { opacity: .5; cursor: default; }
     #clipClearBtn:disabled { opacity: .5; cursor: default; }
+    #edlGrid .color-btn:disabled, #sec-points input[type=range]:disabled { opacity: .5; cursor: default; }
 
     /* ── Class filter rows ──────────────────────────────────── */
     .cls-row {
@@ -577,6 +578,28 @@
             </div>
             <input type="range" id="heightOffsetSlider" min="-100" max="100" step="0.5" value="0">
           </div>
+
+          <div class="divider"></div>
+          <div class="sec-label">Eye-Dome Lighting</div>
+          <div class="color-grid" id="edlGrid">
+            <button class="color-btn active" data-edl="off">Off</button>
+            <button class="color-btn" data-edl="on">On</button>
+          </div>
+          <div class="slider-row" style="margin-top:12px">
+            <div class="slider-header">
+              <span class="label">Strength</span>
+              <span class="val" id="edlStrengthDisplay">1.0</span>
+            </div>
+            <input type="range" id="edlStrengthSlider" min="0" max="3" step="0.1" value="1">
+          </div>
+          <div class="slider-row">
+            <div class="slider-header">
+              <span class="label">Radius</span>
+              <span class="val" id="edlRadiusDisplay">1.0 px</span>
+            </div>
+            <input type="range" id="edlRadiusSlider" min="0.5" max="4" step="0.1" value="1">
+          </div>
+          <div id="edlHint" style="font-size:11.5px;color:var(--dim);margin:4px 2px 0;line-height:1.6">Shades each point by how far its neighbours sit in front of it, so edges and shape show without colour. Points drawn with opacity below 1 are not shaded.</div>
         </div>
 
         <!-- ========== CLIP ========== -->
