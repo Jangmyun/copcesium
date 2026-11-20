@@ -136,7 +136,7 @@ export class EyeDomeLighting {
   /** Neighbour sampling distance, in CSS pixels. */
   radius: number;
 
-  private readonly _boundingVolume: Cesium.BoundingSphere;
+  private readonly _getBoundingVolume: () => Cesium.BoundingSphere;
   /** Created on the first EDL frame, released whenever EDL is turned off. */
   private _framebuffer: FramebufferManagerLike | null = null;
   private _enabled: boolean;
@@ -148,16 +148,17 @@ export class EyeDomeLighting {
   private _warnedUnsupported = false;
 
   /**
-   * @param boundingVolume Encloses every point; decides which frustums of a
-   *   multi-frustum render run the composite.
+   * @param getBoundingVolume Encloses every point where it is drawn (so
+   *   shifted by `heightOffset`, #229); decides which frustums of a
+   *   multi-frustum render run the composite. Read once per EDL frame.
    */
   constructor(
-    boundingVolume: Cesium.BoundingSphere,
+    getBoundingVolume: () => Cesium.BoundingSphere,
     enabled: boolean,
     strength: number,
     radius: number,
   ) {
-    this._boundingVolume = boundingVolume;
+    this._getBoundingVolume = getBoundingVolume;
     this._enabled = enabled;
     this.strength = strength;
     this.radius = radius;
@@ -241,7 +242,7 @@ export class EyeDomeLighting {
         owner: this,
       },
     );
-    this._compositeCommand.boundingVolume = this._boundingVolume;
+    this._compositeCommand.boundingVolume = this._getBoundingVolume();
 
     this._clearCommand ??= new CesiumAny.ClearCommand({
       color: new Cesium.Color(0, 0, 0, 0),

@@ -32,8 +32,10 @@ vi.mock('cesium', async (importOriginal) => {
     DrawCommand: vi.fn(function (opts: {
       framebuffer?: unknown;
       uniformMap?: Record<string, () => unknown>;
+      boundingVolume?: unknown;
     }) {
       return {
+        boundingVolume: opts?.boundingVolume,
         modelMatrix: actual.Matrix4.IDENTITY,
         pass: 0,
         renderState: {},
@@ -165,6 +167,42 @@ describe('PointCloudPrimitive.preparePickCommand', () => {
 
     primitive.preparePickCommand({}, 1, fbB);
     expect(cmd.framebuffer).toBe(fbB);
+  });
+});
+
+// The bounding volume must follow the points, or Cesium culls the node (or
+// fits near/far) by where it was before the shift (#229).
+describe('PointCloudPrimitive bounding volume', () => {
+  type Cmd = { boundingVolume: Cesium.BoundingSphere };
+  const commandOf = (frameState: { commandList: unknown[] }) => frameState.commandList[0] as Cmd;
+
+  it('starts at the load-time sphere shifted by the current heightOffset', () => {
+    const primitive = new PointCloudPrimitive(renderData, sphere, { ...style, heightOffset: 25 });
+    const f = frame();
+    primitive.update(f);
+
+    const volume = commandOf(f).boundingVolume;
+    // "up" at origin [6378137, 0, 0] is +X.
+    expect(volume.center.x).toBeCloseTo(6378162);
+    expect(volume.center.y).toBeCloseTo(0);
+    expect(volume.radius).toBe(sphere.radius);
+    // The shared sphere it was given is not moved.
+    expect(sphere.center.x).toBe(6378137);
+  });
+
+  it('moves with a live heightOffset change, for the main and the pick command', () => {
+    const live = { ...style };
+    const primitive = new PointCloudPrimitive(renderData, sphere, live);
+    const first = frame();
+    primitive.update(first);
+    const pick = primitive.preparePickCommand({}, 1, {}) as unknown as Cmd;
+
+    live.heightOffset = -40;
+    const second = frame();
+    primitive.update(second);
+
+    expect(commandOf(second).boundingVolume.center.x).toBeCloseTo(6378097);
+    expect(pick.boundingVolume.center.x).toBeCloseTo(6378097);
   });
 });
 

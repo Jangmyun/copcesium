@@ -223,7 +223,7 @@ export class CopcDataSource {
     );
     this._styleCtl = new StyleController(options, () => this._viewer.scene.requestRender());
     this._edl = new EyeDomeLighting(
-      this._getSphere('0-0-0-0'),
+      () => this._spheres.drawn('0-0-0-0'),
       options.eyeDomeLighting,
       validateEdlStrength(options.eyeDomeLightingStrength),
       validateEdlRadius(options.eyeDomeLightingRadius),
@@ -271,7 +271,8 @@ export class CopcDataSource {
       stages: this._stages,
       style: this._styleCtl,
       edl: this._edl,
-      getSphere: this._getSphere,
+      // The primitive shifts its own sphere along with its points.
+      getSphere: (key) => this._spheres.get(key),
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
       onSettled: () => {
@@ -358,8 +359,10 @@ export class CopcDataSource {
   }
 
   /** One stable function, so the per-pass `selectNodes`/`orderForLoading`
-   *  options reuse it instead of allocating a closure each time. */
-  private readonly _getSphere = (key: string): Cesium.BoundingSphere => this._spheres.get(key);
+   *  options reuse it instead of allocating a closure each time. Returns the
+   *  sphere where the node is drawn, shifted by `heightOffset` (#229), so
+   *  selection culls and measures what is actually on screen. */
+  private readonly _getSphere = (key: string): Cesium.BoundingSphere => this._spheres.drawn(key);
 
   /** The sphere cache's backing map; read by tests that check eviction. */
   private get _sphereCache(): ReadonlyMap<string, Cesium.BoundingSphere> {
@@ -457,7 +460,7 @@ export class CopcDataSource {
       const node = this._nodeCache.peek(key);
       if (!node) continue; // still loading
       const primitive = node.primitive;
-      const show = isInFrustum(this._spheres.peek(key), cullingVolume);
+      const show = isInFrustum(this._spheres.peekDrawn(key), cullingVolume);
       if (primitive.show !== show) {
         primitive.show = show;
         changed = true;
@@ -751,6 +754,10 @@ export class CopcDataSource {
   }
   set heightOffset(value: number) {
     this._styleCtl.heightOffset = value;
+    // Moves every node's sphere with its points; the next pass reselects
+    // against where they now are.
+    this._spheres.heightOffset = this._styleCtl.heightOffset;
+    this._lodDirty = true;
   }
 
   /**
@@ -874,7 +881,6 @@ export class CopcDataSource {
         selectedKeys: this._selectedKeys,
         peekNode: (key) => this._nodeCache.peek(key),
         getSphere: this._getSphere,
-        heightOffset: this._styleCtl.heightOffset,
       },
       windowPosition,
       tolerancePixels,

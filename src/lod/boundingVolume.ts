@@ -45,6 +45,33 @@ export function getNodeBoundingSphere(
   return new Cesium.BoundingSphere(center, radius);
 }
 
+/**
+ * Where `sphere` is drawn under `heightOffset`: the points inside it move
+ * `heightOffset` meters along their own node's geocentric "up" (see
+ * `PointCloudPrimitive`), so the center moves along its own "up" and the
+ * radius grows by how far those directions can differ from it. A point at
+ * angle θ from the center's direction moves at most `|h| * 2 sin(θ/2)` away
+ * from where the center's shift puts it, and θ is at most `asin(r / |c|)`
+ * for a point inside the sphere. For a node that is a few centimeters at
+ * `|h| = 500` m; it keeps the result conservative for spheres that span
+ * many nodes (the root), where the directions differ more.
+ */
+export function offsetBoundingSphere(
+  sphere: Cesium.BoundingSphere,
+  heightOffset: number,
+  result = new Cesium.BoundingSphere(),
+): Cesium.BoundingSphere {
+  const distance = Cesium.Cartesian3.magnitude(sphere.center);
+  const up = Cesium.Cartesian3.divideByScalar(sphere.center, distance, result.center);
+  Cesium.Cartesian3.multiplyByScalar(up, heightOffset, up);
+  Cesium.Cartesian3.add(sphere.center, up, result.center);
+  // A sphere reaching the Earth's center has no bound on the angle; 2|h| is
+  // then the most any two shifts can differ by.
+  const spread = sphere.radius < distance ? 2 * Math.sin(Math.asin(sphere.radius / distance) / 2) : 2;
+  result.radius = sphere.radius + Math.abs(heightOffset) * spread;
+  return result;
+}
+
 export function getCullingVolume(camera: CameraView): Cesium.CullingVolume {
   // The `WC` variants, not `position`/`direction`/`up`: those are relative to
   // `camera.transform`, which is the identity only until something calls
