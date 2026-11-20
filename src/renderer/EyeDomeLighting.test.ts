@@ -104,7 +104,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('passes the command through untouched while disabled', () => {
-    const edl = new EyeDomeLighting(sphere, false, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, false, 1, 1);
     const frame = makeFrame(makeContext());
     const cmd = makeCommand();
 
@@ -113,7 +113,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('passes the command through on a pick pass', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const frame = makeFrame(makeContext(), 1, false);
     const cmd = makeCommand();
 
@@ -123,7 +123,7 @@ describe('EyeDomeLighting', () => {
 
   it('falls back to the plain command and warns once without MRT/frag-depth support', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const context = makeContext(false);
     const cmd = makeCommand();
 
@@ -133,7 +133,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('redirects the command offscreen in a pass that runs before the composite', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const cmd = makeCommand();
 
     const derived = edl.apply(makeFrame(makeContext()), cmd) as Record<string, unknown>;
@@ -146,7 +146,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('rewrites the point shader to write packed depth to a second target', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const context = makeContext();
     edl.apply(makeFrame(context), makeCommand());
 
@@ -161,8 +161,24 @@ describe('EyeDomeLighting', () => {
     expect(fs).toContain('czm_packDepth');
   });
 
+  // heightOffset moves the points after construction (#229).
+  it('reads the composite bounding volume afresh every frame', () => {
+    let current = sphere;
+    const edl = new EyeDomeLighting(() => current, true, 1, 1);
+    const context = makeContext();
+
+    const first = makeFrame(context, 1);
+    edl.apply(first, makeCommand());
+    expect((first.commandList[0] as Record<string, unknown>).boundingVolume).toBe(sphere);
+
+    current = new Cesium.BoundingSphere(new Cesium.Cartesian3(6378637, 0, 0), 100);
+    const second = makeFrame(context, 2);
+    edl.apply(second, makeCommand());
+    expect((second.commandList[0] as Record<string, unknown>).boundingVolume).toBe(current);
+  });
+
   it('pushes the composite then the clear once per frame, in the opaque pass', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1.5, 3);
+    const edl = new EyeDomeLighting(() => sphere, true, 1.5, 3);
     const context = makeContext();
     const frame = makeFrame(context, 7);
 
@@ -191,7 +207,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('reuses the derived command until the model matrix or framebuffer changes', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const context = makeContext();
     const cmd = makeCommand();
 
@@ -214,7 +230,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('allocates the offscreen target only once an EDL frame is drawn', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     expect(Cesium.FramebufferManager).not.toHaveBeenCalled();
 
     edl.apply(makeFrame(makeContext()), makeCommand());
@@ -222,7 +238,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('releases the offscreen target when disabled and recreates it when re-enabled', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const context = makeContext();
     const cmd = makeCommand();
     edl.apply(makeFrame(context, 1), cmd);
@@ -251,7 +267,7 @@ describe('EyeDomeLighting', () => {
   // every point failed the depth test on the first EDL frame — and with
   // requestRenderMode that frame stayed on screen.
   it('clears a newly created target before its first frame, and only then', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     const context = makeContext();
     const cmd = makeCommand();
 
@@ -270,7 +286,7 @@ describe('EyeDomeLighting', () => {
   });
 
   it('destroy() releases the framebuffer and the composite shader', () => {
-    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const edl = new EyeDomeLighting(() => sphere, true, 1, 1);
     edl.apply(makeFrame(makeContext()), makeCommand());
 
     edl.destroy();

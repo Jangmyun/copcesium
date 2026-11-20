@@ -108,6 +108,7 @@ vi.mock('./lod/boundingVolume', async (importOriginal) => {
 });
 
 const { CopcDataSource, resolveWorkerCount } = await import('./CopcDataSource');
+const { offsetBoundingSphere } = await import('./lod/boundingVolume');
 
 /** A pending-forever cancellable promise, for tests that need to observe a
  *  load stuck mid-flight rather than resolving it. */
@@ -1656,13 +1657,12 @@ describe('CopcDataSource.pickPoint', () => {
    *  pick pass, leaving a real camera pose/frustum for the near/far math. The
    *  camera sits `distance` m before the root sphere's center along its view
    *  direction (0 = camera at the center, i.e. inside the node). */
-  async function setupPick(opts: { distance: number; heightOffset?: number; mode?: Cesium.SceneMode }) {
+  async function setupPick(opts: { distance: number; mode?: Cesium.SceneMode }) {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);
     selectNodesMock.mockReturnValue(['0-0-0-0']);
     const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
     const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
-    if (opts.heightOffset !== undefined) ds.heightOffset = opts.heightOffset;
     triggerUpdate();
     await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
 
@@ -1741,15 +1741,18 @@ describe('CopcDataSource.pickPoint', () => {
     expect(tightened.far).toBeCloseTo(sphere.radius, 3);
   });
 
-  // heightOffset shifts drawn positions but not the cached spheres.
-  it('widens the depth range by |heightOffset|', async () => {
-    const { ds, sphere, updateFrustum } = await setupPick({ distance: 5000, heightOffset: -50 });
+  // The spheres move with the points (#229): lowering the cloud 50 m below a
+  // camera looking straight down puts it 50 m further away.
+  it('measures the depth range from the spheres shifted by heightOffset', async () => {
+    const { ds, sphere, updateFrustum } = await setupPick({ distance: 5000 });
+    ds.heightOffset = -50;
 
     ds.pickPoint(new Cesium.Cartesian2(50, 50));
 
+    const drawn = offsetBoundingSphere(sphere, -50);
     const tightened = updateFrustum.mock.calls[0]![0];
-    expect(tightened.near).toBeCloseTo(5000 - sphere.radius - 50, 3);
-    expect(tightened.far).toBeCloseTo(5000 + sphere.radius + 50, 3);
+    expect(tightened.near).toBeCloseTo(5050 - drawn.radius, 3);
+    expect(tightened.far).toBeCloseTo(5050 + drawn.radius, 3);
   });
 
   it('leaves the frustum alone outside 3D scene mode', async () => {
@@ -2179,6 +2182,82 @@ describe('CopcDataSource._sphereCache', () => {
     // ...and re-requesting an evicted key transparently recomputes a valid sphere.
     const recomputed = ds._getSphere('0-0-0-0');
     expect(recomputed.radius).toBeGreaterThan(0);
+  });
+});
+
+// The LoD side, the visibility pass and picking all read the spheres where
+// the nodes are drawn (#229).
+describe('CopcDataSource heightOffset and bounding spheres', () => {
+  type Internals = {
+    _getSphere(key: string): Cesium.BoundingSphere;
+    _spheres: { get(key: string): Cesium.BoundingSphere };
+    _lodDirty: boolean;
+  };
+
+  it('shifts the spheres selection reads, and keeps the data spheres as they were', async () => {
+    mockCopc(undefined);
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+    const internals = ds as unknown as Internals;
+    const data = internals._spheres.get('0-0-0-0');
+    const before = Cesium.Cartesian3.clone(data.center);
+    expect(internals._getSphere('0-0-0-0')).toBe(data);
+
+    ds.heightOffset = 300;
+
+    const drawn = internals._getSphere('0-0-0-0');
+    const expected = offsetBoundingSphere(data, 300);
+    expect(Cesium.Cartesian3.distance(drawn.center, expected.center)).toBeLessThan(1e-6);
+    expect(drawn.radius).toBeCloseTo(expected.radius, 9);
+    expect(internals._spheres.get('0-0-0-0').center).toEqual(before);
+
+    ds.heightOffset = 0;
+    expect(internals._getSphere('0-0-0-0')).toBe(data);
+  });
+
+  it('marks the LoD dirty so the next pass reselects', async () => {
+    mockCopc(undefined);
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', fakeViewer);
+    const internals = ds as unknown as Internals;
+    internals._lodDirty = false;
+
+    ds.heightOffset = 10;
+
+    expect(internals._lodDirty).toBe(true);
+  });
+
+  // The primitive shifts its own sphere; handing it an already-shifted one
+  // would move the bounds twice.
+  it('gives a node loaded under an offset its unshifted data sphere', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    ds.heightOffset = 75;
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    const primitive = addPrimitive.mock.calls[0][0] as { _dataSphere: Cesium.BoundingSphere };
+    expect(primitive._dataSphere).toBe((ds as unknown as Internals)._spheres.get('0-0-0-0'));
+  });
+
+  it('culls loaded nodes by their shifted sphere in the visibility pass', async () => {
+    mockCopc(undefined);
+    workerPoolRun.mockResolvedValueOnce(renderData);
+    selectNodesMock.mockReturnValue(['0-0-0-0']);
+    const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { debounceMs: 0 });
+    triggerUpdate();
+    await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+    ds.heightOffset = 120;
+    isInFrustumMock.mockClear();
+    (ds as unknown as { _updateVisibility(): void })._updateVisibility();
+
+    const tested = isInFrustumMock.mock.calls[0]![0] as Cesium.BoundingSphere;
+    expect(tested).toBe((ds as unknown as Internals)._getSphere('0-0-0-0'));
+    const data = (ds as unknown as Internals)._spheres.get('0-0-0-0');
+    expect(Cesium.Cartesian3.distance(tested.center, data.center)).toBeCloseTo(120, 6);
   });
 });
 

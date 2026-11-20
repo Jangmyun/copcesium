@@ -186,7 +186,12 @@ export class PointCloudPrimitive {
   private _classifications: Uint8Array | null;
   private _elevations: Uint16Array | null;
   private _pointCount: number;
-  private _boundingSphere: Cesium.BoundingSphere;
+  /** The node's sphere from load time, where the data puts it. */
+  private readonly _dataSphere: Cesium.BoundingSphere;
+  /** `_dataSphere` shifted with the points by the applied `heightOffset`
+   *  (#229). Mutated in place, so every command holding it (main, pick and
+   *  their EDL clones) culls and picks frustums by where the node is drawn. */
+  private readonly _drawnSphere: Cesium.BoundingSphere;
   private _style: PointStyle;
   private _edl: EyeDomeLighting | null;
   public show: boolean;
@@ -235,7 +240,8 @@ export class PointCloudPrimitive {
     this._classifications = renderData.classifications;
     this._elevations = renderData.elevations;
     this._pointCount = renderData.pointCount;
-    this._boundingSphere = boundingSphere;
+    this._dataSphere = boundingSphere;
+    this._drawnSphere = Cesium.BoundingSphere.clone(boundingSphere);
     this._style = style;
     this._edl = gpu?.edl ?? null;
     this.show = true;
@@ -315,10 +321,20 @@ export class PointCloudPrimitive {
   private _syncOriginAndClip(): void {
     if (this._style.heightOffset !== this._appliedHeightOffset) {
       this._cmd!.modelMatrix = this._modelMatrix(this._style.heightOffset);
-      this._appliedHeightOffset = this._style.heightOffset;
+      this._applyHeightOffset();
       this._appliedClipVersion = -1; // the node origin moved under the clip
     }
     if (this._style.clip.version !== this._appliedClipVersion) this._updateClipUniforms();
+  }
+
+  /** Records the style's `heightOffset` as applied and moves `_drawnSphere`
+   *  with it. Every point moves by exactly `_up * heightOffset`, so the
+   *  sphere keeps its radius. */
+  private _applyHeightOffset(): void {
+    const heightOffset = this._style.heightOffset;
+    Cesium.Cartesian3.multiplyByScalar(this._up, heightOffset, this._drawnSphere.center);
+    Cesium.Cartesian3.add(this._dataSphere.center, this._drawnSphere.center, this._drawnSphere.center);
+    this._appliedHeightOffset = heightOffset;
   }
 
   /** Re-expresses the world-space clip regions relative to this node's current origin. */
@@ -443,7 +459,7 @@ export class PointCloudPrimitive {
         primitiveType: Cesium.PrimitiveType.POINTS,
         shaderProgram: sp,
         renderState: PointCloudPrimitive._renderState(opaque),
-        boundingVolume: this._boundingSphere,
+        boundingVolume: this._drawnSphere,
         count: this._pointCount,
         pass: opaque ? CesiumAny.Pass.OPAQUE : CesiumAny.Pass.TRANSLUCENT,
         // Carries the node origin (shifted by the live heightOffset) the
@@ -457,7 +473,7 @@ export class PointCloudPrimitive {
           u_opacity: () => style.opacity,
         },
       }) as DrawCommandLike;
-      this._appliedHeightOffset = this._style.heightOffset;
+      this._applyHeightOffset();
       this._appliedOpaque = opaque;
       this._updateClipUniforms();
     } catch (err) {
@@ -551,7 +567,7 @@ export class PointCloudPrimitive {
         depthTest: { enabled: true },
         depthMask: true,
       }),
-      boundingVolume: this._boundingSphere,
+      boundingVolume: this._drawnSphere,
       count: this._pointCount,
       modelMatrix: this._modelMatrix(this._style.heightOffset),
       framebuffer,

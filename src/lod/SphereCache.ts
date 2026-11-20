@@ -12,7 +12,7 @@
  * ordering, visibility culling, picking and loading.
  */
 import type * as Cesium from 'cesium';
-import { getNodeBoundingSphere, type ProjectToCartesian } from './boundingVolume';
+import { getNodeBoundingSphere, offsetBoundingSphere, type ProjectToCartesian } from './boundingVolume';
 
 // Bounds the cache independently of `maxCacheNodes`: every candidate the
 // selectNodes() pass touches while walking the hierarchy gets a sphere
@@ -24,6 +24,11 @@ export const MAX_SPHERE_CACHE_SIZE = 5000;
 
 export class SphereCache {
   private readonly _cache = new Map<string, Cesium.BoundingSphere>();
+  private _heightOffset = 0;
+  // Only ever filled while `heightOffset` is non-zero. Capped like `_cache`,
+  // but plain insertion order: a shifted sphere is one vector add away from
+  // its data sphere, so evicting a hot one costs next to nothing.
+  private readonly _drawn = new Map<string, Cesium.BoundingSphere>();
 
   constructor(
     private readonly _rootCenter: { x: number; y: number; z: number },
@@ -65,5 +70,40 @@ export class SphereCache {
    *  being evicted. Falls back to `get` on a miss so it still caches. */
   peek(key: string): Cesium.BoundingSphere {
     return this._cache.get(key) ?? this.get(key);
+  }
+
+  /** The `heightOffset` that `drawn`/`peekDrawn` shift by. Changing it drops
+   *  every shifted sphere; each is rebuilt from its data sphere on demand. */
+  get heightOffset(): number {
+    return this._heightOffset;
+  }
+  set heightOffset(value: number) {
+    if (value === this._heightOffset) return;
+    this._heightOffset = value;
+    this._drawn.clear();
+  }
+
+  /** The node's sphere where it is drawn, i.e. shifted by `heightOffset`
+   *  (#229). The same object as `get(key)` while the offset is 0. */
+  drawn(key: string): Cesium.BoundingSphere {
+    return this._shift(key, this.get(key));
+  }
+
+  /** `drawn` without the LRU bump on the data sphere; see `peek`. */
+  peekDrawn(key: string): Cesium.BoundingSphere {
+    return this._shift(key, this.peek(key));
+  }
+
+  private _shift(key: string, sphere: Cesium.BoundingSphere): Cesium.BoundingSphere {
+    if (this._heightOffset === 0) return sphere;
+    let shifted = this._drawn.get(key);
+    if (shifted) return shifted;
+    shifted = offsetBoundingSphere(sphere, this._heightOffset);
+    this._drawn.set(key, shifted);
+    if (this._drawn.size > MAX_SPHERE_CACHE_SIZE) {
+      const oldestKey = this._drawn.keys().next().value;
+      if (oldestKey !== undefined) this._drawn.delete(oldestKey);
+    }
+    return shifted;
   }
 }

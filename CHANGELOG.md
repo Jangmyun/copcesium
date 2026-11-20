@@ -41,6 +41,17 @@ All notable changes to this project are documented here. This project follows
   faster than contiguous-only merging (Millsite, 100 ms), and did not slow
   the pan route. Pass `adaptiveMergeGap: false` for the previous behaviour.
 
+### Fixed
+
+- **Bounding volumes ignored `heightOffset`.** The offset moved the points
+  but not the spheres Cesium culls with and fits near/far to, so with a
+  large offset a node on screen could be culled or clipped, and with
+  `eyeDomeLighting` on the whole composite could drop out. Node commands
+  (main and pick), the EDL composite, LoD selection, the per-frame
+  visibility pass and the pick depth range now all use the spheres where
+  the points are drawn, and changing `heightOffset` triggers a new LoD
+  pass. (#229)
+
 ## [1.4.3] - 2026-11-16
 
 ### Added

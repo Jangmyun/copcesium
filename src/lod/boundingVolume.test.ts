@@ -14,6 +14,7 @@ import {
   getExpandedCullingVolume,
   getNodeBoundingSphere,
   isInFrustum,
+  offsetBoundingSphere,
   type ProjectToCartesian,
 } from './boundingVolume';
 
@@ -314,5 +315,66 @@ describe('getExpandedCullingVolume', () => {
 
     expect(isInFrustum(justInside, volume)).toBe(true);
     expect(isInFrustum(justOutside, volume)).toBe(false);
+  });
+});
+
+describe('offsetBoundingSphere', () => {
+  const center = new Cesium.Cartesian3(4_000_000, 3_000_000, 3_500_000);
+
+  it('moves the center along its own geocentric up', () => {
+    const sphere = new Cesium.BoundingSphere(center, 100);
+    const shifted = offsetBoundingSphere(sphere, 500);
+
+    const up = Cesium.Cartesian3.normalize(center, new Cesium.Cartesian3());
+    const moved = Cesium.Cartesian3.subtract(shifted.center, center, new Cesium.Cartesian3());
+    expect(Cesium.Cartesian3.magnitude(moved)).toBeCloseTo(500, 6);
+    expect(Cesium.Cartesian3.dot(moved, up)).toBeCloseTo(500, 6);
+    // The input is left alone.
+    expect(sphere.center).toEqual(center);
+    expect(sphere.radius).toBe(100);
+  });
+
+  it('returns the same sphere for a zero offset', () => {
+    const sphere = new Cesium.BoundingSphere(center, 100);
+    const shifted = offsetBoundingSphere(sphere, 0);
+
+    expect(shifted.center).toEqual(center);
+    expect(shifted.radius).toBe(100);
+  });
+
+  // Every point moves along its own up, not the center's; the grown radius
+  // must still hold all of them.
+  it('encloses points on the sphere shifted along their own up', () => {
+    const sphere = new Cesium.BoundingSphere(center, 50_000);
+    const heightOffset = -800;
+    const shifted = offsetBoundingSphere(sphere, heightOffset);
+
+    const axes = [Cesium.Cartesian3.UNIT_X, Cesium.Cartesian3.UNIT_Y, Cesium.Cartesian3.UNIT_Z];
+    for (const axis of axes) {
+      for (const sign of [-1, 1]) {
+        const point = Cesium.Cartesian3.add(
+          center,
+          Cesium.Cartesian3.multiplyByScalar(axis, sign * sphere.radius, new Cesium.Cartesian3()),
+          new Cesium.Cartesian3(),
+        );
+        const up = Cesium.Cartesian3.normalize(point, new Cesium.Cartesian3());
+        const drawn = Cesium.Cartesian3.add(
+          point,
+          Cesium.Cartesian3.multiplyByScalar(up, heightOffset, up),
+          new Cesium.Cartesian3(),
+        );
+        expect(Cesium.Cartesian3.distance(drawn, shifted.center)).toBeLessThanOrEqual(
+          shifted.radius + 1e-6,
+        );
+      }
+    }
+    // Grown, but only by the spread between the up directions.
+    expect(shifted.radius).toBeGreaterThan(sphere.radius);
+    expect(shifted.radius).toBeLessThan(sphere.radius + 10);
+  });
+
+  it('writes into result when given', () => {
+    const result = new Cesium.BoundingSphere();
+    expect(offsetBoundingSphere(new Cesium.BoundingSphere(center, 1), 10, result)).toBe(result);
   });
 });
