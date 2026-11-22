@@ -136,7 +136,7 @@ export class EyeDomeLighting {
   /** Neighbour sampling distance, in CSS pixels. */
   radius: number;
 
-  private readonly _boundingVolume: Cesium.BoundingSphere;
+  private _boundingVolume: Cesium.BoundingSphere;
   /** Created on the first EDL frame, released whenever EDL is turned off. */
   private _framebuffer: FramebufferManagerLike | null = null;
   private _enabled: boolean;
@@ -161,6 +161,15 @@ export class EyeDomeLighting {
     this._enabled = enabled;
     this.strength = strength;
     this.radius = radius;
+  }
+
+  /** Encloses every drawn point; replaced when `heightOffset` moves them. */
+  get boundingVolume(): Cesium.BoundingSphere {
+    return this._boundingVolume;
+  }
+  set boundingVolume(value: Cesium.BoundingSphere) {
+    this._boundingVolume = value;
+    if (this._compositeCommand) this._compositeCommand.boundingVolume = value;
   }
 
   get enabled(): boolean {

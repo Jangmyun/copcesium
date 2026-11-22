@@ -161,6 +161,20 @@ describe('EyeDomeLighting', () => {
     expect(fs).toContain('czm_packDepth');
   });
 
+  it('hands a replaced bounding volume to the composite', () => {
+    const edl = new EyeDomeLighting(sphere, true, 1, 1);
+    const context = makeContext();
+    edl.apply(makeFrame(context, 1), makeCommand());
+    const moved = new Cesium.BoundingSphere(new Cesium.Cartesian3(1, 2, 3), 4);
+
+    edl.boundingVolume = moved;
+    const frame = makeFrame(context, 2);
+    edl.apply(frame, makeCommand());
+
+    expect(edl.boundingVolume).toBe(moved);
+    expect((frame.commandList[0] as Record<string, unknown>).boundingVolume).toBe(moved);
+  });
+
   it('pushes the composite then the clear once per frame, in the opaque pass', () => {
     const edl = new EyeDomeLighting(sphere, true, 1.5, 3);
     const context = makeContext();
