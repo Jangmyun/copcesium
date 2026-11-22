@@ -15,6 +15,7 @@ import {
   MAX_CLIP_PLANES,
   createClipState,
   setClipBoxes,
+  sphereClippedAway,
   writeLocalClipUniforms,
   type ClipState,
 } from './clipping';
@@ -206,5 +207,108 @@ describe('clip state', () => {
     box[12] = 1000;
     expect(clip.boxes[0]![12]).toBe(0);
     expect(clip.inverseBoxes[0]![12]).toBeCloseTo(0);
+  });
+});
+
+describe('sphereClippedAway', () => {
+  const sphereAt = (e: number, n: number, u: number, radius: number) =>
+    new Cesium.BoundingSphere(at(e, n, u), radius);
+  // Keeps everything east of `center` (normal +east, through `center`).
+  const east = Cesium.Matrix4.multiplyByPointAsVector(
+    enu,
+    Cesium.Cartesian3.UNIT_X,
+    new Cesium.Cartesian3(),
+  );
+  const eastPlane = new Cesium.Plane(east, -Cesium.Cartesian3.dot(east, center));
+  // 10 m east-west, 20 m north-south, 30 m tall, centered on `center`, turned 30 degrees.
+  const box = Cesium.Matrix4.multiply(
+    Cesium.Matrix4.multiplyByScale(enu, new Cesium.Cartesian3(10, 20, 30), new Cesium.Matrix4()),
+    Cesium.Matrix4.fromRotation(Cesium.Matrix3.fromRotationZ(Math.PI / 6)),
+    new Cesium.Matrix4(),
+  );
+
+  it('never drops anything without a region', () => {
+    for (const mode of ['inside', 'outside'] as const) {
+      expect(
+        sphereClippedAway(createClipState(undefined, undefined, mode), sphereAt(0, 0, 0, 1)),
+      ).toBe(false);
+    }
+  });
+
+  it("'inside' drops a sphere wholly on the clipped side of a plane, and only that", () => {
+    const clip = createClipState([eastPlane], undefined, 'inside');
+    expect(sphereClippedAway(clip, sphereAt(-10, 0, 0, 9.9))).toBe(true);
+    expect(sphereClippedAway(clip, sphereAt(-10, 0, 0, 10.1))).toBe(false); // touches the kept side
+    expect(sphereClippedAway(clip, sphereAt(10, 0, 0, 1))).toBe(false);
+  });
+
+  it("'inside' drops a sphere outside every box, keeping any that may overlap one", () => {
+    const far = Cesium.Matrix4.multiplyByTranslation(
+      box,
+      new Cesium.Cartesian3(0, 0, 5),
+      new Cesium.Matrix4(),
+    );
+    const clip = createClipState(undefined, [box, far], 'inside');
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 200, 10))).toBe(true);
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 0, 1))).toBe(false);
+    // Inside the second box only (150 m up), still kept.
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 150, 1))).toBe(false);
+    // Its edge reaches into the box: 30 m tall, so the top face is 15 m up.
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 20, 5.5))).toBe(false);
+  });
+
+  it('agrees with the shader: no dropped sphere holds a kept point', () => {
+    const regions = [
+      createClipState([eastPlane], [box], 'inside'),
+      createClipState([eastPlane], [box], 'outside'),
+      createClipState(undefined, [box], 'outside'),
+    ];
+    for (const clip of regions) {
+      for (let i = 0; i < 400; i++) {
+        // Deterministic spread of spheres around and across the box.
+        const s = sphereAt(
+          ((i * 7) % 41) - 20,
+          ((i * 13) % 61) - 30,
+          ((i * 17) % 71) - 35,
+          1 + (i % 9),
+        );
+        if (!sphereClippedAway(clip, s)) continue;
+        for (const [dx, dy, dz] of [
+          [0, 0, 0],
+          [1, 0, 0],
+          [-1, 0, 0],
+          [0, 1, 0],
+          [0, -1, 0],
+          [0, 0, 1],
+          [0, 0, -1],
+        ]) {
+          const p = Cesium.Cartesian3.add(
+            s.center,
+            new Cesium.Cartesian3(
+              dx! * s.radius * 0.999,
+              dy! * s.radius * 0.999,
+              dz! * s.radius * 0.999,
+            ),
+            new Cesium.Cartesian3(),
+          );
+          expect(keeps(clip, origin, p)).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("'outside' drops a sphere wholly inside the region, never one across its edge", () => {
+    const clip = createClipState(undefined, [box], 'outside');
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 0, 2))).toBe(true);
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 0, 6))).toBe(false);
+    expect(sphereClippedAway(clip, sphereAt(0, 0, 100, 2))).toBe(false);
+
+    const withPlane = createClipState([eastPlane], [box], 'outside');
+    expect(sphereClippedAway(withPlane, sphereAt(2, 0, 0, 1))).toBe(true);
+    expect(sphereClippedAway(withPlane, sphereAt(0, 0, 0, 1))).toBe(false); // crosses the plane
+
+    const planeOnly = createClipState([eastPlane], undefined, 'outside');
+    expect(sphereClippedAway(planeOnly, sphereAt(50, 0, 0, 10))).toBe(true);
+    expect(sphereClippedAway(planeOnly, sphereAt(-50, 0, 0, 10))).toBe(false);
   });
 });

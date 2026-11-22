@@ -2107,6 +2107,27 @@ describe('CopcDataSource runtime API', () => {
     expect(requestRender).toHaveBeenCalled();
   });
 
+  it('hands selectNodes a clip cull that follows the live clip regions (#228)', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      sseThreshold: 250,
+      debounceMs: 1_000_000,
+    });
+    selectNodesMock.mockClear();
+    ds.sseThreshold = 100; // runs a pass at once
+    const { isClippedAway } = selectNodesMock.mock.calls[0]![0] as {
+      isClippedAway: (sphere: Cesium.BoundingSphere) => boolean;
+    };
+    const sphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(-100, 0, 0), 10);
+    expect(isClippedAway(sphere)).toBe(false);
+
+    ds.clipPlanes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, 0)]; // keeps x >= 0
+    expect(isClippedAway(sphere)).toBe(true);
+    ds.clipMode = 'outside';
+    expect(isClippedAway(sphere)).toBe(false);
+  });
+
   it('sseThreshold get/set triggers an immediate LoD pass', async () => {
     mockCopc(undefined);
     const { viewer } = makeFakeViewer();

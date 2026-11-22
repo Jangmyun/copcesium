@@ -474,7 +474,7 @@ ds.eyeDomeLightingRadius = 2;     // CSS pixels, default 1
 
 Clipping planes and boxes isolate a region or cut a section, applied in the
 vertex shader to this data source's points only — like a filter, a change is a
-uniform update with no refetch.
+uniform update with no refetch of the nodes already loaded.
 
 ```ts
 const center = Cesium.Cartesian3.fromDegrees(-123.07, 44.05, 120);
@@ -500,6 +500,9 @@ ds.clipBoxes = undefined; // clear
   coordinates in double precision, so boundaries stay accurate to centimetres
   rather than snapping to Float32's ~0.5 m steps at Earth-centered magnitudes.
 - Up to 6 planes and 4 boxes.
+- Nodes the clip drops whole are left out of LoD selection, so they cost no
+  request or decode and the node and point budgets go to the region you keep.
+  A change to the clip re-runs selection, which loads any nodes it now needs.
 
 ## Requirements: HTTP Range Requests and CORS
 
