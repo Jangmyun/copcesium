@@ -16,6 +16,7 @@
  */
 import type * as Cesium from 'cesium';
 import type { Copc, Hierarchy } from 'copc';
+import type { CompressedBytesCache } from '../cache/CompressedBytesCache';
 import type { NodeCache } from '../cache/NodeCache';
 import type { RangeFetcher } from '../copc/RangeFetcher';
 import type { CopcDataSourceOptions, NodeRenderData } from '../types';
@@ -61,6 +62,8 @@ export interface LoadSchedulerDeps {
   rangeFetcher: RangeFetcher;
   workerPool: WorkerPool;
   nodeCache: NodeCache;
+  /** Compressed point data kept past eviction; a hit skips the request. */
+  compressedBytes?: CompressedBytesCache;
   stages: StageTimer;
   style: StyleController;
   /** Shared by every node primitive; see `CopcDataSourceOptions.eyeDomeLighting`. */
@@ -96,6 +99,8 @@ export class LoadScheduler {
   private readonly _fetcher: RangeFetcher;
   private readonly _pool: WorkerPool;
   private readonly _cache: NodeCache;
+  private readonly _compressed: CompressedBytesCache | null;
+  private _compressedHits = 0;
   private readonly _stages: StageTimer;
   private readonly _style: StyleController;
   private readonly _edl: EyeDomeLighting | undefined;
@@ -116,6 +121,7 @@ export class LoadScheduler {
     this._fetcher = deps.rangeFetcher;
     this._pool = deps.workerPool;
     this._cache = deps.nodeCache;
+    this._compressed = deps.compressedBytes ?? null;
     this._stages = deps.stages;
     this._style = deps.style;
     this._edl = deps.edl;
@@ -123,6 +129,11 @@ export class LoadScheduler {
     this._isDestroyed = deps.isDestroyed;
     this._isSelected = deps.isSelected;
     this._onSettled = deps.onSettled ?? (() => {});
+  }
+
+  /** Loads served from the compressed-bytes cache instead of a request. */
+  get compressedHits(): number {
+    return this._compressedHits;
   }
 
   get pendingCount(): number {
@@ -256,15 +267,21 @@ export class LoadScheduler {
       // Queued alongside every other node this same LoD pass just
       // selected — RangeFetcher merges same-tick requests for adjacent byte
       // ranges (exactly what sibling nodes are) into one HTTP request (#86).
-      const rangeTask = this._fetcher.fetch(
-        node.pointDataOffset,
-        node.pointDataOffset + node.pointDataLength,
-      );
-      this._cancels.set(key, rangeTask.cancel);
-      const fetchStart = performance.now();
-      const compressedBytes = await rangeTask;
-      this._stages.record('fetch', fetchStart);
-      if (this._isDestroyed()) return;
+      let compressedBytes = this._compressed?.get(key);
+      if (compressedBytes === undefined) {
+        const rangeTask = this._fetcher.fetch(
+          node.pointDataOffset,
+          node.pointDataOffset + node.pointDataLength,
+        );
+        this._cancels.set(key, rangeTask.cancel);
+        const fetchStart = performance.now();
+        compressedBytes = await rangeTask;
+        this._stages.record('fetch', fetchStart);
+        if (this._isDestroyed()) return;
+        this._compressed?.set(key, compressedBytes);
+      } else {
+        this._compressedHits++;
+      }
 
       const payload: NodeConversionPayload = {
         compressedBytes,

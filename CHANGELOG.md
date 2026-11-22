@@ -7,6 +7,12 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- `maxCompressedCacheBytes` (default `0`, off) keeps nodes' compressed point
+  data after they leave the node cache, so coming back to an evicted node
+  costs a decode instead of a request. For point formats 6 and 7 only the LAZ
+  layers copcesium decodes are kept (typically 60-90% of a chunk's bytes), so
+  more nodes fit in the same budget than with whole chunks. `stats.cache` adds
+  `compressedHits`, `compressedNodes` and `compressedBytes`.
 - `quantizePositions` (default `false`) stores point positions as uint16 per
   axis over each node's extent instead of Float32, so a node takes 15 bytes
   per point instead of 21 in GPU memory and in `maxCacheBytes`. The workers
