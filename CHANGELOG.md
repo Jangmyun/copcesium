@@ -58,6 +58,15 @@ All notable changes to this project are documented here. This project follows
   to spend the budget on. The test is conservative: a node that straddles a
   boundary is kept. (#228)
 
+### Fixed
+
+- **Points culled or clipped by the near/far planes after a large `heightOffset`.**
+  Cesium culls each node, and the Eye-Dome Lighting composite, by a bounding
+  sphere, and LoD selection, the per-frame visibility pass and the pick
+  frustum use the same spheres. None of them moved with `heightOffset`, so
+  points shifted far enough could be on screen while their sphere was not.
+  The spheres now move with it. (#229)
+
 ## [1.4.3] - 2026-11-16
 
 ### Added

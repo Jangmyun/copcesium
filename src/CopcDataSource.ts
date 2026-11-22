@@ -291,7 +291,7 @@ export class CopcDataSource {
       stages: this._stages,
       style: this._styleCtl,
       edl: this._edl,
-      getSphere: this._getSphere,
+      getSphere: this._getBaseSphere,
       isDestroyed: () => this._destroyed,
       isSelected: (key) => this._selectedKeys.has(key),
       onSettled: () => {
@@ -380,13 +380,15 @@ export class CopcDataSource {
   /** One stable function, so the per-pass `selectNodes`/`orderForLoading`
    *  options reuse it instead of allocating a closure each time. */
   private readonly _getSphere = (key: string): Cesium.BoundingSphere => this._spheres.get(key);
+  /** Ignores `heightOffset`; node primitives apply it to their sphere themselves. */
+  private readonly _getBaseSphere = (key: string): Cesium.BoundingSphere => this._spheres.base(key);
 
   /** For `selectNodes`: whether the live clip drops every point of a sphere. */
   private readonly _isClippedAway = (sphere: Cesium.BoundingSphere): boolean =>
     sphereClippedAway(this._styleCtl.style.clip, sphere);
 
   /** The sphere cache's backing map; read by tests that check eviction. */
-  private get _sphereCache(): ReadonlyMap<string, Cesium.BoundingSphere> {
+  private get _sphereCache(): ReadonlyMap<string, unknown> {
     return this._spheres.entries;
   }
 
@@ -776,6 +778,11 @@ export class CopcDataSource {
   }
   set heightOffset(value: number) {
     this._styleCtl.heightOffset = value;
+    // Culling, LoD selection and the EDL composite test the spheres where the
+    // points are drawn, so they move too (#229).
+    this._spheres.heightOffset = value;
+    this._edl.boundingVolume = this._getSphere('0-0-0-0');
+    this._lodDirty = true;
   }
 
   /**
@@ -902,7 +909,6 @@ export class CopcDataSource {
         selectedKeys: this._selectedKeys,
         peekNode: (key) => this._nodeCache.peek(key),
         getSphere: this._getSphere,
-        heightOffset: this._styleCtl.heightOffset,
       },
       windowPosition,
       tolerancePixels,

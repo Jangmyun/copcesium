@@ -55,7 +55,6 @@ export interface PickInputs {
   selectedKeys: ReadonlySet<string>;
   peekNode: (key: string) => LoadedNode | undefined;
   getSphere: (key: string) => Cesium.BoundingSphere;
-  heightOffset: number;
 }
 
 export class PointPicker {
@@ -65,7 +64,7 @@ export class PointPicker {
   private _warnedNoWebgl2 = false;
 
   pick(deps: PickInputs, windowPosition: Cesium.Cartesian2, tolerancePixels: number): PickedPoint | undefined {
-    const { scene, selectedKeys, peekNode, getSphere, heightOffset } = deps;
+    const { scene, selectedKeys, peekNode, getSphere } = deps;
     if (!Cesium.FeatureDetection.supportsWebgl2(scene)) {
       if (!this._warnedNoWebgl2) {
         this._warnedNoWebgl2 = true;
@@ -111,7 +110,7 @@ export class PointPicker {
     }
     if (slotToKey.length === 0) return undefined;
 
-    tightenPickFrustum(scene, context, slotToKey, getSphere, heightOffset);
+    tightenPickFrustum(scene, context, slotToKey, getSphere);
     for (const cmd of commands) context.draw(cmd, passState);
 
     const drawingBufferPos = CesiumPicking.SceneTransforms.transformWindowToDrawingBuffer(scene, windowPosition);
@@ -171,17 +170,16 @@ export class PointPicker {
  * even a 24-bit pick depth buffer unable to order points kilometres away —
  * the GPU depth test then keeps an arbitrary point instead of the front-most
  * one. Depth is measured along the view direction (not Euclidean distance)
- * so off-axis points near the screen edge are never clipped, and each
- * sphere is widened by `|heightOffset|`, which shifts drawn positions but
- * not the cached spheres. Leaves the uniforms untouched in a non-3D scene
- * mode or for a frustum without plain near/far.
+ * so off-axis points near the screen edge are never clipped. `getSphere`
+ * returns spheres where the points are drawn, `heightOffset` included.
+ * Leaves the uniforms untouched in a non-3D scene mode or for a frustum
+ * without plain near/far.
  */
 function tightenPickFrustum(
   scene: Cesium.Scene,
   context: CesiumContextDrawable,
   keys: string[],
   getSphere: (key: string) => Cesium.BoundingSphere,
-  heightOffset: number,
 ): void {
   if (scene.mode !== Cesium.SceneMode.SCENE3D) return;
   const original = scene.camera.frustum as unknown as Partial<PickFrustum>;
@@ -190,16 +188,14 @@ function tightenPickFrustum(
   }
   const camPos = scene.camera.positionWC;
   const camDir = scene.camera.directionWC;
-  const extra = Math.abs(heightOffset);
   const toCenter = new Cesium.Cartesian3();
   let near = Infinity;
   let far = -Infinity;
   for (const key of keys) {
     const sphere = getSphere(key);
     const depth = Cesium.Cartesian3.dot(Cesium.Cartesian3.subtract(sphere.center, camPos, toCenter), camDir);
-    const radius = sphere.radius + extra;
-    near = Math.min(near, depth - radius);
-    far = Math.max(far, depth + radius);
+    near = Math.min(near, depth - sphere.radius);
+    far = Math.max(far, depth + sphere.radius);
   }
   const frustum = (original as PickFrustum).clone();
   // Camera inside (or right next to) a node drives `depth - radius` to zero

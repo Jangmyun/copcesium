@@ -68,6 +68,7 @@ export interface LoadSchedulerDeps {
   style: StyleController;
   /** Shared by every node primitive; see `CopcDataSourceOptions.eyeDomeLighting`. */
   edl?: EyeDomeLighting;
+  /** A node's sphere without `heightOffset`, which its primitive applies itself. */
   getSphere: (key: string) => Cesium.BoundingSphere;
   isDestroyed: () => boolean;
   /** Whether the current selection includes `key`; read when a node finishes loading. */
