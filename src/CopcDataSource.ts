@@ -45,6 +45,7 @@ import { EyeDomeLighting } from './renderer/EyeDomeLighting';
 import { PointPicker } from './renderer/pickPoint';
 import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
+import { CompressedBytesCache } from './cache/CompressedBytesCache';
 import { NodeCache } from './cache/NodeCache';
 
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
@@ -67,6 +68,15 @@ function validateEdlStrength(value: number): number {
 }
 
 /** Shared by the constructor and the live setter. */
+function validateCompressedCacheBytes(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `maxCompressedCacheBytes must be a non-negative finite number, got ${value}`,
+    );
+  }
+  return value;
+}
+
 function validateEdlRadius(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`eyeDomeLightingRadius must be a positive finite number, got ${value}`);
@@ -104,6 +114,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   adaptiveMergeGap: true,
   debounceMs: 100,
   maxCacheNodes: 150,
+  maxCompressedCacheBytes: 0,
   maxVisibleNodes: 100,
   maxPoints: 5_000_000,
   viewAxisBias: 2,
@@ -171,6 +182,7 @@ export class CopcDataSource {
   private readonly _styleCtl: StyleController;
   private readonly _edl: EyeDomeLighting;
   private readonly _nodeCache: NodeCache;
+  private readonly _compressedBytes: CompressedBytesCache;
   private readonly _rangeFetcher: RangeFetcher;
   private readonly _workerPool: WorkerPool;
   private readonly _ownsPool: boolean;
@@ -236,6 +248,10 @@ export class CopcDataSource {
       },
       options.maxCacheBytes,
     );
+    this._compressedBytes = new CompressedBytesCache(
+      validateCompressedCacheBytes(options.maxCompressedCacheBytes),
+      hierarchy.copc.header.pointDataRecordFormat,
+    );
     this._counter = hierarchy.counter;
     this._pager = new HierarchyPager(
       url,
@@ -268,6 +284,7 @@ export class CopcDataSource {
       rangeFetcher: this._rangeFetcher,
       workerPool,
       nodeCache: this._nodeCache,
+      compressedBytes: this._compressedBytes,
       stages: this._stages,
       style: this._styleCtl,
       edl: this._edl,
@@ -831,6 +848,9 @@ export class CopcDataSource {
         estimatedBytes: this._nodeCache.estimatedBytes,
         pinned: this._nodeCache.pinnedCount,
         evictions: this._nodeCache.evictionCount,
+        compressedHits: this._scheduler.compressedHits,
+        compressedNodes: this._compressedBytes.size,
+        compressedBytes: this._compressedBytes.totalBytes,
       },
       waste: this._counter.waste,
       fetch: this._stages.timing('fetch'),
@@ -890,6 +910,7 @@ export class CopcDataSource {
     this._rangeFetcher.destroy();
     if (this._ownsPool) this._workerPool.destroy();
     this._nodeCache.destroy();
+    this._compressedBytes.clear();
     this._edl.destroy();
     this._picker.destroy();
   }

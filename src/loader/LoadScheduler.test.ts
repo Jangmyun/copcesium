@@ -109,3 +109,52 @@ describe('LoadScheduler eye-dome lighting', () => {
     create.mockRestore();
   });
 });
+
+describe('LoadScheduler compressed-bytes cache', () => {
+  // Decode ends the load with an AbortError, so only the fetch path is exercised.
+  function makeLoader(cached: Uint8Array | undefined) {
+    const fetch = vi.fn(() =>
+      Object.assign(Promise.resolve(new Uint8Array([1, 2, 3])), { cancel: vi.fn() }),
+    );
+    const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const run = vi.fn(() => Object.assign(Promise.reject(abort), { cancel: vi.fn() }));
+    const compressedBytes = { get: vi.fn(() => cached), set: vi.fn() };
+    const scheduler = new LoadScheduler({
+      options: {
+        decodeBackpressure: false,
+        prefetchIdleOnly: false,
+        proj: 'EPSG:4326',
+        projDef: null,
+        geoidOffset: 0,
+        zFactor: 1,
+      },
+      copc: { header: { min: [0, 0, 0], max: [1, 1, 1] }, eb: [] },
+      nodes: { k: { pointCount: 1, pointDataOffset: 10, pointDataLength: 3 } },
+      rangeFetcher: { fetch },
+      workerPool: { concurrency: 5, backlog: 0, run },
+      nodeCache: { peek: () => undefined },
+      compressedBytes,
+      stages: { record: () => {} },
+      isDestroyed: () => false,
+      isSelected: () => false,
+    } as unknown as LoadSchedulerDeps);
+    return { scheduler, fetch, run, compressedBytes };
+  }
+
+  it('decodes a cached node without a request', async () => {
+    const { scheduler, fetch, run, compressedBytes } = makeLoader(new Uint8Array([9, 9, 9]));
+    await scheduler.load('k');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(compressedBytes.set).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.compressedHits).toBe(1);
+  });
+
+  it('fetches and stores a node the cache does not have', async () => {
+    const { scheduler, fetch, compressedBytes } = makeLoader(undefined);
+    await scheduler.load('k');
+    expect(fetch).toHaveBeenCalledWith(10, 13);
+    expect(compressedBytes.set).toHaveBeenCalledWith('k', new Uint8Array([1, 2, 3]));
+    expect(scheduler.compressedHits).toBe(0);
+  });
+});
