@@ -45,6 +45,7 @@ export type LoadSchedulerOptions = Required<
     | 'decodeBackpressure'
     | 'prefetchIdleOnly'
     | 'preUploadHidden'
+    | 'quantizePositions'
     | 'proj'
     | 'projDef'
     | 'geoidOffset'
@@ -292,6 +293,7 @@ export class LoadScheduler {
         zFactor: this._o.zFactor,
         zMin: this._copc.header.min[2],
         zMax: this._copc.header.max[2],
+        quantizePositions: this._o.quantizePositions,
       };
       const transfer = [compressedBytes.buffer];
       // Priority only under decodeBackpressure; otherwise the call is the

@@ -36,4 +36,6 @@ export interface NodeConversionPayload {
    */
   zMin: number;
   zMax: number;
+  /** Hand positions back as uint16 (see CopcDataSourceOptions.quantizePositions). */
+  quantizePositions: boolean;
 }

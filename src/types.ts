@@ -16,7 +16,8 @@ import type { WorkerPoolTiming } from './worker/WorkerPool';
 export interface CacheStats {
   /** Nodes held, on screen or not. */
   nodes: number;
-  /** `pointCount × 21` summed over them: the figure `maxCacheBytes` limits.
+  /** `pointCount × 21` (`× 15` with `quantizePositions`) summed over them:
+   *  the figure `maxCacheBytes` limits.
    *  Nodes decoded but not yet drawn hold this in JS memory, drawn ones on
    *  the GPU. */
   estimatedBytes: number;
@@ -223,6 +224,16 @@ export interface CopcDataSourceOptions {
    */
   preUploadHidden?: boolean;
   /**
+   * Stores point positions as uint16 per axis over each node's own extent
+   * instead of Float32: 6 bytes per point instead of 12, so a node takes 15
+   * bytes per point instead of 21 in GPU memory and in `maxCacheBytes`, and
+   * 40% more nodes fit in the same budget. The worker does the conversion,
+   * and the vertex shader maps positions back. Each axis is off by at most
+   * `extent / 131070` of its node, about 1.5 mm for a 200 m node.
+   * Default `false`.
+   */
+  quantizePositions?: boolean;
+  /**
    * Caps how many nodes may upload their vertex buffers in one frame; the
    * rest wait for later frames. Limits the frame-time spike when many nodes
    * arrive together. Nodes on screen may use every slot, while hidden
@@ -311,6 +322,12 @@ export interface CrsDetectionResult {
   warning?: string;
 }
 
+/** Maps uint16 positions back to offsets, per axis: `q * scale + offset`. */
+export interface PositionQuantization {
+  scale: [number, number, number];
+  offset: [number, number, number];
+}
+
 /**
  * Rendering-ready TypedArray buffers the Worker hands back to the main thread.
  *
@@ -320,8 +337,13 @@ export interface CrsDetectionResult {
  * lets a mode change be a uniform update rather than a re-decode.
  */
 export interface NodeRenderData {
-  /** Point positions as Float32 offsets from `origin`, in ECEF meters. */
-  positions: Float32Array;
+  /**
+   * Point positions as offsets from `origin`, in ECEF meters: Float32, or
+   * uint16 per axis when `quantization` is set (see `quantizePositions`).
+   */
+  positions: Float32Array | Uint16Array;
+  /** Set exactly when `positions` is a Uint16Array. */
+  quantization?: PositionQuantization;
   /** ECEF origin (double precision) the positions are relative to; carried in the primitive's model matrix. */
   origin: [number, number, number];
   colors: Uint8Array;

@@ -67,6 +67,7 @@ const BASE_PAYLOAD = {
   zFactor: 1,
   zMin: 0,
   zMax: 100,
+  quantizePositions: false,
 };
 
 describe('lonLatAltToEcefInto', () => {
@@ -114,6 +115,20 @@ describe('convertNode', () => {
     expect(result.positions[2]).toBe(0);
   });
 
+  it('emits uint16 positions and how to map them back when quantizePositions is set', async () => {
+    loadPointDataView.mockResolvedValueOnce(makeView({ X: [10, 10.00001], Y: [20, 20], Z: [0, 5] }));
+
+    const result = await convertNode({ ...BASE_PAYLOAD, quantizePositions: true });
+
+    const p1 = lonLatAltToEcef(10.00001, 20, 5);
+    expect(result.positions).toBeInstanceOf(Uint16Array);
+    const { scale, offset } = result.quantization!;
+    for (let c = 0; c < 3; c++) {
+      const back = result.positions[3 + c]! * scale[c]! + offset[c]!;
+      expect(result.origin[c] + back).toBeCloseTo(p1[c], 3);
+    }
+  });
+
   it('emits points as Float32 offsets from the first point (the node origin)', async () => {
     // Two points a few meters apart, the scale of a real leaf node.
     loadPointDataView.mockResolvedValueOnce(makeView({ X: [10, 10.00001], Y: [20, 20], Z: [0, 5] }));
@@ -123,6 +138,7 @@ describe('convertNode', () => {
     const p0 = lonLatAltToEcef(10, 20, 0);
     const p1 = lonLatAltToEcef(10.00001, 20, 5);
     expect(result.positions).toBeInstanceOf(Float32Array);
+    expect(result.quantization).toBeUndefined();
     expect(result.origin[0]).toBeCloseTo(p0[0], 6);
     expect(result.positions[0]).toBe(0);
     for (let c = 0; c < 3; c++) {

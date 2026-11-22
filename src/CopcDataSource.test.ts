@@ -516,6 +516,29 @@ describe('CopcDataSource update loop', () => {
     expect(addPrimitive.mock.calls[0][0].show).toBe(true);
   });
 
+  it('asks the worker for uint16 positions and counts 15 bytes per point with quantizePositions', async () => {
+    for (const quantizePositions of [false, true]) {
+      mockCopc(undefined);
+      workerPoolRun.mockClear();
+      workerPoolRun.mockResolvedValueOnce(renderData);
+      const { viewer, addPrimitive, triggerUpdate } = makeFakeViewer();
+
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        quantizePositions,
+      });
+      triggerUpdate();
+      await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(1));
+
+      expect(workerPoolRun).toHaveBeenCalledWith(
+        expect.objectContaining({ quantizePositions }),
+        expect.anything(),
+      );
+      const perPoint = quantizePositions ? 15 : 21;
+      expect(ds.stats.cache.estimatedBytes).toBe(renderData.pointCount * perPoint);
+    }
+  });
+
   it('does not re-dispatch a node that is already cached on a later update', async () => {
     mockCopc(undefined);
     workerPoolRun.mockResolvedValueOnce(renderData);

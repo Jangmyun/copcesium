@@ -27,6 +27,7 @@ import type { NodeConversionPayload } from './messages';
 import type { NodeRenderData } from '../types';
 import { CLASSIFICATION_COLORS, DEFAULT_CLASS_COLOR } from '../style/classificationColors';
 import { createLonLatTransform } from './lonLatTransform';
+import { quantizePositions } from './quantize';
 // laz-perf.wasm, embedded as base64 by vite-plugins/lazPerfWasmInline.ts — see
 // getLazPerf() below for why this worker can't fetch it as a sibling file.
 import lazPerfWasmBase64 from 'virtual:laz-perf-wasm-base64';
@@ -282,7 +283,19 @@ export async function convertNode(payload: NodeConversionPayload): Promise<NodeR
     colors[i4 + 3] = 255;
   }
 
-  return { positions, origin: [ox, oy, oz], colors, intensities, classifications, elevations, pointCount: n, maxIntensity };
+  const origin: [number, number, number] = [ox, oy, oz];
+  const rest = {
+    origin,
+    colors,
+    intensities,
+    classifications,
+    elevations,
+    pointCount: n,
+    maxIntensity,
+  };
+  if (!payload.quantizePositions) return { positions, ...rest };
+  const { values, quantization } = quantizePositions(positions);
+  return { positions: values, quantization, ...rest };
 }
 
 self.onmessage = async (e: MessageEvent<WorkerRequest | WorkerCancelRequest>) => {

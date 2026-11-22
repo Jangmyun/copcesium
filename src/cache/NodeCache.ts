@@ -14,6 +14,8 @@ import type { LoadedNode } from '../types';
  *  measurement isn't cheap enough to be worth it, but this compile-time-fixed
  *  layout gives a predictable memory bound without measuring anything. */
 const BYTES_PER_POINT = 21;
+/** The same with `quantizePositions`: uint16 positions, 6B instead of 12B. */
+export const BYTES_PER_POINT_QUANTIZED = 15;
 
 /**
  * LRU cache for loaded COPC nodes, bounded by node count and, optionally, by
@@ -41,6 +43,7 @@ export class NodeCache {
     private readonly maxNodes: number,
     private readonly onEvict: (key: string, node: LoadedNode) => void,
     private readonly maxBytes?: number,
+    private readonly bytesPerPoint = BYTES_PER_POINT,
   ) {}
 
   get(key: string): LoadedNode | undefined {
@@ -145,7 +148,7 @@ export class NodeCache {
   }
 
   private _nodeBytes(node: LoadedNode): number {
-    return node.pointCount * BYTES_PER_POINT;
+    return node.pointCount * this.bytesPerPoint;
   }
 
   private _isOverBudget(): boolean {

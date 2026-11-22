@@ -211,6 +211,7 @@ interface CopcDataSourceOptions {
   decodeBackpressure?: boolean;
   strictCacheBudget?: boolean;
   preUploadHidden?: boolean;
+  quantizePositions?: boolean;
   maxGpuInitsPerFrame?: number;
   zFactor?: number;
   xyFactor?: number;
@@ -252,6 +253,7 @@ interface CopcDataSourceOptions {
 | `prefetchLookaheadMs` | 없음 | 켜야 동작하는 예측 프리페치입니다. 카메라가 움직이는 동안, 이 시간(ms) 뒤에 카메라가 있을 것으로 예상되는 자세를 기준으로 프리페치를 고릅니다(감쇠 등속 외삽, 최대 250 ms). 그 자세에 가까운 후보부터 로드하고, 프리페치 집합에서 빠진 프리페치 로드는 300 ms가 지난 뒤에야 취소합니다. 사람이 조작한 카메라 경로를 오프라인으로 재생했을 때 250 ms까지만 지금 자세를 유지하는 것보다 나았습니다. 권장값은 `250`입니다. |
 | `decodeBackpressure` | `false` | 네트워크가 아니라 디코딩이 병목인 기기를 위한 옵션입니다. 한 바퀴 분량의 디코딩(worker당 노드 하나)이 worker를 기다리고 있으면, 그 화면의 나머지 다운로드를 미뤘다가 디코딩이 끝나는 대로 다시 시작합니다. 카메라가 지나간 노드는 버립니다. 프리페치는 디코드 대기열이 빌 때만 보내고 화면 노드 뒤에 디코딩합니다. `prefetchIdleOnly`도 켜면 두 조건을 모두 만족할 때만 프리페치합니다. 대기열 상태는 옵션과 관계없이 `stats.decodeQueue`에서 볼 수 있습니다. |
 | `strictCacheBudget` | `false` | `maxCacheNodes`/`maxCacheBytes`를 노드를 넣을 때만이 아니라 LoD 패스마다 다시 적용합니다. 화면을 막 떠난 노드가 바로 축출됩니다. 화면에 있는 노드는 축출하지 않으므로, 그것만으로도 예산을 넘을 수 있습니다. |
+| `quantizePositions` | `false` | 포인트 위치를 Float32 대신 노드 범위 기준 축별 uint16으로 저장합니다. 노드가 GPU 메모리와 `maxCacheBytes`에서 포인트당 21바이트 대신 15바이트를 차지하므로, 같은 예산에 노드가 40% 더 담깁니다. 변환은 워커가 하고, 정점 셰이더가 원래 위치로 되돌립니다. 축마다 오차는 노드 범위의 1/131070 이하입니다(200 m 노드에서 약 1.5 mm). |
 | `preUploadHidden` | `false` | 노드가 로드되면 숨겨진(프리페치된) 상태여도 바로 GPU 버퍼를 올립니다. 화면을 옮길 때 그 프레임에서 업로드 비용 없이 나타납니다. 대신 GPU 메모리를 더 일찍 씁니다. |
 | `maxGpuInitsPerFrame` | 없음 | 한 프레임에 GPU 버퍼를 올리는 노드 수를 제한합니다. 나머지는 다음 프레임으로 넘깁니다. 화면에 있는 노드는 모든 슬롯을 쓸 수 있고, 숨겨진 노드의 사전 업로드는 프레임당 한 슬롯까지만 씁니다. 지정하지 않으면 제한이 없습니다. |
 | `pixelSize` | `2` | 포인트 크기(픽셀). `pointSizeMode`가 `'fixed'`일 때 사용됩니다. 로드 후 `dataSource.pixelSize`로 실시간 조정 가능. |
@@ -399,7 +401,7 @@ console.log(`파일의 ${pct}% 를 range request ${requestCount}회로 가져옴
 | `pendingNodes` | 진행 중인 노드 수(요청·디코딩·업로드). 0이면 현재 화면이 완전히 해소된 상태로, 벤치마크가 시계를 멈추는 신호입니다. |
 | `waste` | 위 합계가 빠뜨리는 노드 포인트 데이터 쪽 수치입니다. 중단된 시도(`abortedRequests`, 그중 본문 도중에 끊긴 것은 `abortedAfterHeaders`), 실패한 시도(`failedRequests`), 재시도(`retries`)를 셉니다. 중단·실패한 시도가 **요청한** 바이트는 `abortedBytes`, `failedBytes`입니다. `unusedBytes`는 받았지만 아무 노드도 쓰지 않은 바이트(병합 틈, 받는 도중 취소된 노드)이며, 이미 `transferredBytes`에 들어 있습니다. `cancelledBeforeSend`는 보내기 전에 취소된 요청 수입니다. |
 | `decodeQueue` | 대기·실행 중인 디코드 작업 수(`waiting`/`running`), 작업이 worker를 기다린 시간(`waitP50`)과 worker에서 실행된 시간(`runP50`)의 중앙값(ms), `decodeBackpressure`가 미룬 로드 수(`deferredLoads`). 대기가 계속 많고 `waitP50`이 `runP50`보다 크면 네트워크가 아니라 디코딩이 병목입니다. |
-| `cache` | 들고 있는 노드 수(`nodes`), 추정 바이트(`estimatedBytes`, `pointCount × 21`이며 `maxCacheBytes`가 제한하는 값), 화면에 있어 축출되지 않는 노드 수(`pinned`), 지금까지의 축출 수(`evictions`). `maxCompressedCacheBytes`를 켜면 요청 없이 처리한 로드 수(`compressedHits`)와, 압축 캐시가 들고 있는 노드 수(`compressedNodes`)·바이트(`compressedBytes`)도 함께 나옵니다. |
+| `cache` | 들고 있는 노드 수(`nodes`), 추정 바이트(`estimatedBytes`, `pointCount × 21`이며 `quantizePositions`를 켜면 `× 15`. `maxCacheBytes`가 제한하는 값), 화면에 있어 축출되지 않는 노드 수(`pinned`), 지금까지의 축출 수(`evictions`). `maxCompressedCacheBytes`를 켜면 요청 없이 처리한 로드 수(`compressedHits`)와, 압축 캐시가 들고 있는 노드 수(`compressedNodes`)·바이트(`compressedBytes`)도 함께 나옵니다. |
 | `fetch`, `decode`, `upload` | 각각 `StageTiming` — 해당 단계를 통과한 노드 `count`와, 최근 노드들에 대한 이동 윈도우 기준 `p50`/`p95`(밀리초). |
 
 `upload`은 노드가 실제로 처음 그려지는 프레임에서 측정합니다. 그래서 디코딩됐지만 화면에 오르지 못한 노드만큼 `upload.count`가 `decode.count`보다 뒤처지는데, 이 격차는 누락된 표본이 아니라 그 자체로 정보입니다.
