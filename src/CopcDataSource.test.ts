@@ -1579,6 +1579,61 @@ describe('CopcDataSource update loop', () => {
     });
   });
 
+  describe('maxCompressedCacheBytes', () => {
+    /** Root plus one child on screen, then root alone (evicting the child), then both again. */
+    async function revisit(options: Record<string, unknown>) {
+      mockCopc(undefined, EXTRA_NODES);
+      workerPoolRun.mockResolvedValue(renderData);
+      selectNodesMock.mockReturnValue(['0-0-0-0', '1-0-0-0']);
+      const { viewer, triggerUpdate, addPrimitive } = makeFakeViewer();
+      const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+        debounceMs: 0,
+        maxCacheNodes: 1,
+        strictCacheBudget: true,
+        ...options,
+      });
+      triggerUpdate();
+      await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(2));
+      triggerUpdate();
+      selectNodesMock.mockReturnValue(['0-0-0-0']);
+      triggerUpdate();
+      expect(ds.stats.cache).toMatchObject({ nodes: 1, evictions: 1 });
+
+      const fetchesBefore = rangeFetcherFetch.mock.calls.length;
+      selectNodesMock.mockReturnValue(['0-0-0-0', '1-0-0-0']);
+      triggerUpdate();
+      await vi.waitFor(() => expect(addPrimitive).toHaveBeenCalledTimes(3));
+      return { ds, refetches: rangeFetcherFetch.mock.calls.length - fetchesBefore };
+    }
+
+    it('by default requests an evicted node again', async () => {
+      const { ds, refetches } = await revisit({});
+      expect(refetches).toBe(1);
+      expect(ds.stats.cache).toMatchObject({
+        compressedHits: 0,
+        compressedNodes: 0,
+        compressedBytes: 0,
+      });
+    });
+
+    it('decodes an evicted node from its kept compressed bytes when on', async () => {
+      const { ds, refetches } = await revisit({ maxCompressedCacheBytes: 1024 });
+      expect(refetches).toBe(0);
+      expect(ds.stats.cache).toMatchObject({ compressedHits: 1, compressedNodes: 2 });
+      expect(ds.stats.cache.compressedBytes).toBeGreaterThan(0);
+    });
+
+    it('load() rejects a negative or non-finite budget', async () => {
+      const { viewer } = makeFakeViewer();
+      for (const maxCompressedCacheBytes of [-1, Number.NaN, Infinity]) {
+        mockCopc(undefined);
+        await expect(
+          CopcDataSource.load('https://example.com/sample.copc.laz', viewer, { maxCompressedCacheBytes }),
+        ).rejects.toThrow(RangeError);
+      }
+    });
+  });
+
   describe("concurrency: 'auto'", () => {
     it('leaves one core for the page, between 2 and 5 workers', () => {
       expect(resolveWorkerCount('auto', 16)).toBe(5);

@@ -194,6 +194,7 @@ interface CopcDataSourceOptions {
   debounceMs?: number;
   maxCacheNodes?: number;
   maxCacheBytes?: number;
+  maxCompressedCacheBytes?: number;
   maxVisibleNodes?: number;
   maxPoints?: number;
   viewAxisBias?: number;
@@ -240,6 +241,7 @@ interface CopcDataSourceOptions {
 | `debounceMs` | `100` | Minimum interval between full LoD re-selection passes. A lighter frustum-only visibility check still runs every frame. |
 | `maxCacheNodes` | `150` | Maximum nodes kept in memory (LRU) before the least-recently-used, currently-unselected ones are torn down. |
 | `maxCacheBytes` | none | Maximum estimated bytes kept in memory, on top of `maxCacheNodes` — evicts on whichever limit is hit first. Estimated as `pointCount * 21` per node (the fixed per-point buffer layout). Unset by default, since a sensible value depends on the dataset's typical points-per-node. |
+| `maxCompressedCacheBytes` | `0` (off) | Bytes of compressed point data kept for nodes after they leave the node cache, so coming back to an evicted node costs a decode instead of a request. For point formats 6 and 7 only the LAZ layers copcesium decodes are kept (GPS time, scan angle and the like are dropped), typically 60–90% of a chunk's bytes, so more nodes fit in the same budget. Counts separately from `maxCacheBytes`. Most useful when the camera returns to areas it has already loaded and `maxCacheBytes` is tight. |
 | `maxVisibleNodes` | `100` | Maximum nodes selected for rendering in a single LoD pass. |
 | `maxPoints` | `5,000,000` | Maximum total points across selected nodes in a single LoD pass, on top of `maxVisibleNodes`. |
 | `viewAxisBias` | `2` | How far the centre of the view outranks its corners when `maxVisibleNodes` or `maxPoints` cuts the selection: priority is scaled from `1 + viewAxisBias` on the view axis down to 1 at the screen corner. Views that fit the budget select the same nodes either way. `0` ranks by screen-space error alone. |
@@ -397,7 +399,7 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
 | `waste` | What the totals above leave out, for node point data. Attempts that were aborted (`abortedRequests`, with `abortedAfterHeaders` for those cut off mid-body), attempts that failed (`failedRequests`), and `retries`. The bytes those aborted and failed attempts *asked for* (`abortedBytes`, `failedBytes`). `unusedBytes`: received bytes that no node used, such as merge gaps and nodes cancelled while their request was in flight; these are already part of `transferredBytes`. `cancelledBeforeSend`: requests dropped before anything was sent. |
 | `decodeQueue` | `waiting`/`running` decode tasks, the median ms a task waited for a worker (`waitP50`) and ran on one (`runP50`), and `deferredLoads` held back by `decodeBackpressure`. Waiting that stays high, with `waitP50` above `runP50`, means decoding, not the network, is the bottleneck. |
-| `cache` | `nodes` held, their `estimatedBytes` (`pointCount × 21`, the figure `maxCacheBytes` limits), how many are `pinned` on screen (never evicted), and `evictions` so far. |
+| `cache` | `nodes` held, their `estimatedBytes` (`pointCount × 21`, the figure `maxCacheBytes` limits), how many are `pinned` on screen (never evicted), and `evictions` so far. With `maxCompressedCacheBytes` set, also `compressedHits` (loads served without a request), and the `compressedNodes` and `compressedBytes` that cache holds. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.

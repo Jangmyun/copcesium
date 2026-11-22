@@ -47,6 +47,7 @@ const TUNING_PARAMS = [
   'maxConcurrentRequests',
   'maxCacheNodes',
   'maxCacheBytes',
+  'maxCompressedCacheBytes',
   'maxVisibleNodes',
   'maxPoints',
   'viewAxisBias',

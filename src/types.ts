@@ -25,6 +25,13 @@ export interface CacheStats {
   pinned: number;
   /** Nodes evicted to stay within budget since load. */
   evictions: number;
+  /** Loads served from the compressed-bytes cache instead of a request
+   *  (see `maxCompressedCacheBytes`). */
+  compressedHits: number;
+  /** Nodes the compressed-bytes cache holds. */
+  compressedNodes: number;
+  /** Bytes it holds: the figure `maxCompressedCacheBytes` limits. */
+  compressedBytes: number;
 }
 
 /** See `CopcStats.decodeQueue`. */
@@ -107,6 +114,15 @@ export interface CopcDataSourceOptions {
    * depends on the dataset's typical points-per-node.
    */
   maxCacheBytes?: number;
+  /**
+   * Keeps nodes' compressed point data, up to this many bytes, after they
+   * leave the node cache, so coming back to an evicted node costs a decode
+   * rather than a request. For point formats 6 and 7 only the LAZ layers
+   * copcesium decodes are kept, typically 60-90% of a chunk's bytes, so more
+   * nodes fit in the same budget. Counts separately from `maxCacheBytes`.
+   * Default 0 (off).
+   */
+  maxCompressedCacheBytes?: number;
   maxVisibleNodes?: number;
   /**
    * Bounds the render set by total point count across selected nodes, on top
