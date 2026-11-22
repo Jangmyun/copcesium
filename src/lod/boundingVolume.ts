@@ -45,6 +45,24 @@ export function getNodeBoundingSphere(
   return new Cesium.BoundingSphere(center, radius);
 }
 
+/**
+ * `sphere` as drawn with `heightOffset`: moved that many meters along
+ * geocentric up, which is how every node primitive applies it (along its own
+ * origin's up). Those directions differ from the sphere center's by at most
+ * about `radius / |center|` radians, so the radius grows by `|heightOffset|`
+ * times that to keep every shifted point inside.
+ */
+export function shiftSphereUp(
+  sphere: Cesium.BoundingSphere,
+  heightOffset: number,
+): Cesium.BoundingSphere {
+  const distance = Cesium.Cartesian3.magnitude(sphere.center);
+  const up = Cesium.Cartesian3.normalize(sphere.center, new Cesium.Cartesian3());
+  const center = Cesium.Cartesian3.multiplyByScalar(up, distance + heightOffset, up);
+  const slack = distance > sphere.radius ? sphere.radius / (distance - sphere.radius) : 1;
+  return new Cesium.BoundingSphere(center, sphere.radius + Math.abs(heightOffset) * slack);
+}
+
 export function getCullingVolume(camera: CameraView): Cesium.CullingVolume {
   // The `WC` variants, not `position`/`direction`/`up`: those are relative to
   // `camera.transform`, which is the identity only until something calls

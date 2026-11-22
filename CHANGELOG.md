@@ -55,6 +55,21 @@ All notable changes to this project are documented here. This project follows
   it matched the best fixed gap on every dataset and link, was up to 17%
   faster than contiguous-only merging (Millsite, 100 ms), and did not slow
   the pan route. Pass `adaptiveMergeGap: false` for the previous behaviour.
+- **Clipping now saves loading, not just drawing.** Nodes that the clip planes
+  and boxes drop whole are left out of LoD selection, with their subtrees, so
+  they are no longer fetched, decoded or counted against `maxVisibleNodes`
+  and `maxPoints`. A small clip box now gets the detail the whole view used
+  to spend the budget on. The test is conservative: a node that straddles a
+  boundary is kept. (#228)
+
+### Fixed
+
+- **Points culled or clipped by the near/far planes after a large `heightOffset`.**
+  Cesium culls each node, and the Eye-Dome Lighting composite, by a bounding
+  sphere, and LoD selection, the per-frame visibility pass and the pick
+  frustum use the same spheres. None of them moved with `heightOffset`, so
+  points shifted far enough could be on screen while their sphere was not.
+  The spheres now move with it. (#229)
 
 ## [1.4.3] - 2026-11-16
 

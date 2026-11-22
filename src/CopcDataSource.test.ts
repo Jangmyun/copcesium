@@ -1819,15 +1819,18 @@ describe('CopcDataSource.pickPoint', () => {
     expect(tightened.far).toBeCloseTo(sphere.radius, 3);
   });
 
-  // heightOffset shifts drawn positions but not the cached spheres.
-  it('widens the depth range by |heightOffset|', async () => {
+  // setupPick places the camera against the sphere as drawn, heightOffset included.
+  it('fits the depth range to the spheres shifted by heightOffset', async () => {
     const { ds, sphere, updateFrustum } = await setupPick({ distance: 5000, heightOffset: -50 });
+    const internals = ds as unknown as { _getBaseSphere(key: string): Cesium.BoundingSphere };
+    const base = internals._getBaseSphere('0-0-0-0');
+    expect(Cesium.Cartesian3.distance(sphere.center, base.center)).toBeCloseTo(50, 3);
 
     ds.pickPoint(new Cesium.Cartesian2(50, 50));
 
     const tightened = updateFrustum.mock.calls[0]![0];
-    expect(tightened.near).toBeCloseTo(5000 - sphere.radius - 50, 3);
-    expect(tightened.far).toBeCloseTo(5000 + sphere.radius + 50, 3);
+    expect(tightened.near).toBeCloseTo(5000 - sphere.radius, 3);
+    expect(tightened.far).toBeCloseTo(5000 + sphere.radius, 3);
   });
 
   it('leaves the frustum alone outside 3D scene mode', async () => {
@@ -2105,6 +2108,57 @@ describe('CopcDataSource runtime API', () => {
     ds.heightOffset = -12.5;
     expect(ds.heightOffset).toBe(-12.5);
     expect(requestRender).toHaveBeenCalled();
+  });
+
+  it('hands selectNodes a clip cull that follows the live clip regions (#228)', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      sseThreshold: 250,
+      debounceMs: 1_000_000,
+    });
+    selectNodesMock.mockClear();
+    ds.sseThreshold = 100; // runs a pass at once
+    const { isClippedAway } = selectNodesMock.mock.calls[0]![0] as {
+      isClippedAway: (sphere: Cesium.BoundingSphere) => boolean;
+    };
+    const sphere = new Cesium.BoundingSphere(new Cesium.Cartesian3(-100, 0, 0), 10);
+    expect(isClippedAway(sphere)).toBe(false);
+
+    ds.clipPlanes = [new Cesium.Plane(Cesium.Cartesian3.UNIT_X, 0)]; // keeps x >= 0
+    expect(isClippedAway(sphere)).toBe(true);
+    ds.clipMode = 'outside';
+    expect(isClippedAway(sphere)).toBe(false);
+  });
+
+  it('heightOffset moves the spheres culling, LoD and EDL use (#229)', async () => {
+    mockCopc(undefined);
+    const { viewer } = makeFakeViewer();
+    const ds = await CopcDataSource.load('https://example.com/sample.copc.laz', viewer, {
+      debounceMs: 1_000_000,
+    });
+    const internals = ds as unknown as {
+      _getSphere(key: string): Cesium.BoundingSphere;
+      _getBaseSphere(key: string): Cesium.BoundingSphere;
+      _edl: { boundingVolume: Cesium.BoundingSphere };
+      _lodDirty: boolean;
+    };
+    const base = Cesium.BoundingSphere.clone(internals._getSphere('0-0-0-0'));
+    expect(internals._getSphere('0-0-0-0')).toBe(internals._getBaseSphere('0-0-0-0'));
+    internals._lodDirty = false;
+
+    ds.heightOffset = 500;
+
+    const drawn = internals._getSphere('0-0-0-0');
+    const up = Cesium.Cartesian3.normalize(base.center, new Cesium.Cartesian3());
+    const moved = Cesium.Cartesian3.subtract(drawn.center, base.center, new Cesium.Cartesian3());
+    expect(Cesium.Cartesian3.dot(moved, up)).toBeCloseTo(500, 3);
+    expect(internals._getBaseSphere('0-0-0-0')).toEqual(base);
+    expect(internals._edl.boundingVolume).toBe(drawn);
+    expect(internals._lodDirty).toBe(true);
+
+    ds.heightOffset = 0;
+    expect(internals._getSphere('0-0-0-0')).toBe(internals._getBaseSphere('0-0-0-0'));
   });
 
   it('sseThreshold get/set triggers an immediate LoD pass', async () => {

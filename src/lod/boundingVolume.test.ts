@@ -14,6 +14,7 @@ import {
   getExpandedCullingVolume,
   getNodeBoundingSphere,
   isInFrustum,
+  shiftSphereUp,
   type ProjectToCartesian,
 } from './boundingVolume';
 
@@ -56,6 +57,46 @@ describe('getNodeBoundingSphere', () => {
     );
 
     expect(sphere.radius).toBeCloseTo(10 * 0.3048 * Math.sqrt(3));
+  });
+});
+
+describe('shiftSphereUp', () => {
+  const sphere = new Cesium.BoundingSphere(Cesium.Cartesian3.fromDegrees(-123, 44, 100), 300);
+
+  it('moves the center along geocentric up', () => {
+    const shifted = shiftSphereUp(sphere, -500);
+    const up = Cesium.Cartesian3.normalize(sphere.center, new Cesium.Cartesian3());
+    const expected = Cesium.Cartesian3.add(
+      sphere.center,
+      Cesium.Cartesian3.multiplyByScalar(up, -500, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3(),
+    );
+    expect(Cesium.Cartesian3.distance(shifted.center, expected)).toBeLessThan(1e-6);
+    expect(sphere.radius).toBe(300); // the input is left alone
+  });
+
+  it('still encloses points shifted along their own up, at the sphere edge', () => {
+    const shifted = shiftSphereUp(sphere, 5000);
+    const axes = [Cesium.Cartesian3.UNIT_X, Cesium.Cartesian3.UNIT_Y, Cesium.Cartesian3.UNIT_Z];
+    for (const dir of axes) {
+      for (const sign of [1, -1]) {
+        const point = Cesium.Cartesian3.add(
+          sphere.center,
+          Cesium.Cartesian3.multiplyByScalar(dir, sign * sphere.radius, new Cesium.Cartesian3()),
+          new Cesium.Cartesian3(),
+        );
+        const up = Cesium.Cartesian3.normalize(point, new Cesium.Cartesian3());
+        const moved = Cesium.Cartesian3.add(
+          point,
+          Cesium.Cartesian3.multiplyByScalar(up, 5000, up),
+          new Cesium.Cartesian3(),
+        );
+        const distance = Cesium.Cartesian3.distance(moved, shifted.center);
+        expect(distance).toBeLessThanOrEqual(shifted.radius);
+      }
+    }
+    // The slack is tiny next to the shift itself.
+    expect(shifted.radius - sphere.radius).toBeLessThan(1);
   });
 });
 

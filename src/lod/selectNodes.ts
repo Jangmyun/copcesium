@@ -186,6 +186,13 @@ export interface SelectNodesOptions {
    * that fits the budget selects the same nodes. Defaults to 0 (no bias).
    */
   viewAxisBias?: number;
+  /**
+   * Whether clipping discards every point a node's sphere can hold. Such a
+   * node is dropped with its subtree, like one outside the frustum, so it
+   * costs no fetch, decode or budget (#228). Children sit inside their
+   * parent's sphere, so a clipped-away parent never hides a kept child.
+   */
+  isClippedAway?: (sphere: Cesium.BoundingSphere) => boolean;
 }
 
 /**
@@ -234,6 +241,7 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     incumbents,
     incumbentBonus = 1,
     viewAxisBias = 0,
+    isClippedAway,
   } = options;
 
   const cullingVolume = getCullingVolume(camera);
@@ -327,6 +335,8 @@ export function selectNodes(options: SelectNodesOptions): string[] {
     if (!nodeInfo) continue;
 
     const sphere = entry.sphere ?? getSphere(key);
+    // Nothing of this subtree would be drawn, on screen or after a pan.
+    if (isClippedAway?.(sphere)) continue;
     const onscreen = isInFrustum(sphere, cullingVolume);
 
     if (!onscreen) {
