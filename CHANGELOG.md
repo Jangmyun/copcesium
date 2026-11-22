@@ -7,6 +7,11 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- `quantizePositions` (default `false`) stores point positions as uint16 per
+  axis over each node's extent instead of Float32, so a node takes 15 bytes
+  per point instead of 21 in GPU memory and in `maxCacheBytes`. The workers
+  quantize and the vertex shader maps positions back; each axis is off by at
+  most 1/131070 of the node's extent. Picking and clipping work unchanged.
 - **Eye-Dome Lighting for this data source's points.** `eyeDomeLighting`
   (default off), `eyeDomeLightingStrength` (default `1`) and
   `eyeDomeLightingRadius` (CSS pixels, default `1`) darken each point by how

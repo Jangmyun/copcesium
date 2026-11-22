@@ -134,15 +134,19 @@ interface DrawCommandLike {
   framebuffer: unknown;
 }
 
-/** Position attribute (node-relative offset), shared by the main and pick vertex arrays. */
-function positionAttribute(vertexBuffer: unknown) {
+/** Position attribute (node-relative offset), shared by the main and pick vertex
+ *  arrays: Float32, or uint16 per axis that the shaders' u_qScale/u_qOffset map back. */
+function positionAttribute(vertexBuffer: unknown, quantized: boolean) {
   return {
     index: 0,
     vertexBuffer,
     componentsPerAttribute: 3,
-    componentDatatype: Cesium.ComponentDatatype.FLOAT,
+    componentDatatype: quantized
+      ? Cesium.ComponentDatatype.UNSIGNED_SHORT
+      : Cesium.ComponentDatatype.FLOAT,
+    normalize: false,
     offsetInBytes: 0,
-    strideInBytes: 12,
+    strideInBytes: quantized ? 6 : 12,
   };
 }
 
@@ -165,7 +169,11 @@ function classificationAttribute(index: number, vertexBuffer: unknown) {
 // GPU resources (VertexArray, ShaderProgram) are created lazily on the first
 // update() call, since frameState.context is only available there.
 export class PointCloudPrimitive {
-  private _positions: Float32Array | null;
+  private _positions: Float32Array | Uint16Array | null;
+  /** Whether `_positions` is uint16; the shaders map it back with these. */
+  private readonly _quantized: boolean;
+  private readonly _qScale = new Cesium.Cartesian3(1, 1, 1);
+  private readonly _qOffset = new Cesium.Cartesian3(0, 0, 0);
   private _origin: [number, number, number];
   private _up: Cesium.Cartesian3;
   private _appliedHeightOffset: number;
@@ -222,6 +230,11 @@ export class PointCloudPrimitive {
     gpu?: { preUploadHidden?: boolean; budget?: GpuInitBudget; edl?: EyeDomeLighting },
   ) {
     this._positions = renderData.positions;
+    this._quantized = renderData.quantization !== undefined;
+    if (renderData.quantization) {
+      Cesium.Cartesian3.fromArray(renderData.quantization.scale, 0, this._qScale);
+      Cesium.Cartesian3.fromArray(renderData.quantization.offset, 0, this._qOffset);
+    }
     this._origin = renderData.origin;
     this._up = Cesium.Cartesian3.normalize(
       new Cesium.Cartesian3(renderData.origin[0], renderData.origin[1], renderData.origin[2]),
@@ -347,6 +360,8 @@ export class PointCloudPrimitive {
       u_clipPlanes: () => this._clipPlanes,
       u_clipBoxCount: () => this._clipUniforms.boxCount,
       u_clipBoxes: () => this._clipBoxes,
+      u_qScale: () => this._qScale,
+      u_qOffset: () => this._qOffset,
     };
   }
 
@@ -385,7 +400,7 @@ export class PointCloudPrimitive {
       va = new CesiumAny.VertexArray({
         context,
         attributes: [
-          positionAttribute(positionBuffer),
+          positionAttribute(positionBuffer, this._quantized),
           {
             index: 1, // color
             vertexBuffer: colorBuffer,
@@ -526,7 +541,7 @@ export class PointCloudPrimitive {
       context,
       attributes: [
         // Same buffers as the main VA's; classification for the same allow-list cull.
-        positionAttribute(this._positionBuffer),
+        positionAttribute(this._positionBuffer, this._quantized),
         classificationAttribute(1, this._classificationBuffer),
       ],
     });
@@ -584,9 +599,9 @@ export class PointCloudPrimitive {
     // behind its back could otherwise leak into its next draw.
     const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
 
-    const positionBytes = new Float32Array(3);
+    const positionBytes = this._quantized ? new Uint16Array(3) : new Float32Array(3);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._positionBuffer._buffer);
-    gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex * 12, positionBytes);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex * (this._quantized ? 6 : 12), positionBytes);
 
     const intensityBytes = new Uint16Array(1);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._intensityBuffer._buffer);
@@ -597,7 +612,11 @@ export class PointCloudPrimitive {
     gl.getBufferSubData(gl.ARRAY_BUFFER, pointIndex, classificationBytes);
     gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer);
 
-    const offset = new Cesium.Cartesian3(positionBytes[0], positionBytes[1], positionBytes[2]);
+    const offset = new Cesium.Cartesian3(
+      positionBytes[0]! * this._qScale.x + this._qOffset.x,
+      positionBytes[1]! * this._qScale.y + this._qOffset.y,
+      positionBytes[2]! * this._qScale.z + this._qOffset.z,
+    );
     const position = Cesium.Matrix4.multiplyByPoint(
       this._modelMatrix(this._style.heightOffset),
       offset,

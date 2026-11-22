@@ -283,6 +283,12 @@ describe('NodeCache', () => {
     expect(cache.get('b')).toBe(b);
   });
 
+  it('counts the given bytes per point instead of 21 (15 with quantized positions)', () => {
+    const cache = new NodeCache(10, () => {}, undefined, 15);
+    cache.set('a', makeNode('a', 10));
+    expect(cache.estimatedBytes).toBe(150);
+  });
+
   it('does not evict on byte size when maxBytes is undefined, however large pointCount gets', () => {
     const onEvict = vi.fn();
     const cache = new NodeCache(10, onEvict);

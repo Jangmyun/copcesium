@@ -45,7 +45,7 @@ import { EyeDomeLighting } from './renderer/EyeDomeLighting';
 import { PointPicker } from './renderer/pickPoint';
 import { StyleController } from './renderer/StyleController';
 import { WorkerPool } from './worker/WorkerPool';
-import { NodeCache } from './cache/NodeCache';
+import { BYTES_PER_POINT_QUANTIZED, NodeCache } from './cache/NodeCache';
 
 // Inlined into a Blob at build time (see vite.config.ts's `worker.format`)
 // instead of emitted as a separate chunk with a runtime-constructed URL — a
@@ -113,6 +113,7 @@ const DEFAULT_OPTIONS: Required<Omit<CopcDataSourceOptions, OpenEndedOption>> = 
   decodeBackpressure: false,
   strictCacheBudget: false,
   preUploadHidden: false,
+  quantizePositions: false,
   pixelSize: 2,
   pointSizeMode: 'fixed',
   attenuationFactor: 100,
@@ -235,6 +236,7 @@ export class CopcDataSource {
         this._destroyLoadedNode(node);
       },
       options.maxCacheBytes,
+      options.quantizePositions ? BYTES_PER_POINT_QUANTIZED : undefined,
     );
     this._counter = hierarchy.counter;
     this._pager = new HierarchyPager(

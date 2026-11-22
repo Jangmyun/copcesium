@@ -77,8 +77,16 @@ bool classAllowed(int c) {
 // Also shared for the same reason: the pick pass must rasterize points at
 // exactly the size the main pass draws them, or a click that visually lands
 // on a point could miss it (or hit a neighbor) in the pick pass.
+// Positions arrive as Float32 offsets, or as uint16 per axis with
+// `quantizePositions` (see worker/quantize.ts). Both shaders read them through
+// these, which are (1, 1, 1) and (0, 0, 0) for Float32 nodes.
+const dequantizeShaderChunk = `
+uniform vec3 u_qScale;
+uniform vec3 u_qOffset;
+`;
+
 const pointSizeSource = `
-  vec3 eyeRel = position - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
+  vec3 eyeRel = pos - czm_encodedCameraPositionMCHigh - czm_encodedCameraPositionMCLow;
 
   if (u_sizeMode == ${SIZE_MODE.attenuated}) {
     // max(..., epsilon): a point essentially at the camera would otherwise
@@ -126,6 +134,7 @@ bool clipKeeps(vec3 p) {
 export const vertexShaderSource = `
 in vec3 position;
 in vec4 color;
+${dequantizeShaderChunk}
 in float intensity;       // UNSIGNED_SHORT, normalized -> raw / 65535
 in float classification;  // UNSIGNED_BYTE, normalized  -> code / 255
 in float elevation;       // UNSIGNED_SHORT, normalized -> already 0..1 over the file's Z range
@@ -159,8 +168,9 @@ ${classAllowedSource}
 
 void main() {
   int c = int(classification * 255.0 + 0.5);
+  vec3 pos = position * u_qScale + u_qOffset;
 
-  if (!classAllowed(c) || !clipKeeps(position)) {
+  if (!classAllowed(c) || !clipKeeps(pos)) {
     // Outside clip space, so the point is culled before it ever rasterizes.
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     gl_PointSize = 0.0;
@@ -182,7 +192,7 @@ void main() {
   }
 
   v_color = vec4(rgb, color.a * u_opacity);
-  // position is a node-relative offset (model coordinates); the node origin
+  // pos is a node-relative offset (model coordinates); the node origin
   // rides in the model matrix. Reconstruct the eye-relative position the way
   // czm_translateRelativeToEye does, but from a single Float32 offset — the
   // precision comes from the double-precision origin baked into the matrix.
@@ -283,6 +293,7 @@ export const MAX_PICKABLE_POINT_INDEX = 0xffffff;
 export const pickVertexShaderSource = `
 in vec3 position;
 in float classification;  // UNSIGNED_BYTE, normalized -> code / 255
+${dequantizeShaderChunk}
 
 uniform float u_pixelSize;
 uniform int u_sizeMode;
@@ -304,8 +315,9 @@ void main() {
   int c = int(classification * 255.0 + 0.5);
   v_pointIndex = gl_VertexID;
   v_nodeSlot = u_nodeSlot;
+  vec3 pos = position * u_qScale + u_qOffset;
 
-  if (!classAllowed(c) || !clipKeeps(position)) {
+  if (!classAllowed(c) || !clipKeeps(pos)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     gl_PointSize = 0.0;
     return;

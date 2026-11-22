@@ -221,6 +221,25 @@ describe('PointCloudPrimitive.readPointAttributes', () => {
     expect(attrs.intensity).toBe(500);
   });
 
+  it('maps a uint16 position back through its quantization', () => {
+    const quantized = {
+      ...renderData,
+      positions: new Uint16Array(renderData.pointCount * 3),
+      quantization: { scale: [0.01, 1, 1], offset: [1, 2, 3] } as NodeRenderData['quantization'],
+    };
+    const primitive = new PointCloudPrimitive(quantized, sphere, style);
+    primitive.update(frame());
+    const context = fakeGpuContext();
+
+    const attrs = primitive.readPointAttributes(0, context);
+
+    // Reads 6 bytes per point, and the fake buffer holds [500, 0, 0]: 500 * 0.01 + 1 = 6.
+    expect(context._gl.getBufferSubData.mock.calls[0]![2]).toBeInstanceOf(Uint16Array);
+    expect(attrs.position.x).toBeCloseTo(6378137 + 6);
+    expect(attrs.position.y).toBeCloseTo(2);
+    expect(attrs.position.z).toBeCloseTo(3);
+  });
+
   it('reports the point without the live heightOffset as dataPosition', () => {
     const primitive = new PointCloudPrimitive(renderData, sphere, { ...style, heightOffset: 10 });
     primitive.update(frame());

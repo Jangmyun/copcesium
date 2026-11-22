@@ -210,6 +210,7 @@ interface CopcDataSourceOptions {
   decodeBackpressure?: boolean;
   strictCacheBudget?: boolean;
   preUploadHidden?: boolean;
+  quantizePositions?: boolean;
   maxGpuInitsPerFrame?: number;
   zFactor?: number;
   xyFactor?: number;
@@ -250,6 +251,7 @@ interface CopcDataSourceOptions {
 | `prefetchLookaheadMs` | unset | Opt-in predictive prefetch. While the camera moves, prefetch is built around the pose it is expected to have this many milliseconds ahead (damped constant-velocity extrapolation, capped at 250 ms), candidates load nearest to that pose first, and a prefetch load that leaves the prefetch set is cancelled only after 300 ms. Offline on a recorded human camera path this beat holding the pose only up to 250 ms. Recommended: `250`. |
 | `decodeBackpressure` | `false` | For devices where decoding, not the network, is the bottleneck. Once a full round of decoding (one node per worker) is waiting for a worker, further downloads for the view are held back and resume as decodes finish; nodes the camera has moved past are dropped. Prefetch waits until the decode queue is empty and decodes after visible nodes. With `prefetchIdleOnly` also on, prefetch waits for both conditions. `stats.decodeQueue` shows the queue either way. |
 | `strictCacheBudget` | `false` | Re-applies `maxCacheNodes`/`maxCacheBytes` after every LoD pass instead of only when a node is inserted, so nodes that just left the screen are evicted right away. Nodes on screen are never evicted, so they alone can still exceed the budget. |
+| `quantizePositions` | `false` | Stores point positions as uint16 per axis over each node's extent instead of Float32, so a node takes 15 bytes per point instead of 21 in GPU memory and in `maxCacheBytes`, and 40% more nodes fit in the same budget. The workers do the conversion and the vertex shader maps positions back. Each axis is off by at most 1/131070 of its node's extent (about 1.5 mm for a 200 m node). |
 | `preUploadHidden` | `false` | Uploads a node's GPU buffers as soon as it has loaded, even while it is hidden (prefetched), so it appears on a pan without that frame's upload cost. Holds GPU memory earlier. |
 | `maxGpuInitsPerFrame` | unset | Caps how many nodes upload their GPU buffers per frame; the rest wait for later frames. Nodes on screen may use every slot; hidden pre-uploads take at most one slot per frame. Unset means no cap. |
 | `pixelSize` | `2` | Point size in pixels, used when `pointSizeMode` is `'fixed'`. Live-adjustable after load via `dataSource.pixelSize`. |
@@ -397,7 +399,7 @@ console.log(`${pct}% of the file pulled, over ${requestCount} range requests`);
 | `pendingNodes` | Nodes in flight — fetching, decoding, or uploading. Zero means the current view is fully resolved, which is the signal a benchmark uses to stop the clock. |
 | `waste` | What the totals above leave out, for node point data. Attempts that were aborted (`abortedRequests`, with `abortedAfterHeaders` for those cut off mid-body), attempts that failed (`failedRequests`), and `retries`. The bytes those aborted and failed attempts *asked for* (`abortedBytes`, `failedBytes`). `unusedBytes`: received bytes that no node used, such as merge gaps and nodes cancelled while their request was in flight; these are already part of `transferredBytes`. `cancelledBeforeSend`: requests dropped before anything was sent. |
 | `decodeQueue` | `waiting`/`running` decode tasks, the median ms a task waited for a worker (`waitP50`) and ran on one (`runP50`), and `deferredLoads` held back by `decodeBackpressure`. Waiting that stays high, with `waitP50` above `runP50`, means decoding, not the network, is the bottleneck. |
-| `cache` | `nodes` held, their `estimatedBytes` (`pointCount × 21`, the figure `maxCacheBytes` limits), how many are `pinned` on screen (never evicted), and `evictions` so far. |
+| `cache` | `nodes` held, their `estimatedBytes` (`pointCount × 21`, or `× 15` with `quantizePositions`; the figure `maxCacheBytes` limits), how many are `pinned` on screen (never evicted), and `evictions` so far. |
 | `fetch`, `decode`, `upload` | A `StageTiming` each: `count` of nodes through that stage, plus `p50`/`p95` in milliseconds over a rolling window of recent nodes. |
 
 `upload` is timed on the first frame a node is actually drawn, so `upload.count` trails `decode.count` by however many nodes decoded but never made it on screen — that gap is information, not a dropped sample.

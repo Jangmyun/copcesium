@@ -144,7 +144,15 @@ describe('pick shaders', () => {
   it('reuses the same classification allow-list as the main pass', () => {
     expect(pickVertexShaderSource).toContain('uniform ivec4 u_classMask[2];');
     expect(pickVertexShaderSource).toContain('bool classAllowed(int c) {');
-    expect(pickVertexShaderSource).toContain('if (!classAllowed(c) || !clipKeeps(position)) {');
+    expect(pickVertexShaderSource).toContain('if (!classAllowed(c) || !clipKeeps(pos)) {');
+  });
+
+  it('maps positions back the same way as the main pass', () => {
+    for (const source of [vertexShaderSource, pickVertexShaderSource]) {
+      expect(source).toContain('uniform vec3 u_qScale;');
+      expect(source).toContain('vec3 pos = position * u_qScale + u_qOffset;');
+      expect(source).not.toContain('clipKeeps(position)');
+    }
   });
 
   it('applies the same clip test as the main pass, so clipped points cannot be picked', () => {
