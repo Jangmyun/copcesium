@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "cesium": "^1.143.0",
-    "copcesium": "^1.4.1"
+    "copcesium": "^1.4.3"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

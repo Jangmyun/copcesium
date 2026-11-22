@@ -434,6 +434,11 @@
           <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>
         </svg>
       </button>
+      <button class="rail-btn" data-tab="measure" title="Measure">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>
+        </svg>
+      </button>
       <button class="rail-btn" data-tab="info" title="Info">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>
@@ -651,6 +656,28 @@
             Clear
           </button>
           <div style="margin-top:12px;font-size:11px;color:var(--faint);line-height:1.6">Regions are fixed in world space where you clicked. Moving the Height offset slider afterwards slides the cloud through them.</div>
+        </div>
+
+        <!-- ========== MEASURE ========== -->
+        <div class="panel-section" id="sec-measure">
+          <div class="sec-label">Tool</div>
+          <div class="color-grid" id="measureToolGrid">
+            <button class="color-btn active" data-tool="off">Off</button>
+            <button class="color-btn" data-tool="on">Measure</button>
+          </div>
+          <div id="measureHint" style="font-size:11.5px;color:var(--dim);margin:10px 2px 0;line-height:1.6"></div>
+
+          <div class="divider"></div>
+          <div id="measureResults"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px">
+            <button id="measureFinishBtn" class="url-row" style="justify-content:center;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:9px;cursor:pointer;color:var(--text);font-family:inherit;font-size:12.5px" disabled>
+              Finish
+            </button>
+            <button id="measureClearBtn" class="url-row" style="justify-content:center;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:9px;cursor:pointer;color:var(--text);font-family:inherit;font-size:12.5px" disabled>
+              Clear
+            </button>
+          </div>
+          <div style="margin-top:12px;font-size:11px;color:var(--faint);line-height:1.6">Distance is the straight line between the points. Horizontal is measured along the ellipsoid surface. Heights are ellipsoidal (WGS84), not above sea level. The points stay with the data when the Height offset slider moves the cloud, and the numbers do not change.</div>
         </div>
 
         <!-- ========== INFO ========== -->
