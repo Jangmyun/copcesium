@@ -139,3 +139,80 @@ export function writeLocalClipUniforms(
   const boxCount = clip.inverseBoxes.length;
   return { mode: planeCount + boxCount === 0 ? CLIP_MODE.none : clip.mode, planeCount, boxCount };
 }
+
+/**
+ * Whether the clip discards every point a sphere can hold, so LoD selection
+ * can skip the node and its subtree instead of fetching, decoding and
+ * budgeting points the shader would drop (#228). Conservative: a sphere that
+ * straddles any boundary counts as kept.
+ *
+ * - `inside`: dropped when the sphere is wholly on the clipped side of some
+ *   plane, or wholly outside every box.
+ * - `outside`: dropped when the sphere is wholly on the kept side of every
+ *   plane and, with boxes set, wholly inside one of them.
+ */
+export function sphereClippedAway(clip: ClipState, sphere: Cesium.BoundingSphere): boolean {
+  const planeCount = clip.planes.length;
+  const boxCount = clip.inverseBoxes.length;
+  if (planeCount + boxCount === 0 || clip.mode === CLIP_MODE.none) return false;
+  const { center, radius } = sphere;
+
+  if (clip.mode === CLIP_MODE.inside) {
+    for (const plane of clip.planes) {
+      if (signedDistance(plane, center) < -radius * Cesium.Cartesian3.magnitude(plane.normal)) {
+        return true;
+      }
+    }
+    return boxCount > 0 && clip.inverseBoxes.every((inverse) => sphereOutsideBox(inverse, sphere));
+  }
+
+  for (const plane of clip.planes) {
+    if (signedDistance(plane, center) <= radius * Cesium.Cartesian3.magnitude(plane.normal)) {
+      return false;
+    }
+  }
+  return boxCount === 0 || clip.inverseBoxes.some((inverse) => sphereInsideBox(inverse, sphere));
+}
+
+function signedDistance(plane: Cesium.Plane, point: Cesium.Cartesian3): number {
+  return Cesium.Cartesian3.dot(plane.normal, point) + plane.distance;
+}
+
+const scratchUnit = new Cesium.Cartesian3();
+
+/**
+ * The sphere in a box's unit-cube coordinates: its center, and its half
+ * extent along each unit axis (the sphere maps to an ellipsoid there, whose
+ * extent along axis i is the radius times the length of row i of the
+ * inverse's linear part).
+ */
+function sphereInUnitCube(
+  inverse: Cesium.Matrix4,
+  sphere: Cesium.BoundingSphere,
+): { q: Cesium.Cartesian3; extent: [number, number, number] } {
+  const q = Cesium.Matrix4.multiplyByPoint(inverse, sphere.center, scratchUnit);
+  const extent: [number, number, number] = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    // Matrix4 is column-major: row i of the 3x3 part is at i, i + 4, i + 8.
+    extent[i] = sphere.radius * Math.hypot(inverse[i]!, inverse[i + 4]!, inverse[i + 8]!);
+  }
+  return { q, extent };
+}
+
+function sphereOutsideBox(inverse: Cesium.Matrix4, sphere: Cesium.BoundingSphere): boolean {
+  const { q, extent } = sphereInUnitCube(inverse, sphere);
+  return (
+    Math.abs(q.x) - extent[0] > 0.5 ||
+    Math.abs(q.y) - extent[1] > 0.5 ||
+    Math.abs(q.z) - extent[2] > 0.5
+  );
+}
+
+function sphereInsideBox(inverse: Cesium.Matrix4, sphere: Cesium.BoundingSphere): boolean {
+  const { q, extent } = sphereInUnitCube(inverse, sphere);
+  return (
+    Math.abs(q.x) + extent[0] <= 0.5 &&
+    Math.abs(q.y) + extent[1] <= 0.5 &&
+    Math.abs(q.z) + extent[2] <= 0.5
+  );
+}

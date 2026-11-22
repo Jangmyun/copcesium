@@ -41,6 +41,7 @@ import { orderForLoading } from './lod/loadOrder';
 import { getFovy, sseScale } from './lod/screenSpaceError';
 import { selectNodes } from './lod/selectNodes';
 import { LoadScheduler } from './loader/LoadScheduler';
+import { sphereClippedAway } from './renderer/clipping';
 import { EyeDomeLighting } from './renderer/EyeDomeLighting';
 import { PointPicker } from './renderer/pickPoint';
 import { StyleController } from './renderer/StyleController';
@@ -382,6 +383,10 @@ export class CopcDataSource {
   /** Ignores `heightOffset`; node primitives apply it to their sphere themselves. */
   private readonly _getBaseSphere = (key: string): Cesium.BoundingSphere => this._spheres.base(key);
 
+  /** For `selectNodes`: whether the live clip drops every point of a sphere. */
+  private readonly _isClippedAway = (sphere: Cesium.BoundingSphere): boolean =>
+    sphereClippedAway(this._styleCtl.style.clip, sphere);
+
   /** The sphere cache's backing map; read by tests that check eviction. */
   private get _sphereCache(): ReadonlyMap<string, unknown> {
     return this._spheres.entries;
@@ -528,6 +533,7 @@ export class CopcDataSource {
           incumbents: this._selectedKeys,
           incumbentBonus: this._cameraMoving ? INCUMBENT_BONUS : 1,
           viewAxisBias: this._options.viewAxisBias,
+          isClippedAway: this._isClippedAway,
         }),
       );
 

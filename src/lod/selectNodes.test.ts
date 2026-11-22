@@ -381,6 +381,33 @@ describe('selectNodes', () => {
     expect(selected).toEqual([]);
   });
 
+  it('drops nodes the clip discards whole, and spends the budget on the rest (#228)', () => {
+    const nodes = makeOneLevelOctree();
+    const camera = makeCamera(
+      new Cesium.Cartesian3(0, 0, 30),
+      lookingAtOrigin.direction,
+      lookingAtOrigin.up,
+    );
+    // Children sit at x = -5 or +5 with radius 5 * sqrt(3) ~ 8.66; only x >= 4 is kept.
+    const isClippedAway = (sphere: Cesium.BoundingSphere) => sphere.center.x - 4 < -sphere.radius;
+    const options = {
+      nodes,
+      getSphere: makeGetSphere(rootCenter, rootHalfSize),
+      camera,
+      viewportHeight: 1000,
+      sseThreshold: 16,
+      maxVisibleNodes: 5,
+    };
+
+    const selected = selectNodes({ ...options, isClippedAway });
+
+    expect(new Set(selected)).toEqual(
+      new Set(['0-0-0-0', '1-1-0-0', '1-1-0-1', '1-1-1-0', '1-1-1-1']),
+    );
+    // Without the cull the same budget goes partly to the clipped half.
+    expect(selectNodes(options).some((key) => key.startsWith('1-0-'))).toBe(true);
+  });
+
   it('reports a sub-page instead of treating its entry point as a childless node', () => {
     // Root has no children in `nodes`, but one of its 8 child slots is a
     // sub-page entry point (its subtree lives in a hierarchy page not yet loaded).
