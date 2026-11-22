@@ -312,6 +312,23 @@ describe('PointCloudPrimitive clipping uniforms', () => {
     );
   });
 
+  it('moves its bounding sphere with heightOffset, leaving the shared one alone', () => {
+    const shiftStyle = { ...style, heightOffset: 20 };
+    const shared = Cesium.BoundingSphere.clone(sphere);
+    const primitive = new PointCloudPrimitive(renderData, shared, shiftStyle);
+    const drawn = (primitive as unknown as { _boundingSphere: Cesium.BoundingSphere })
+      ._boundingSphere;
+    primitive.update(frame());
+    // The node origin is (6378137, 0, 0), so "up" is +X.
+    expect(drawn.center.x).toBeCloseTo(6378137 + 20);
+
+    shiftStyle.heightOffset = -30;
+    primitive.update(frame());
+    expect(drawn.center.x).toBeCloseTo(6378137 - 30);
+    expect(drawn.radius).toBe(10);
+    expect(shared).toEqual(sphere);
+  });
+
   it('gives the pick command the same clip uniforms, current even without a render in between', () => {
     const clipStyle = { ...style, clip: createClipState(undefined, undefined, 'inside') };
     const primitive = new PointCloudPrimitive(renderData, sphere, clipStyle);

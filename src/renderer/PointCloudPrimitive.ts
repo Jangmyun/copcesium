@@ -194,7 +194,10 @@ export class PointCloudPrimitive {
   private _classifications: Uint8Array | null;
   private _elevations: Uint16Array | null;
   private _pointCount: number;
-  private _boundingSphere: Cesium.BoundingSphere;
+  /** The node's sphere as drawn, shifted in place along `_up` with
+   *  `heightOffset` like the points; `_baseCenter` is where the data puts it. */
+  private readonly _boundingSphere: Cesium.BoundingSphere;
+  private readonly _baseCenter: Cesium.Cartesian3;
   private _style: PointStyle;
   private _edl: EyeDomeLighting | null;
   public show: boolean;
@@ -248,7 +251,8 @@ export class PointCloudPrimitive {
     this._classifications = renderData.classifications;
     this._elevations = renderData.elevations;
     this._pointCount = renderData.pointCount;
-    this._boundingSphere = boundingSphere;
+    this._boundingSphere = Cesium.BoundingSphere.clone(boundingSphere);
+    this._baseCenter = Cesium.Cartesian3.clone(boundingSphere.center);
     this._style = style;
     this._edl = gpu?.edl ?? null;
     this.show = true;
@@ -328,6 +332,7 @@ export class PointCloudPrimitive {
   private _syncOriginAndClip(): void {
     if (this._style.heightOffset !== this._appliedHeightOffset) {
       this._cmd!.modelMatrix = this._modelMatrix(this._style.heightOffset);
+      this._shiftBounds(this._style.heightOffset);
       this._appliedHeightOffset = this._style.heightOffset;
       this._appliedClipVersion = -1; // the node origin moved under the clip
     }
@@ -363,6 +368,18 @@ export class PointCloudPrimitive {
       u_qScale: () => this._qScale,
       u_qOffset: () => this._qOffset,
     };
+  }
+
+  /** Moves the bounding sphere the commands share by the same shift as the
+   *  model matrix, so Cesium culls and assigns frustums where the points are
+   *  drawn (#229). */
+  private _shiftBounds(heightOffset: number): void {
+    const shift = Cesium.Cartesian3.multiplyByScalar(
+      this._up,
+      heightOffset,
+      new Cesium.Cartesian3(),
+    );
+    Cesium.Cartesian3.add(this._baseCenter, shift, this._boundingSphere.center);
   }
 
   /** Node origin shifted `heightOffset` meters along the node's local "up". */
@@ -472,6 +489,7 @@ export class PointCloudPrimitive {
           u_opacity: () => style.opacity,
         },
       }) as DrawCommandLike;
+      this._shiftBounds(this._style.heightOffset);
       this._appliedHeightOffset = this._style.heightOffset;
       this._appliedOpaque = opaque;
       this._updateClipUniforms();
