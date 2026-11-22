@@ -7,6 +7,10 @@ All notable changes to this project are documented here. This project follows
 
 ### Added
 
+- The advanced viewer gains a **Measure** tab: click points on the cloud to
+  get the path's straight-line and horizontal length and its ellipsoidal
+  height difference, with each segment labelled on the map. The markers
+  follow `heightOffset`, and the tool takes turns with the Clip tab's. (#215)
 - `maxCompressedCacheBytes` (default `0`, off) keeps nodes' compressed point
   data after they leave the node cache, so coming back to an evicted node
   costs a decode instead of a request. For point formats 6 and 7 only the LAZ

@@ -39,11 +39,18 @@ export interface ClipTab {
   reset(): void;
   /** The panel's inside/outside choice, to pass to the next `load()`. */
   clipMode(): ClipMode;
+  /** Turns the click tool off, keeping any region in place. */
+  stopTool(): void;
 }
 
+/**
+ * @param onToolStart Called when a tool starts taking clicks, so the caller
+ *   can switch any other click tool off (the Measure tab's).
+ */
 export function mountClipTab(
   viewer: Cesium.Viewer,
   getDataSource: () => CopcDataSource | null,
+  onToolStart: () => void = () => {},
 ): ClipTab {
   const toolGrid = document.getElementById('clipToolGrid')!;
   const modeGrid = document.getElementById('clipModeGrid')!;
@@ -134,6 +141,7 @@ export function mountClipTab(
   };
 
   const setTool = (next: Tool): void => {
+    if (next !== 'off' && tool === 'off') onToolStart();
     tool = next;
     toolGrid
       .querySelectorAll<HTMLElement>('.color-btn')
@@ -217,5 +225,6 @@ export function mountClipTab(
     // A region belongs to the dataset it was clicked on, so a new load starts
     // with none; the inside/outside choice carries over.
     clipMode: () => mode,
+    stopTool: () => setTool('off'),
   };
 }

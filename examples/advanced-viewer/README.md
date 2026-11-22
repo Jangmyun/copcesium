@@ -2,7 +2,7 @@
 
 A fuller reference viewer built on the published `copcesium` npm package: a
 collapsible sidebar with tabbed sections (Data / Global / Appearance /
-Filter / Points / Clip / Info / Help), preset datasets, per-color-mode legends, a
+Filter / Points / Clip / Measure / Info / Help), preset datasets, per-color-mode legends, a
 classification filter panel, terrain/imagery pickers, a camera/FPS HUD, and
 light/dark theming.
 
@@ -52,6 +52,25 @@ outside the current region — press **Clear** first. Regions stay where they
 were placed in world space, so moving the Points tab's height offset
 afterwards slides the cloud through them. Loading another dataset clears
 them.
+
+## Measuring
+
+The **Measure** tab measures a path through points clicked on the cloud,
+using `pickPoint()` and `measurePath()`.
+
+- Turn the tool on and click two or more points. **Finish** (or Enter) keeps
+  the result on screen; Esc cancels. Each segment is labelled with its length.
+- **Distance** is the straight line through the points, **Horizontal** the
+  same path along the ellipsoid surface, and **Height difference** the last
+  point's height minus the first's. With three or more points the panel also
+  shows total ascent and descent.
+- Heights are ellipsoidal (WGS84), not above sea level.
+- Points are stored as `PickedPoint.dataPosition`, so they follow the cloud
+  when the height offset moves it and the numbers stay the same. They stay
+  put across LoD changes and cache eviction, since they are positions, not
+  references to loaded points.
+- Turning on the Clip tab's tool turns this one off, and the other way round:
+  both act on a click. Loading another dataset clears the measurement.
 
 ## Eye-Dome Lighting
 

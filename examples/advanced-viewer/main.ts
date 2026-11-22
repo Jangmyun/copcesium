@@ -14,13 +14,14 @@
 // HUD. See `examples/basic-viewer` for the minimal reference; this is the
 // "what a real app looks like" companion (see issue for scope notes: no
 // `onProgress` or per-node stats — neither exists on `CopcDataSource` today).
-// The Clip tab lives in clip.ts.
+// The Clip tab lives in clip.ts, the Measure tab in measure.ts.
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { CopcDataSource } from 'copcesium';
 import type { ColorMode, CopcDataSourceOptions } from 'copcesium';
 import { autoRunWalk, benchRequested, mountBenchTab, tuningOptions } from './bench';
 import { mountClipTab } from './clip';
+import { mountMeasureTab } from './measure';
 import { escapeHtml } from './html';
 
 Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_TOKEN ?? '';
@@ -226,6 +227,7 @@ const PANEL_TITLES: Record<string, string> = {
   filter: 'Filter',
   points: 'Points',
   clip: 'Clip',
+  measure: 'Measure',
   info: 'Info',
   help: 'Help',
   bench: 'Benchmark',
@@ -549,7 +551,9 @@ function renderPresetList(activeKey: string | null): void {
 
 // ── Current load state ──────────────────────────────────────
 let currentDs: CopcDataSource | null = null;
-const clipTab = mountClipTab(viewer, () => currentDs);
+// Both tabs act on a left click, so starting one's tool stops the other's.
+const clipTab = mountClipTab(viewer, () => currentDs, () => measureTab.stopTool());
+const measureTab = mountMeasureTab(viewer, () => currentDs, () => clipTab.stopTool());
 let currentUrl: string | null = null;
 let currentOptions: CopcDataSourceOptions = {};
 let activeLabel: string | null = null;
@@ -640,6 +644,7 @@ async function loadCopc(
   if (currentDs) {
     stopStatsPolling();
     clipTab.reset();
+    measureTab.reset();
     currentDs.destroy();
     currentDs = null;
   }
